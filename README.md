@@ -25,7 +25,7 @@ irm https://penv.cloud/install.ps1 | iex     # Windows
 ```
 
 ```bash
-npm i -g @penvhq/cli                         # any of them, when npm should own it
+npm i -g @penvhq/cli@next                         # any of them, when npm should own it
 ```
 
 The first two put one static binary in `~/.penv/bin`, or `%USERPROFILE%\.penv\bin` on Windows, and print the line that adds it to your PATH; no rc file is edited and nothing else is written. `PENV_INSTALL_DIR` moves it, `PENV_VERSION` pins a tag, and every download is checked against the digest the release publishes before it lands. The PowerShell one writes your user PATH when you ask: `-AddToPath` when you run the file, `$env:PENV_ADD_TO_PATH = '1'` when you pipe it through `iex`, which has no flags to pass. Builds: linux and macOS on x86\_64 and arm64, Windows on x86\_64 and arm64.
