@@ -291,6 +291,113 @@ fn push_says_which_organisations_it_could_not_choose_between() {
     assert!(error["fix"].as_str().unwrap().contains("--org"), "{error}");
 }
 
+#[test]
+fn push_refuses_when_there_is_nothing_to_push() {
+    let mock = Mock::new();
+    let workspace = Workspace::new(&[(".env.schema", &local_schema())]);
+    let output = workspace.run(&mock, &["--json", "push"]);
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "nothing_to_push");
+    assert!(
+        mock.hits("GET", "/api/v1/orgs").is_empty(),
+        "it asked the server before finding nothing to send"
+    );
+
+    let workspace = Workspace::new(&[(".env.schema", &local_schema()), (".env", "PORT=\n")]);
+    let output = workspace.run(&mock, &["--json", "push"]);
+    assert_eq!(json_of(&stderr(&output))["error"], "nothing_to_push");
+}
+
+#[test]
+fn push_creates_the_project_with_the_environment_it_was_asked_for() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        "/api/v1/orgs",
+        200,
+        &json!({ "orgs": [{ "slug": "acme", "name": "Acme" }] }).to_string(),
+    );
+    mock.on(
+        "POST",
+        "/api/v1/orgs/acme/projects",
+        201,
+        &json!({ "slug": SLUG, "name": PROJECT, "environments": ["development", "production"] })
+            .to_string(),
+    );
+    mock.on(
+        "PUT",
+        "/api/v1/envs/acme/api-gateway-2/production",
+        200,
+        &json!({ "written": 1, "unchanged": 0, "pruned": 0, "etag": "\"abc\"" }).to_string(),
+    );
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let output = workspace.run(&mock, &["--json", "push", "--env", "production"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    let created = mock.last("POST", "/api/v1/orgs/acme/projects").json();
+    let environments = created["environments"].as_array().unwrap();
+    assert!(environments.contains(&json!("development")));
+    assert!(environments.contains(&json!("production")));
+}
+
+#[test]
+fn push_refuses_an_environment_the_project_does_not_have() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        "/api/v1/orgs/acme/projects",
+        200,
+        &json!({ "projects": [{ "slug": PROJECT, "name": PROJECT, "environments": ["development", "staging"] }] })
+            .to_string(),
+    );
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let output = workspace.run(&mock, &["--json", "push", "--env", "production"]);
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "no_such_environment");
+    assert!(
+        error["message"].as_str().unwrap().contains("production"),
+        "{error}"
+    );
+    assert!(
+        error["fix"].as_str().unwrap().contains("staging"),
+        "{error}"
+    );
+    assert!(
+        mock.hits("PUT", "/api/v1/envs/acme/api-gateway/production")
+            .is_empty(),
+        "it pushed anyway"
+    );
+}
+
+#[test]
+fn push_refuses_an_org_that_contradicts_the_header() {
+    let mock = Mock::new();
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let output = workspace.run(&mock, &["--json", "push", "--org", "other"]);
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "org_mismatch");
+    assert!(
+        error["message"].as_str().unwrap().contains("acme"),
+        "{error}"
+    );
+    assert!(mock.hits("PUT", ENVS).is_empty(), "it pushed anyway");
+}
+
 // --- pull -------------------------------------------------------------------
 
 #[test]
