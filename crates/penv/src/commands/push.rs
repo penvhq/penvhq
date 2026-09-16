@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
-use penv_cloud::api::{Bearer, CloudKey};
+use penv_cloud::api::{Address, Bearer, CloudKey};
 use penv_schema::Schema;
 use serde_json::json;
 
@@ -36,21 +36,63 @@ pub fn run(
         )
         .with_exit(Exit::Auth));
     }
+    // Read the file before the server hears anything: an empty push must not create a project.
+    let env_path = dir.join(ENV_FILE);
+    let values = if env_path.is_file() {
+        penv_dotenv::read(&read_file(&env_path)?).values()
+    } else {
+        Default::default()
+    };
+    if !values.iter().any(|(_, value)| !value.is_empty()) {
+        return Err(CliError::new(
+            "nothing_to_push",
+            match env_path.is_file() {
+                true => format!("{} holds no values.", show(&env_path)),
+                false => format!(
+                    "{} does not exist, so there is nothing to push.",
+                    show(&env_path)
+                ),
+            },
+            "Write the values to .env first, or run penv set <KEY> to push one key.",
+        )
+        .with_exit(Exit::Validation));
+    }
+
+    let wanted = environment(env_flag, env);
+    if let (true, Some(asked)) = (schema.is_cloud(), org_flag.filter(|v| !v.is_empty())) {
+        let named = schema.org.as_deref().unwrap_or_default();
+        if !named.eq_ignore_ascii_case(asked) {
+            return Err(CliError::new(
+                "org_mismatch",
+                format!("the @penv header names {named}, not {asked}."),
+                "Drop --org, or change the @penv header to move this project.",
+            )
+            .with_exit(Exit::Validation));
+        }
+    }
+
     let cloud = Cloud::open(env, &detection)?;
     let bearer = cloud.bearer(env, schema.org.as_deref())?;
 
     let created = if schema.is_cloud() {
+        ensure_environment(&cloud, &bearer, &address(&schema, &wanted)?)?;
         None
     } else {
         let org = pick_org(&cloud, &bearer, org_flag)?;
         let name = project_name(&dir);
+        // A new project gets the environment this push is for, not only development.
+        let mut environments = vec!["development".to_string()];
+        if wanted != "development" {
+            environments.push(wanted.clone());
+        }
         note(&format!(
-            "{SCHEMA_FILE} names no project, so penv will create {org}/{name} with environment development and write the header."
+            "{SCHEMA_FILE} names no project, so penv will create {org}/{name} with environment {} and write the header.",
+            environments.join(", ")
         ));
         // The header carries the slug the server derived, never the directory name.
         let project = cloud
             .api
-            .create_project(&bearer, &org, &name, &["development".to_string()])
+            .create_project(&bearer, &org, &name, &environments)
             .map_err(|e| refuse(e, None))?;
         schema.org = Some(org.clone());
         schema.project = Some(project.slug.clone());
@@ -58,13 +100,7 @@ pub fn run(
         Some(format!("{org}/{}", project.slug))
     };
 
-    let at = address(&schema, &environment(env_flag, env))?;
-    let env_path = dir.join(ENV_FILE);
-    let values = if env_path.is_file() {
-        penv_dotenv::read(&read_file(&env_path)?).values()
-    } else {
-        Default::default()
-    };
+    let at = address(&schema, &wanted)?;
 
     let keys = payload(&schema, &values);
     let written = keys.iter().filter(|k| k.value.is_some()).count();
@@ -107,6 +143,42 @@ pub fn run(
         }),
         lines.join("\n"),
     ))
+}
+
+/// The envs route writes into an environment and never creates one, so a name
+/// the project does not have is refused here with the names it does have.
+fn ensure_environment(cloud: &Cloud, bearer: &Bearer, at: &Address) -> Result<(), CliError> {
+    let projects = cloud
+        .api
+        .projects(bearer, &at.org)
+        .map_err(|e| refuse(e, Some(at)))?;
+    // A project the listing lacks is left to the PUT's own 404.
+    let Some(project) = projects
+        .iter()
+        .find(|p| p.slug.eq_ignore_ascii_case(&at.project))
+    else {
+        return Ok(());
+    };
+    if project.environments.is_empty()
+        || project
+            .environments
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&at.environment))
+    {
+        return Ok(());
+    }
+    Err(CliError::new(
+        "no_such_environment",
+        format!(
+            "{}/{} has no environment called {}.",
+            at.org, at.project, at.environment
+        ),
+        format!(
+            "Create it in the console, or push to one of: {}.",
+            project.environments.join(", ")
+        ),
+    )
+    .with_exit(Exit::Validation))
 }
 
 /// `--org`, else the one org this person has, as the listing spells it. Several
