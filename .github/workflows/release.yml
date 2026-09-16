@@ -51,7 +51,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # One cache per target: the two Linux jobs would otherwise share build scripts, and one
+      # compiled on the host cannot run inside cross's older container.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - if: contains(matrix.target, 'linux')
         run: cargo install cross --locked
       - run: ${{ contains(matrix.target, 'linux') && 'cross' || 'cargo' }} build --release --locked -p penv --target ${{ matrix.target }}
