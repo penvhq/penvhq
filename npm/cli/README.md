@@ -1,6 +1,6 @@
 # @penvhq/cli
 
-penv reads the `.env` you already have, writes a small committed schema next to it, validates every value before your process starts, generates types for your language, and configures your coding agent's harness so it cannot read the file.
+penv is the open source CLI for Penv Cloud, a [secrets manager](https://penv.cloud) for `.env` files and API keys. penv reads the `.env` you already have, writes a small committed schema next to it, validates every value before your process starts, generates types for your language, and configures your coding agent's harness so it cannot read the file.
 
 ```bash
 npm i -g @penvhq/cli

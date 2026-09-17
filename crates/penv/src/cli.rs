@@ -13,6 +13,7 @@ pub enum Format {
     name = "penv",
     version,
     about = "penv gets the right values into the right process at the right time.",
+    after_help = "Penv Cloud, the secrets manager behind this CLI: https://penv.cloud",
     disable_help_subcommand = true
 )]
 pub struct Cli {

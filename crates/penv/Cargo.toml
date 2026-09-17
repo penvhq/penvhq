@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "penv gets the right values into the right process at the right time."
+homepage.workspace = true
+description = "CLI for Penv Cloud, the secrets manager for .env files and API keys."
 
 [lib]
 path = "src/lib.rs"
