@@ -7,6 +7,7 @@ version = "1.0.0-alpha.4"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/penvhq/penvhq"
+homepage = "https://penv.cloud"
 authors = ["penv"]
 
 [workspace.dependencies]
