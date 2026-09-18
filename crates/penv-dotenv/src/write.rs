@@ -51,26 +51,35 @@ pub fn write(entries: &[(&str, &str)]) -> Result<String, WriteError> {
     Ok(out)
 }
 
-/// Only `\n` inside double quotes is an escape every dialect reads back, so a
-/// value carrying a `"` or a `\` goes in single quotes, where none are.
+
+/// Quote a value so it survives the common .env dialects.
+/// Rejects only bare `\r` (no portable spelling).
 fn quote(value: &str) -> Option<String> {
-    // A lone carriage return has no portable spelling left once CRLF is gone.
+    // Bare CR has no reliable representation across tools.
     if value.contains('\r') {
         return None;
     }
-    let breaks = value.contains('\n');
-    let literal = value.contains(['"', '\\']);
-    if breaks {
-        if literal {
-            return None;
+
+    // Characters that force us to use double quotes + escaping
+    let needs_escaping = value.is_empty()
+        || value.contains(['\n', '"', '\\', '#', '\''])
+        || value.chars().any(char::is_whitespace);
+
+    if !needs_escaping {
+        // Safe to write bare
+        return Some(value.to_string());
+    }
+
+    // Double-quote and escape the three sequences that every major
+    // parser understands: \n  \\  \"
+    let mut escaped = String::with_capacity(value.len() + 8);
+    for c in value.chars() {
+        match c {
+            '\n' => escaped.push_str("\\n"),
+            '\\' => escaped.push_str("\\\\"),
+            '"'  => escaped.push_str("\\\""),
+            _    => escaped.push(c),
         }
-        return Some(format!("\"{}\"", value.replace('\n', "\\n")));
     }
-    if literal {
-        return (!value.contains('\'')).then(|| format!("'{value}'"));
-    }
-    if value.contains('#') || value.contains('\'') || value.chars().any(char::is_whitespace) {
-        return Some(format!("\"{value}\""));
-    }
-    Some(value.to_string())
+    Some(format!("\"{escaped}\""))
 }
