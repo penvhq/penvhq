@@ -10,13 +10,22 @@ fn main() {
     penv::upgrade::sweep_retired();
     let cli = Cli::parse_checked();
     let env = Env::from_process();
-    let out = Output::new(resolve(
+    let render = resolve(
         cli.json,
         cli.format,
         cli.agent,
         std::io::stdout().is_terminal(),
         &env,
-    ));
+    );
+    let person = !penv::agent::detect_here(&env, true).is_agent();
+    penv::ui::init(
+        !render.json
+            && person
+            && std::io::stdout().is_terminal()
+            && std::io::stderr().is_terminal(),
+        render.color,
+    );
+    let out = Output::new(render);
 
     let cwd = std::env::current_dir().unwrap_or_default();
     let exit = match commands::dispatch(&cli, &out, &cwd, &env) {

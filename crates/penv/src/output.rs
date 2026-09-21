@@ -15,6 +15,8 @@ pub struct Report {
     pub exit: Exit,
     /// The command wrote whatever the caller needs itself.
     pub silent: bool,
+    /// The text is a list to read, not news that something was done.
+    pub listing: bool,
 }
 
 impl Report {
@@ -24,7 +26,13 @@ impl Report {
             text: text.into(),
             exit: Exit::Ok,
             silent: false,
+            listing: false,
         }
+    }
+
+    pub fn listing(mut self) -> Report {
+        self.listing = true;
+        self
     }
 
     pub fn silent() -> Report {
@@ -33,6 +41,7 @@ impl Report {
             text: String::new(),
             exit: Exit::Ok,
             silent: true,
+            listing: false,
         }
     }
 
@@ -132,13 +141,26 @@ impl Output {
         } else if report.text.is_empty() {
             Ok(())
         } else {
-            writeln!(to, "{}", report.text.trim_end())
+            let text = report.text.trim_end();
+            // Anything but a clean exit is a list of problems to read.
+            let drawn = if report.listing || report.exit != Exit::Ok {
+                crate::ui::listing(text)
+            } else {
+                crate::ui::done(text)
+            };
+            if drawn {
+                Ok(())
+            } else {
+                writeln!(to, "{text}")
+            }
         }
     }
 
     pub fn fail(&self, error: &CliError, to: &mut impl Write) -> std::io::Result<()> {
         if self.render.json {
             writeln!(to, "{}", error.to_json())
+        } else if crate::ui::fail(error) {
+            Ok(())
         } else {
             let style = self.style();
             writeln!(
@@ -156,6 +178,9 @@ impl Output {
 pub fn table(headers: &[&str], rows: &[Vec<String>], style: &Style) -> String {
     if rows.is_empty() {
         return String::new();
+    }
+    if crate::ui::pretty() {
+        return crate::ui::table(headers, rows);
     }
     let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
     for row in rows {

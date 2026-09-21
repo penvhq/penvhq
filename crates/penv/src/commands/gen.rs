@@ -347,6 +347,12 @@ fn ask_option(
     }
     let offered = suggest.offered(default);
     let words: Vec<String> = offered.iter().map(word).collect();
+    let suggested = offered.iter().position(|value| value == &found);
+    if let Some(picked) = crate::ui::select(&suggest.prompt, &words, suggested) {
+        return picked
+            .map(|index| Some(offered[index].clone()))
+            .map_err(super::cloud::cancelled);
+    }
     let prompt = format!(
         "{} [{}] ({}): ",
         suggest.prompt,

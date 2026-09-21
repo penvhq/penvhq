@@ -60,5 +60,6 @@ pub fn run(out: &Output, cwd: &Path) -> Result<Report, CliError> {
             })).collect::<Vec<_>>(),
         }),
         text,
-    ))
+    )
+    .listing())
 }

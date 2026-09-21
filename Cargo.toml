@@ -17,6 +17,9 @@ serde_json = "1"
 toml = "0.9"
 minijinja = { version = "2.24", default-features = false, features = ["builtins", "macros", "serde"] }
 thiserror = "2"
+cliclack = "0.5.6"
+console = "0.16"
+comfy-table = { version = "8", default-features = false }
 penv-agent = { path = "crates/penv-agent" }
 penv-mask = { path = "crates/penv-mask" }
 penv-schema = { path = "crates/penv-schema" }

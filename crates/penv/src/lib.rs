@@ -14,4 +14,5 @@ pub mod files;
 pub mod manifest;
 pub mod output;
 pub mod prompt;
+pub mod ui;
 pub mod upgrade;

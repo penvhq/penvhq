@@ -47,6 +47,7 @@ pub fn run(
         link(&cloud, &bearer, &schema_path, &mut schema, may_ask)?;
     }
     let at = address(&schema, &environment(env_flag, env))?;
+    let spinner = crate::ui::spinner(&format!("Reading {at}"));
     let Fetched::Body { body, .. } = cloud
         .api
         .env_get(&bearer, &at, None, true)
@@ -58,6 +59,7 @@ pub fn run(
             "Run penv pull again.",
         ));
     };
+    spinner.stop(&format!("Read {at}"));
 
     // One value the file cannot hold must not cost the rest of the pull.
     let mut pairs: Vec<(&str, &str)> = Vec::new();

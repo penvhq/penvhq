@@ -104,10 +104,12 @@ pub fn run(
 
     let keys = payload(&schema, &values);
     let written = keys.iter().filter(|k| k.value.is_some()).count();
+    let spinner = crate::ui::spinner(&format!("Sending {} key(s) to {at}", keys.len()));
     let result = cloud
         .api
         .env_put(&bearer, &at, &keys, prune)
         .map_err(|e| refuse(e, Some(&at)))?;
+    spinner.stop(&format!("Sent to {at}"));
 
     let removed = env_path.is_file() && std::fs::remove_file(&env_path).is_ok();
 

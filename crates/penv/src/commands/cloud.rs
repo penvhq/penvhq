@@ -1,7 +1,6 @@
 //! Where the binary meets penv.cloud: the client, the keychain, the cache
 //! directory, and the one place a `CloudError` becomes an exit code.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use penv_agent::Detection;
@@ -107,6 +106,7 @@ pub fn link(
     schema: &mut Schema,
     may_ask: bool,
 ) -> Result<(), CliError> {
+    let spinner = crate::ui::spinner("Looking for your projects");
     let mut found: Vec<String> = Vec::new();
     for org in cloud.api.orgs(bearer).map_err(|e| refuse(e, None))? {
         let projects = cloud
@@ -115,6 +115,7 @@ pub fn link(
             .map_err(|e| refuse(e, None))?;
         found.extend(projects.iter().map(|p| format!("{}/{}", org.slug, p.slug)));
     }
+    spinner.stop(&format!("Found {} project(s)", found.len()));
 
     let chosen = match found.len() {
         0 => {
@@ -150,6 +151,9 @@ pub fn link(
 }
 
 fn ask_project(found: &[String]) -> Result<String, CliError> {
+    if let Some(picked) = crate::ui::select("Which project is this folder?", found, None) {
+        return picked.map(|index| found[index].clone()).map_err(cancelled);
+    }
     let mut prompt = String::from("Which project is this folder?\n");
     for (index, name) in found.iter().enumerate() {
         prompt.push_str(&format!("  {}. {name}\n", index + 1));
@@ -294,7 +298,16 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
 /// Everything penv says while a command is still working goes to stderr, so
 /// stdout stays the one object the output contract promises.
 pub fn note(line: &str) {
-    let _ = writeln!(std::io::stderr(), "penv: {line}");
+    crate::ui::note(line);
+}
+
+/// A picker left with Esc or Ctrl-C.
+pub fn cancelled(_: std::io::Error) -> CliError {
+    CliError::new(
+        "cancelled",
+        "nothing was chosen, so nothing changed.",
+        "Run the command again to choose.",
+    )
 }
 
 /// Open the verification page. A session with no terminal only prints it.

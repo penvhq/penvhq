@@ -228,6 +228,20 @@ fn ask(
     installed: &[usize],
     style: &Style,
 ) -> Result<Vec<usize>, CliError> {
+    let labels: Vec<String> = known
+        .iter()
+        .map(|(guard, _)| match &guard.description {
+            Some(about) => format!("{}: {about}", guard.name),
+            None => guard.name.clone(),
+        })
+        .collect();
+    if let Some(picked) = crate::ui::multiselect(
+        "Which AI tools should be kept out of your secrets? (space to tick)",
+        &labels,
+        installed,
+    ) {
+        return picked.map_err(super::cloud::cancelled);
+    }
     let rows: Vec<Vec<String>> = known
         .iter()
         .enumerate()
