@@ -194,11 +194,9 @@ fn a_crlf_value_is_written_and_read_back_as_the_lf_one_it_means() {
     );
 
     assert_eq!(
-        write(&[("A_KEY", "one\rtwo")]),
-        Err(WriteError::Unquotable {
-            key: "A_KEY".into()
-        }),
-        "a bare carriage return has no portable spelling"
+        write(&[("A_KEY", "one\rtwo"), ("B_KEY", "https://example.test\r")]).unwrap(),
+        "A_KEY=\"one\\ntwo\"\nB_KEY=https://example.test\n",
+        "a carriage return never blocks a pull"
     );
 }
 

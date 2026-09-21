@@ -190,21 +190,38 @@ fn a_cloud_schema_with_no_local_values_needs_a_credential() {
 }
 
 #[test]
-fn a_cloud_schema_with_a_local_dotenv_runs_and_says_so() {
+fn a_cloud_schema_falls_back_to_the_local_dotenv_only_when_offline() {
     let cloud = cloud_schema();
     let workspace = Workspace::new(&[
         (".env.schema", &cloud),
         (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
     ]);
-    let output = workspace.run(&[], ECHO_VALUES);
+    let run = |token: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_penv"));
+        command
+            .current_dir(workspace.path())
+            .env("PENV_URL", "http://127.0.0.1:1")
+            .env_remove("PENV_TOKEN")
+            .args(["--agent", "run", "--"])
+            .args([SHELL, SHELL_FLAG, ECHO_VALUES]);
+        if let Some(token) = token {
+            command.env("PENV_TOKEN", token);
+        }
+        command.output().expect("penv runs")
+    };
 
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let offline = run(Some("pck_FAKE"));
+    assert_eq!(offline.status.code(), Some(0), "{}", stderr(&offline));
     assert!(
-        stderr(&output).contains("cloud project"),
+        stderr(&offline).contains("could not be reached"),
         "no warning: {}",
-        stderr(&output)
+        stderr(&offline)
     );
-    assert!(!stdout(&output).contains(SECRET));
+    assert!(!stdout(&offline).contains(SECRET));
+
+    let signed_out = run(None);
+    assert_eq!(signed_out.status.code(), Some(5), "{}", stderr(&signed_out));
+    assert!(stderr(&signed_out).contains("no_credential"));
 }
 
 #[test]

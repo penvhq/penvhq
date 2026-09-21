@@ -61,32 +61,41 @@ pub fn run(
     let dir = schema_path.parent().unwrap_or(cwd);
     let env_path = dir.join(ENV_FILE);
     let has_env = env_path.is_file();
-    let from_cloud = schema.is_cloud() && !has_env;
 
     let stdout_tty = std::io::stdout().is_terminal();
     let detection = detect_here(process_env, stdout_tty);
     let agent = detection.is_agent() || agent_flag;
     let policy = Policy::for_(&detection, agent_flag);
 
-    let environment = if from_cloud {
-        cloud::environment(environment, process_env)
+    // A header means the cloud; the local file only stands in while offline.
+    let fetched = if schema.is_cloud() {
+        let name = cloud::environment(environment, process_env);
+        match cloud_values(&schema, &name, process_env, &detection, &mut stderr) {
+            Ok(values) => Some((name, values)),
+            Err(error) if error.code == "offline" && has_env => {
+                let _ = writeln!(
+                    stderr,
+                    "penv: the cloud could not be reached, so this run used the local {ENV_FILE}."
+                );
+                None
+            }
+            Err(error) => return Err(error),
+        }
     } else {
-        resolve_environment(environment, process_env)?
+        None
     };
 
-    if schema.is_cloud() && has_env {
-        let _ = writeln!(
-            stderr,
-            "penv: {SCHEMA_FILE} names a cloud project; this run used the local {ENV_FILE}."
-        );
-    }
-
-    let mut values = if from_cloud {
-        cloud_values(&schema, &environment, process_env, &detection, &mut stderr)?
-    } else if has_env {
-        penv_dotenv::read(&read_file(&env_path)?).values()
-    } else {
-        Values::new()
+    let (environment, mut values) = match fetched {
+        Some(pair) => pair,
+        None => {
+            let name = resolve_environment(environment, process_env)?;
+            let values = if has_env {
+                penv_dotenv::read(&read_file(&env_path)?).values()
+            } else {
+                Values::new()
+            };
+            (name, values)
+        }
     };
     apply_defaults(&schema, &mut values);
 
