@@ -167,7 +167,10 @@ fn read_value(
     column: usize,
     out: &mut Dotenv,
 ) -> String {
-    let quote = first.chars().next().filter(|c| *c == '"' || *c == '\'');
+    let quote = first
+        .chars()
+        .next()
+        .filter(|c| ['"', '\'', '`'].contains(c));
     let Some(quote) = quote else {
         let raw = strip_inline_comment(first, line_no, out);
         return raw.trim_end().to_string();
