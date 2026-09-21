@@ -6,11 +6,15 @@ use thiserror::Error;
 /// A pair that cannot be written in the safe subset. Each names the key and the fix.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum WriteError {
-    #[error("{key} is not a valid key name. Use capitals, digits and underscores, such as DATABASE_URL.")]
+    #[error(
+        "{key} is not a valid key name. Use capitals, digits and underscores, such as DATABASE_URL."
+    )]
     InvalidKey { key: String },
     #[error("{key} appears twice. Keep one value per key.")]
     DuplicateKey { key: String },
-    #[error("{key} contains a $, which other tools read as a variable. Store the final value with no $ in it.")]
+    #[error(
+        "{key} contains a $, which other tools read as a variable. Store the final value with no $ in it."
+    )]
     Interpolation { key: String },
     #[error(
         "{key} has a line break together with a quote or a backslash, and a file of KEY=value lines cannot hold that."

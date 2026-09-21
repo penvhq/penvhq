@@ -90,7 +90,9 @@ pub fn address(schema: &Schema, environment: &str) -> Result<Address, CliError> 
         (Some(org), Some(project)) => Ok(Address::new(org, project, environment)),
         _ => Err(CliError::new(
             "not_cloud",
-            format!("{SCHEMA_FILE} is not linked to a cloud project: it has no # @penv=org/project line."),
+            format!(
+                "{SCHEMA_FILE} is not linked to a cloud project: it has no # @penv=org/project line."
+            ),
             "Run penv push. It creates the project and writes that line.",
         )),
     }

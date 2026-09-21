@@ -1103,7 +1103,10 @@ fn a_value_the_file_cannot_hold_is_left_out_and_the_rest_is_written() {
     let report = json_of(&stdout(&output));
     assert_eq!(report["keys"], 1);
     assert!(
-        report["left_out"][0].as_str().unwrap().starts_with("XSS_KEY "),
+        report["left_out"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("XSS_KEY "),
         "{report}"
     );
     let written = std::fs::read_to_string(workspace.path().join(".env")).unwrap();
