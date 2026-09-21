@@ -90,8 +90,10 @@ pub fn address(schema: &Schema, environment: &str) -> Result<Address, CliError> 
         (Some(org), Some(project)) => Ok(Address::new(org, project, environment)),
         _ => Err(CliError::new(
             "not_cloud",
-            format!("{SCHEMA_FILE} names no cloud project."),
-            "Run penv push to create one and write the header.",
+            format!(
+                "{SCHEMA_FILE} is not linked to a cloud project: it has no # @penv=org/project line."
+            ),
+            "Run penv push. It creates the project and writes that line.",
         )),
     }
 }
@@ -113,89 +115,89 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
     match &error {
         CloudError::NoCredential => CliError::new(
             "no_credential",
-            "penv has no credential for this host.".to_string(),
-            "Run penv login, or set PENV_TOKEN.",
+            "you are not signed in on this machine.".to_string(),
+            "Run penv login. On a server or in CI, set PENV_TOKEN.",
         )
         .with_exit(Exit::NoCredential),
 
         CloudError::Offline { .. } => CliError::new(
             "offline",
             error.to_string(),
-            "Check the connection; a cached development environment is the only thing penv runs offline.",
+            "Check your internet connection. Offline, penv run works only for development, from a local .env or from values it saved earlier.",
         )
         .with_exit(Exit::NoCredential),
 
         CloudError::Api(api) => match (api.status, api.code.as_str()) {
             (_, "cloned") => CliError::new(
                 "cloned",
-                "this host's key was seen on another machine, so the identity is locked.",
-                "Issue a new enrolment secret in the console and run penv machine enroll again.",
+                "this machine's identity was used from a second machine, so the server locked it.",
+                "Create a new enrolment secret in the console, then run penv machine enroll <secret>.",
             )
             .with_exit(Exit::Auth),
             (_, "dynamic") => CliError::new(
                 "dynamic",
-                "that key is minted by an engine; edit it in the console.",
-                "Change the engine it comes from in the console, or push a static key under another name.",
+                "the cloud generates that key's value on demand, so the CLI cannot write it.",
+                "Edit it in the console, or store your own value under a different key name.",
             )
             .with_exit(Exit::Validation),
             (_, "quota_exceeded") => CliError::new(
                 "quota_exceeded",
-                "the plan's project limit is reached.",
-                "Remove a project in the console, or raise the plan.",
+                "your plan allows no more projects.",
+                "Delete a project in the console, or upgrade the plan.",
             ),
             (_, "ambiguous") => CliError::new(
                 "ambiguous",
-                format!("{} names more than one thing on this server.", if where_.is_empty() { "that address" } else { &where_ }),
+                format!("{} matches more than one project or environment.", if where_.is_empty() { "that name" } else { &where_ }),
                 "Rename one of them in the console, then run this again.",
             ),
             (401, "expired") => CliError::new(
                 "expired",
-                "your login expired, run penv login.",
-                "Run penv login, or set PENV_TOKEN for a machine.",
+                "your login expired.",
+                "Run penv login. On a server or in CI, set a fresh PENV_TOKEN.",
             )
             .with_exit(Exit::Auth),
             (401, _) => CliError::new(
                 "unauthorized",
-                "the credential is not accepted by this server.",
-                "Run penv login again, or check PENV_TOKEN.",
+                "the server rejected your login or token.",
+                "Run penv login again. If PENV_TOKEN is set, check it is current.",
             )
             .with_exit(Exit::Auth),
             (403, _) => CliError::new(
                 "environment_refused",
-                format!("this identity may not read {where_}."),
-                "Ask the console for a role on that environment, or pick another with --env.",
+                format!("your account has no access to {where_}."),
+                "Ask an admin to give you a role on that environment in the console, or pick another with --env <name>.",
             )
             .with_exit(Exit::EnvironmentRefused),
             (404, _) => CliError::new(
                 "not_found",
-                format!("{where_} is not on this server."),
-                "Check the @penv header and the environment name in the console.",
+                format!("{where_} does not exist on the server."),
+                "Compare the # @penv=org/project line in .env.schema and the --env name with the console.",
             ),
             (429, _) => CliError::new(
                 "rate_limited",
                 match api.retry_after {
-                    Some(seconds) => format!("the server is rate limiting this identity for {seconds}s."),
-                    None => "the server is rate limiting this identity.".to_string(),
+                    Some(seconds) => format!("too many requests. The server will accept more in {seconds}s."),
+                    None => "too many requests.".to_string(),
                 },
-                "Wait and try again.",
+                "Wait, then run this again.",
             ),
             // The client already tried a server error a second time.
             (status, _) if status >= 500 => CliError::new(
                 "server_error",
-                format!("the server answered {status} twice."),
-                "Wait for penv.cloud to come back, then run this again.",
+                format!("the server failed twice with HTTP {status}. The problem is on penv.cloud, not in your project."),
+                "Wait a minute, then run this again.",
             ),
             (status, code) => CliError::new(
                 "server_refused",
-                format!("the server answered {status} {code}."),
-                "Run penv check, and try again once the console agrees.",
+                format!("the server refused the request with HTTP {status} ({code})."),
+                "Run penv check to find problems in .env.schema, fix them, then run this again.",
             ),
         },
 
         CloudError::Keychain(_) => CliError::new(
             "keychain",
             error.to_string(),
-            "Unlock the OS keychain, or pass PENV_TOKEN instead.",
+            "Unlock your system's password store (Keychain, Credential Manager), or set PENV_TOKEN.",
         ),
 
         CloudError::Url(_) => CliError::new(
@@ -207,7 +209,7 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
         _ => CliError::new(
             "cloud_failed",
             error.to_string(),
-            "Try again; penv check reports what it can see from here.",
+            "Run this again. If it keeps failing, run penv check to test your setup.",
         ),
     }
 }

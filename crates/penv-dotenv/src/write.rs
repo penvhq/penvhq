@@ -6,14 +6,18 @@ use thiserror::Error;
 /// A pair that cannot be written in the safe subset. Each names the key and the fix.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum WriteError {
-    #[error("{key} is not a usable key name. Use upper snake case, such as DATABASE_URL.")]
+    #[error(
+        "{key} is not a valid key name. Use capitals, digits and underscores, such as DATABASE_URL."
+    )]
     InvalidKey { key: String },
-    #[error("{key} is written twice. Keep one value per key.")]
+    #[error("{key} appears twice. Keep one value per key.")]
     DuplicateKey { key: String },
-    #[error("{key} contains a $. penv never expands values, so store the expanded value instead.")]
+    #[error(
+        "{key} contains a $, which other tools read as a variable. Store the final value with no $ in it."
+    )]
     Interpolation { key: String },
     #[error(
-        "{key} mixes quotes, backslashes and line breaks in a way no .env dialect reads back. Keep it in the cloud and read it with penv run."
+        "{key} has a line break together with a quote or a backslash, and a file of KEY=value lines cannot hold that."
     )]
     Unquotable { key: String },
 }

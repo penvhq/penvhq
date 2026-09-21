@@ -47,8 +47,8 @@ fn read(cloud: &Cloud, bearer: &Bearer, at: &Address, name: &str) -> Result<Repo
     else {
         return Err(CliError::new(
             "unexpected_answer",
-            "the server said nothing had changed for a read that asked for everything.",
-            "Try again.",
+            "the server sent back no values.",
+            "Run penv reveal again.",
         ));
     };
 
