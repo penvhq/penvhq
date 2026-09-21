@@ -370,7 +370,7 @@ fn a_vite_package_reads_import_meta_and_the_choice_is_remembered() {
     let written = json(&workspace.penv(&["--json", "gen", "ts", "--out", "apps/web/src/env.ts"]));
     let source = std::fs::read_to_string(workspace.path("apps/web/src/env.ts")).expect("the file");
     assert!(
-        source.contains("import.meta.env[key]"),
+        source.contains("import.meta.env.PORT"),
         "{written}\n{source}"
     );
     assert!(!source.contains("process.env"), "{source}");
