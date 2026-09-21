@@ -1086,6 +1086,72 @@ fn a_project_over_the_plan_limit_says_what_the_limit_is() {
     );
 }
 
+fn orgs_with_projects(mock: &Mock, slugs: &[&str]) {
+    mock.on(
+        "GET",
+        "/api/v1/orgs",
+        200,
+        &json!({ "orgs": [{ "slug": "acme", "name": "Acme" }] }).to_string(),
+    );
+    let projects: Vec<Value> = slugs.iter().map(|slug| json!({ "slug": slug })).collect();
+    mock.on(
+        "GET",
+        "/api/v1/orgs/acme/projects",
+        200,
+        &json!({ "projects": projects }).to_string(),
+    );
+}
+
+#[test]
+fn pull_links_a_folder_with_no_header_to_the_one_project_the_account_has() {
+    let mock = Mock::new();
+    orgs_with_projects(&mock, &[PROJECT]);
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &local_schema())]);
+    let output = workspace.run(&mock, &["--json", "pull", "--i-am-human"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        workspace
+            .read(".env.schema")
+            .starts_with(&format!("# @penv=acme/{PROJECT}")),
+        "{}",
+        workspace.read(".env.schema")
+    );
+}
+
+#[test]
+fn pull_with_no_header_and_several_projects_lists_them_when_it_cannot_ask() {
+    let mock = Mock::new();
+    orgs_with_projects(&mock, &[PROJECT, "billing"]);
+    let workspace = Workspace::new(&[(".env.schema", &local_schema())]);
+    let output = workspace.run(&mock, &["--json", "pull", "--i-am-human"]);
+
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "project_required", "{error}");
+    assert!(
+        error["message"].as_str().unwrap().contains("acme/billing"),
+        "{error}"
+    );
+    assert_eq!(workspace.read(".env.schema"), local_schema());
+}
+
+#[test]
+fn pull_with_no_header_and_no_login_says_to_sign_in() {
+    let mock = Mock::new();
+    let workspace = Workspace::new(&[(".env.schema", &local_schema())]);
+    let output = workspace
+        .command(&mock)
+        .env_remove("PENV_TOKEN")
+        .args(["--json", "pull", "--i-am-human"])
+        .output()
+        .expect("penv runs");
+
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "no_credential", "{error}");
+    assert!(error["fix"].as_str().unwrap().contains("penv login"));
+}
+
 #[test]
 fn a_value_the_file_cannot_hold_is_left_out_and_the_rest_is_written() {
     let mock = Mock::new();

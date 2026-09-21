@@ -7,7 +7,7 @@ use penv_dotenv::ensure_ignored;
 use serde_json::json;
 
 use crate::agent::detect_here;
-use crate::commands::cloud::{Cloud, address, environment, refuse};
+use crate::commands::cloud::{Cloud, address, environment, link, refuse};
 use crate::env::Env;
 use crate::error::{CliError, Exit};
 use crate::files::{ENV_FILE, GITIGNORE_FILE, read_file, show, write_file, write_private_file};
@@ -36,12 +36,17 @@ pub fn run(
         .with_exit(Exit::Auth));
     }
 
-    let (schema_path, schema) = super::load_schema(cwd)?;
+    let (schema_path, mut schema) = super::load_schema(cwd)?;
     let dir = schema_path.parent().unwrap_or(cwd).to_path_buf();
-    let at = address(&schema, &environment(env_flag, env))?;
 
+    // Signing in comes first: a folder with no header still has an account to look in.
     let cloud = Cloud::open(env, &detection)?;
     let bearer = cloud.bearer(env, schema.org.as_deref())?;
+    if !schema.is_cloud() {
+        let may_ask = !detection.is_agent() && !agent_flag && std::io::stdin().is_terminal();
+        link(&cloud, &bearer, &schema_path, &mut schema, may_ask)?;
+    }
+    let at = address(&schema, &environment(env_flag, env))?;
     let Fetched::Body { body, .. } = cloud
         .api
         .env_get(&bearer, &at, None, true)
