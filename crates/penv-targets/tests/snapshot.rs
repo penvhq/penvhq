@@ -80,7 +80,7 @@ fn the_ts_target_renames_its_properties_when_key_case_is_camel() {
     let schema = penv_schema::parse(FIXTURE).expect("the fixture parses");
     let out = render(&target, &schema.to_json(), VERSION).expect("the fixture renders");
     assert!(out.contains(
-        "  nextPublicAppUrl: (read(\"NEXT_PUBLIC_APP_URL\") ?? \"http://localhost:3000\") as string,"
+        "  nextPublicAppUrl: (process.env.NEXT_PUBLIC_APP_URL ?? \"http://localhost:3000\") as string,"
     ));
     assert!(
         out.contains("seen[\"DATABASE_URL\"]"),
@@ -102,9 +102,10 @@ fn the_ts_target_reads_through_the_runtime_the_options_name() {
         let schema = penv_schema::parse(FIXTURE).expect("the fixture parses");
         render(&target, &schema.to_json(), VERSION).expect("the fixture renders")
     };
-    assert!(reads("vite").contains("=> import.meta.env[key];"));
-    assert!(reads("deno").contains("=> Deno.env.get(key);"));
-    assert!(reads("node").contains("=> process.env[key];"));
+    // A bundler only inlines a key it can see spelled out.
+    assert!(reads("vite").contains("import.meta.env.DATABASE_URL"));
+    assert!(reads("deno").contains("Deno.env.get(\"DATABASE_URL\")"));
+    assert!(reads("node").contains("process.env.DATABASE_URL"));
     for runtime in ["vite", "deno"] {
         assert!(
             !reads(runtime).contains("process.env"),

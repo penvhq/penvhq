@@ -40,9 +40,12 @@ pub fn write(entries: &[(&str, &str)]) -> Result<String, WriteError> {
                 key: key.to_string(),
             });
         }
-        // A CRLF value is written as the LF one it means; only `\n` survives
-        // every reader.
-        let value = value.replace("\r\n", "\n");
+        // A trailing CR is line-ending residue; CRLF and a lone CR are written as
+        // the LF they mean, because only `\n` survives every reader.
+        let value = value
+            .trim_end_matches('\r')
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
         let quoted = quote(&value).ok_or_else(|| WriteError::Unquotable {
             key: key.to_string(),
         })?;
@@ -51,35 +54,22 @@ pub fn write(entries: &[(&str, &str)]) -> Result<String, WriteError> {
     Ok(out)
 }
 
-
-/// Quote a value so it survives the common .env dialects.
-/// Rejects only bare `\r` (no portable spelling).
+/// Only `\n` inside double quotes is an escape every dialect reads back, so a
+/// value carrying a `"` or a `\` goes in single quotes, where none are.
 fn quote(value: &str) -> Option<String> {
-    // Bare CR has no reliable representation across tools.
-    if value.contains('\r') {
-        return None;
-    }
-
-    // Characters that force us to use double quotes + escaping
-    let needs_escaping = value.is_empty()
-        || value.contains(['\n', '"', '\\', '#', '\''])
-        || value.chars().any(char::is_whitespace);
-
-    if !needs_escaping {
-        // Safe to write bare
-        return Some(value.to_string());
-    }
-
-    // Double-quote and escape the three sequences that every major
-    // parser understands: \n  \\  \"
-    let mut escaped = String::with_capacity(value.len() + 8);
-    for c in value.chars() {
-        match c {
-            '\n' => escaped.push_str("\\n"),
-            '\\' => escaped.push_str("\\\\"),
-            '"'  => escaped.push_str("\\\""),
-            _    => escaped.push(c),
+    let breaks = value.contains('\n');
+    let literal = value.contains(['"', '\\']);
+    if breaks {
+        if literal {
+            return None;
         }
+        return Some(format!("\"{}\"", value.replace('\n', "\\n")));
     }
-    Some(format!("\"{escaped}\""))
+    if literal {
+        return (!value.contains('\'')).then(|| format!("'{value}'"));
+    }
+    if value.contains('#') || value.contains('\'') || value.chars().any(char::is_whitespace) {
+        return Some(format!("\"{value}\""));
+    }
+    Some(value.to_string())
 }
