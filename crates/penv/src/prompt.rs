@@ -45,7 +45,7 @@ fn read_typed(prompt: &str) -> Result<String, CliError> {
     let Some(echo) = Echo::off() else {
         return Err(CliError::new(
             "no_echo_off",
-            "this terminal will not stop echoing what is typed, and a value is never shown.",
+            "this terminal cannot hide what you type, so penv will not ask for a secret here.",
             "Pipe the value on stdin instead: printf %s \"$VALUE\" | penv set <KEY>.",
         ));
     };

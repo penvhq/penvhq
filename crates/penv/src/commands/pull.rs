@@ -49,23 +49,26 @@ pub fn run(
     else {
         return Err(CliError::new(
             "unexpected_answer",
-            "the server said nothing had changed for a read that asked for everything.",
-            "Try again.",
+            "the server sent back no values.",
+            "Run penv pull again.",
         ));
     };
 
-    let pairs: Vec<(&str, &str)> = body
-        .keys
-        .iter()
-        .filter_map(|key| Some((key.name.as_str(), key.value.as_deref()?)))
-        .collect();
-    let contents = penv_dotenv::write(&pairs).map_err(|e| {
-        CliError::new(
-            "unwritable_value",
-            e.to_string(),
-            "Fix the value in the console, then pull again.",
-        )
-    })?;
+    // One value the file cannot hold must not cost the rest of the pull.
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    let mut left_out: Vec<String> = Vec::new();
+    for key in &body.keys {
+        let Some(value) = key.value.as_deref() else {
+            continue;
+        };
+        let pair = (key.name.as_str(), value);
+        match penv_dotenv::write(&[pair]) {
+            Ok(_) => pairs.push(pair),
+            Err(e) => left_out.push(e.to_string()),
+        }
+    }
+    let contents = penv_dotenv::write(&pairs)
+        .map_err(|e| CliError::new("unwritable_value", e.to_string(), "Run penv pull again."))?;
 
     let env_path = dir.join(ENV_FILE);
     write_private_file(&env_path, &contents)?;
@@ -88,10 +91,18 @@ pub fn run(
         pairs.len(),
         show(&env_path)
     )];
+    for reason in &left_out {
+        lines.push(format!("{} {reason}", style.yellow("left out")));
+    }
+    if !left_out.is_empty() {
+        lines.push(style.dim(
+            "Left-out keys stay in the cloud, and penv run still passes them to your command.",
+        ));
+    }
     if !body.skipped.is_empty() {
         lines.push(style.dim(&format!(
-            "{} key(s) the cloud resolves itself were skipped",
-            body.skipped.len()
+            "No value in the cloud yet, so not written: {}. Set one with penv set <KEY>.",
+            body.skipped.join(", ")
         )));
     }
 
@@ -101,6 +112,7 @@ pub fn run(
             "env": show(&env_path),
             "keys": pairs.len(),
             "skipped": body.skipped,
+            "left_out": left_out,
             "gitignore": { "path": show(&ignore_path), "added": update.added },
         }),
         lines.join("\n"),

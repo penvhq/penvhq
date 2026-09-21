@@ -99,6 +99,10 @@ impl Style {
     pub fn green(&self, text: &str) -> String {
         self.paint("32", text)
     }
+
+    pub fn yellow(&self, text: &str) -> String {
+        self.paint("33", text)
+    }
 }
 
 pub struct Output {

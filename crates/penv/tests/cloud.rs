@@ -1026,7 +1026,7 @@ fn a_key_an_engine_mints_says_where_it_is_edited() {
     let error = json_of(&stderr(&output));
     assert_eq!(error["error"], "dynamic");
     assert!(
-        error["message"].as_str().unwrap().contains("console"),
+        error["fix"].as_str().unwrap().contains("console"),
         "{error}"
     );
 }
@@ -1042,7 +1042,7 @@ fn an_expired_login_says_to_sign_in_again() {
     let error = json_of(&stderr(&output));
     assert_eq!(error["error"], "expired");
     assert!(
-        error["message"].as_str().unwrap().contains("penv login"),
+        error["fix"].as_str().unwrap().contains("penv login"),
         "{error}"
     );
 }
@@ -1084,6 +1084,30 @@ fn a_project_over_the_plan_limit_says_what_the_limit_is() {
         !workspace.read(".env.schema").contains("@penv="),
         "no header for a project that was never created"
     );
+}
+
+#[test]
+fn a_value_the_file_cannot_hold_is_left_out_and_the_rest_is_written() {
+    let mock = Mock::new();
+    let body = json!({
+        "keys": [
+            { "path": "", "name": "PORT", "kind": "static", "version": 1, "value": "3000" },
+            { "path": "", "name": "XSS_KEY", "kind": "static", "version": 1, "value": "a\"b\nc" },
+        ]
+    });
+    mock.on("GET", ENVS, 200, &body.to_string());
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let output = workspace.run(&mock, &["--json", "pull", "--i-am-human"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json_of(&stdout(&output));
+    assert_eq!(report["keys"], 1);
+    assert!(
+        report["left_out"][0].as_str().unwrap().starts_with("XSS_KEY "),
+        "{report}"
+    );
+    let written = std::fs::read_to_string(workspace.path().join(".env")).unwrap();
+    assert_eq!(written, "PORT=3000\n");
 }
 
 #[cfg(unix)]
