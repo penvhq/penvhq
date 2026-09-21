@@ -1092,7 +1092,7 @@ fn a_value_the_file_cannot_hold_is_left_out_and_the_rest_is_written() {
     let body = json!({
         "keys": [
             { "path": "", "name": "PORT", "kind": "static", "version": 1, "value": "3000" },
-            { "path": "", "name": "XSS_KEY", "kind": "static", "version": 1, "value": "a\"b\nc" },
+            { "path": "", "name": "XSS_KEY", "kind": "static", "version": 1, "value": "a\"b'c`d" },
         ]
     });
     mock.on("GET", ENVS, 200, &body.to_string());

@@ -90,20 +90,30 @@ fn the_writer_refuses_what_the_subset_excludes() {
             key: "a-key".into()
         })
     );
-    // A line break needs double quotes, and a backslash cannot be written inside
-    // them without an escape no dialect agrees on.
+    // A backslash needs a literal quote, and this value uses up both of them.
     assert_eq!(
-        write(&[("A_KEY", "one\ntwo\\three")]),
+        write(&[("A_KEY", r"a \ and a ' and a `")]),
         Err(WriteError::Unquotable {
             key: "A_KEY".into()
         })
     );
-    assert_eq!(
-        write(&[("A_KEY", r"a \ and a '")]),
-        Err(WriteError::Unquotable {
-            key: "A_KEY".into()
-        })
-    );
+}
+
+#[test]
+fn a_value_with_breaks_and_quotes_is_wrapped_in_the_quote_it_lacks() {
+    let pairs = [
+        ("XSS_KEY", "<script>alert(\"x\")</script>\nnext \\ line"),
+        ("BOTH_QUOTES", "it's \"quoted\"\nand broken"),
+        ("BACKTICK", "`tick"),
+    ];
+    let text = write(&pairs).unwrap();
+    assert!(text.starts_with("XSS_KEY='<script>"), "{text}");
+    assert!(text.contains("BOTH_QUOTES=`it's"), "{text}");
+
+    let env = read(&text);
+    for (key, value) in pairs {
+        assert_eq!(env.get(key), Some(value), "wrote {text:?}");
+    }
 }
 
 #[test]
