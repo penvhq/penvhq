@@ -101,12 +101,38 @@ They live in the `[options]` table of `.penv/targets/<name>/target.toml`, the fi
 
 A language target is a folder holding a `target.toml` and a template. Drop one into `.penv/targets/go/` and `penv gen go` works; a folder holding only a `target.toml` inherits the rest. The binary knows no language by name.
 
+## Local files
+
+penv reads the files dotenv-flow, Next.js and Vite users already have, and any [varlock](https://varlock.dev) `.env.schema`: decorators penv does not act on are warnings, not failures.
+
+```bash
+penv run --env production -- node server.js   # .env -> .env.local -> .env.production -> .env.production.local
+penv check --env staging                      # same layers, validated; @rotate reminders included
+penv scan --install-hook                      # refuse a commit that holds a secret value
+```
+
+```dotenv
+# .env.schema
+# @schema=1 @currentEnv=$APP_ENV
+
+# @type=string(startsWith=sk_) @rotate=90d
+STRIPE_SECRET_KEY=
+
+# @type=url
+DATABASE_URL=postgres://${DB_HOST}:${DB_PORT:-5432}/app
+
+# @type=url
+REPLICA_URL=penv(production/DATABASE_URL)
+```
+
+Functions, `${KEY}` expansion and `penv()` addresses: [Design, section 2](./docs/Design.md#values). Under an `@penv=` header, a local file still wins over the cloud on the machine that holds it, and `run` names every key it replaced.
+
 ## Coding agents
 
 An agent runs as you, so it can read what you can read. penv narrows that:
 
 - Nothing at rest once pushed. There is no `.env` to `cat`.
-- `penv run` injects into the child process only, and scrubs every sensitive value, in raw, hex, base64 and URL-encoded forms, from the child's output whenever an agent session is detected.
+- `penv run` injects into the child process only, and scrubs every sensitive value from the child's output whenever an agent session is detected, in each encoded form [`penv-mask`](./crates/penv-mask/src/lib.rs) lists.
 - `penv guard` writes what each harness actually enforces, from the schema: deny rules and a sandbox block for Claude Code, a permission profile for Codex, deny rules and fail-closed hooks for Cursor, and the equivalents for Copilot, Gemini, Cline, Windsurf and Amp. The hook is the penv binary itself, never a script that fails open.
 - `reveal` needs a person to approve in the console. An agent can ask; a human clicks.
 
@@ -118,13 +144,14 @@ The claim penv makes, printed by `penv guard --check`, is only what is true: it 
 |---|---|
 | `penv` | State and the one next command |
 | `init [--guards NAMES\|--no-guards] [--output PATH]` | `.env` to `.env.schema`, picks the harnesses to guard, generates the typed files |
-| `run -- cmd` | Validate, inject, mask |
-| `check [KEY]` | Schema, values, drift, guard coverage |
+| `run [--env E] -- cmd` | Layer, compute, validate, inject, mask |
+| `check [KEY] [--env E]` | Schema, values, drift, `@rotate` reminders, guard coverage |
+| `scan [PATH...] [--staged] [--install-hook]` | Secret values in what git would commit |
 | `ls` | Names and types, values masked |
 | `gen <target> [--out PATH] [--check] [--options]` | Typed file for a language |
 | `guard` | Harness configs from the schema |
 | `push` / `pull` | Values to and from the cloud |
-| `set` / `unset` | Write a value, never echoed |
+| `set` / `unset` | Write a value, never echoed; to the cloud under a header, to `.env` or `.env.<env>` without one |
 | `reveal KEY` | One value, after console approval |
 | `login` / `logout` | Device code, credential in the OS keychain |
 | `machine enroll` | Bind a server keypair |

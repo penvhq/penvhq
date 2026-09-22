@@ -28,14 +28,46 @@ pub fn is_valid_key_name(name: &str) -> bool {
 /// The grammar version this build writes and understands.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// `@defaultRequired`: `infer` makes a key required only when the schema gives it a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequiredDefault {
+    #[default]
+    Yes,
+    No,
+    Infer,
+}
+
+impl RequiredDefault {
+    pub fn to_json(self) -> Value {
+        match self {
+            RequiredDefault::Yes => Value::Bool(true),
+            RequiredDefault::No => Value::Bool(false),
+            RequiredDefault::Infer => Value::String("infer".into()),
+        }
+    }
+}
+
+/// `@import(path, KEY, ...)`: another schema's keys, all of them when none are named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    pub path: String,
+    pub keys: Vec<String>,
+    pub line: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     pub org: Option<String>,
     pub project: Option<String>,
     pub schema_version: u32,
     pub default_sensitive: bool,
-    pub default_required: bool,
+    pub default_required: RequiredDefault,
+    /// `@currentEnv=$KEY`: the key whose value names the environment.
+    pub current_env: Option<String>,
+    pub imports: Vec<Import>,
     pub keys: Vec<Key>,
+    /// Lines penv read past: varlock-only or unknown decorators, types and constraints.
+    pub warnings: Vec<Diagnostic>,
 }
 
 impl Default for Schema {
@@ -45,8 +77,11 @@ impl Default for Schema {
             project: None,
             schema_version: SCHEMA_VERSION,
             default_sensitive: true,
-            default_required: true,
+            default_required: RequiredDefault::Yes,
+            current_env: None,
+            imports: Vec::new(),
             keys: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -54,6 +89,18 @@ impl Default for Schema {
 impl Schema {
     pub fn get(&self, name: &str) -> Option<&Key> {
         self.keys.iter().find(|k| k.name == name)
+    }
+
+    /// The schema as one environment sees it: `forEnv` requirements settled.
+    pub fn for_environment(&self, environment: &str) -> Schema {
+        let mut out = self.clone();
+        for key in &mut out.keys {
+            if let Some((envs, required)) = &key.required_in {
+                let listed = envs.iter().any(|e| e == environment);
+                key.required = if listed { *required } else { !*required };
+            }
+        }
+        out
     }
 
     /// True when the file names a cloud project.
@@ -67,7 +114,9 @@ impl Schema {
             "org": self.org,
             "project": self.project,
             "defaultSensitive": self.default_sensitive,
-            "defaultRequired": self.default_required,
+            "defaultRequired": self.default_required.to_json(),
+            "currentEnv": self.current_env,
+            "imports": self.imports.iter().map(|i| json!({ "path": i.path, "keys": i.keys })).collect::<Vec<_>>(),
             "keys": self.keys.iter().map(Key::to_json).collect::<Vec<_>>(),
         })
     }
@@ -81,19 +130,22 @@ pub struct Key {
     pub required: bool,
     /// `@required` / `@optional` when written; `None` means required was inferred.
     pub required_decorator: Option<bool>,
+    /// `@required=forEnv(a, b)` (true) or `@optional=forEnv(a, b)` (false): the
+    /// environments the rule holds in. [`Schema::for_environment`] applies it.
+    pub required_in: Option<(Vec<String>, bool)>,
     pub sensitive: bool,
     /// `@sensitive` / `@sensitive=false` when written.
     pub sensitive_decorator: Option<bool>,
     pub default: Option<String>,
+    /// The default is a function call or holds `${KEY}`, resolved against the other values.
+    pub default_expr: bool,
     pub example: Option<String>,
     pub docs: Option<String>,
-    pub since: Option<String>,
     pub deprecated: Option<String>,
+    /// `@rotate`: how long a value may live before `check` reminds you to rotate it.
     pub rotate: Option<String>,
     /// The spec's `@dynamic` / `@static` pair: preserved, never acted on.
     pub dynamic: Option<bool>,
-    /// penv's own marker: the engine the cloud resolves the value from.
-    pub dynamic_from: Option<String>,
 }
 
 impl Key {
@@ -102,16 +154,16 @@ impl Key {
             "name": self.name,
             "description": self.description,
             "type": self.ty.to_json(),
-            "required": self.required,
+                        "required": self.required,
+            "requiredIn": self.required_in.as_ref().map(|(envs, required)| json!({ "environments": envs, "required": required })),
             "sensitive": self.sensitive,
             "default": self.default,
+            "defaultExpr": self.default_expr,
             "example": self.example,
             "docs": self.docs,
-            "since": self.since,
             "deprecated": self.deprecated,
             "rotate": self.rotate,
             "dynamic": self.dynamic,
-            "dynamicFrom": self.dynamic_from,
         })
     }
 }

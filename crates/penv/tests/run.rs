@@ -67,6 +67,15 @@ impl Workspace {
         &self.0
     }
 
+    /// `penv <args>`, with no agent flag.
+    fn penv(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_penv"))
+            .current_dir(&self.0)
+            .args(args)
+            .output()
+            .expect("penv runs")
+    }
+
     /// `penv --agent run [args] -- <shell> <flag> <script>`.
     fn run(&self, args: &[&str], script: &str) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_penv"));
@@ -143,15 +152,124 @@ fn a_missing_value_stops_the_child_with_exit_three() {
 }
 
 #[test]
-fn another_environment_is_refused_with_exit_six() {
+fn another_environment_layers_its_own_file_over_env() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\nPORT=3000\n")),
+        (".env.production", "PORT=8080\n"),
+    ]);
+    let output = workspace.run(&["--env", "production"], ECHO_VALUES);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("8080"), "{}", stdout(&output));
+    assert!(!stdout(&output).contains(SECRET));
+}
+
+#[test]
+fn an_environment_with_no_file_runs_and_says_which_files_it_used() {
     let workspace = Workspace::new(&[
         (".env.schema", &local_schema()),
         (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
     ]);
-    let output = workspace.run(&["--env", "production"], ECHO_VALUES);
+    let output = workspace.run(&["--env", "staging"], ECHO_VALUES);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("no .env.staging"),
+        "{}",
+        stderr(&output)
+    );
+}
 
-    assert_eq!(output.status.code(), Some(6));
-    assert!(stderr(&output).contains("cloud"), "{}", stderr(&output));
+#[test]
+fn current_env_names_the_environment_from_a_key() {
+    let schema = format!(
+        "# @schema=1 @currentEnv=$APP_ENV\n\n# @type=string @sensitive=false\nAPP_ENV=development\n\n{KEYS}"
+    );
+    let workspace = Workspace::new(&[
+        (".env.schema", &schema),
+        (
+            ".env",
+            &format!("STRIPE_SECRET_KEY={SECRET}\nAPP_ENV=production\n"),
+        ),
+        (".env.production", "PORT=9090\n"),
+    ]);
+    let output = workspace.run(&[], ECHO_VALUES);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("9090"), "{}", stdout(&output));
+}
+
+#[test]
+fn expansion_and_penv_references_resolve_from_the_local_files() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (
+            ".env",
+            &format!("STRIPE_SECRET_KEY={SECRET}\nPORT=penv(staging/PORT)\n"),
+        ),
+        (".env.staging", "PORT=${STAGING_PORT:-7070}\n"),
+    ]);
+    let output = workspace.run(&[], ECHO_VALUES);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("7070"), "{}", stdout(&output));
+}
+
+#[test]
+fn a_penv_reference_to_an_environment_with_no_file_creates_an_empty_one() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (
+            ".env",
+            "STRIPE_SECRET_KEY=penv(test/STRIPE_SECRET_KEY)
+",
+        ),
+    ]);
+    let output = workspace.run(&[], ECHO_VALUES);
+    assert!(
+        workspace.path().join(".env.test").is_file(),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "the empty value is still required"
+    );
+}
+
+#[test]
+fn check_reminds_about_an_overdue_rotation_and_still_exits_zero() {
+    let schema = "# @schema=1\n\n# @type=string(startsWith=sk_) @rotate=1h\nSTRIPE_SECRET_KEY=\n";
+    let workspace = Workspace::new(&[
+        (".env.schema", schema),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    std::fs::create_dir_all(workspace.path().join(".penv")).unwrap();
+    std::fs::write(
+        workspace.path().join(".penv/config.toml"),
+        "[rotation]\nSTRIPE_SECRET_KEY = \"2020-01-01T00:00:00Z\"\n",
+    )
+    .unwrap();
+    let output = workspace.penv(&["check"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    let text = stdout(&output);
+    assert!(text.contains("\"due\": \"2020-01-01T01:00:00Z\""), "{text}");
+    assert!(text.contains("\"overdue\": true"), "{text}");
+}
+
+#[test]
+fn scan_names_the_file_line_and_key_and_never_the_value() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        ("app.js", &format!("// setup\nconst key = \"{SECRET}\";\n")),
+    ]);
+    let output = workspace.penv(&["scan", "app.js"]);
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("\"line\": 2") && text.contains("STRIPE_SECRET_KEY"),
+        "{text}"
+    );
+    assert!(!text.contains(SECRET));
 }
 
 #[test]
@@ -339,6 +457,90 @@ fn a_bare_name_finds_its_cmd_shim_on_windows() {
     assert!(
         stdout(&output).contains("shim ran 3000"),
         "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn a_folder_with_only_an_environment_file_still_gets_a_schema_and_runs() {
+    let workspace = Workspace::new(&[(
+        ".env.local",
+        &format!("STRIPE_SECRET_KEY={SECRET}\nPORT=3000\n"),
+    )]);
+    let output = workspace.run(&[], ECHO_VALUES);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let schema = std::fs::read_to_string(workspace.path().join(".env.schema")).unwrap();
+    assert!(schema.contains("STRIPE_SECRET_KEY="), "{schema}");
+    assert!(
+        !workspace.path().join(".env").exists(),
+        "no empty .env when another value file holds the values"
+    );
+    assert!(
+        stderr(&output).contains(".env.local"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(stdout(&output).contains("3000"));
+}
+
+#[test]
+fn bare_penv_names_every_value_file_and_the_environment() {
+    let schema = format!(
+        "# @schema=1 @currentEnv=$APP_ENV\n\n# @type=string @sensitive=false\nAPP_ENV=staging\n\n{KEYS}"
+    );
+    let workspace = Workspace::new(&[
+        (".env.schema", &schema),
+        (".env", "PORT=3000\n"),
+        (".env.staging", "PORT=4000\n"),
+        (".env.example", "PORT=\n"),
+    ]);
+    let text = stdout(&workspace.penv(&["--json"]));
+    assert!(text.contains("\"environment\": \"staging\""), "{text}");
+    assert!(
+        text.contains(&format!("\"version\": \"{}\"", env!("CARGO_PKG_VERSION"))),
+        "{text}"
+    );
+    assert!(
+        !workspace.path().join(".env.local").exists(),
+        "bare penv writes nothing"
+    );
+    assert!(
+        text.contains(".env.staging") && !text.contains(".env.example"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_current_env_key_follows_the_environment_however_it_was_chosen() {
+    let schema = format!(
+        "# @schema=1 @currentEnv=$APP_ENV\n\n# @type=string @sensitive=false\nAPP_ENV=development\n\n# @type=string @sensitive=false\nAPI=if(eq($APP_ENV, production), prod.test, dev.test)\n\n{KEYS}"
+    );
+    let workspace = Workspace::new(&[
+        (".env.schema", &schema),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let script = if cfg!(windows) {
+        "echo %APP_ENV% %API%"
+    } else {
+        "echo $APP_ENV $API"
+    };
+    let output = workspace.run(&["--env", "production"], script);
+    assert!(
+        stdout(&output).contains("production prod.test"),
+        "{}",
+        stdout(&output)
+    );
+    let mut command = Command::new(env!("CARGO_BIN_EXE_penv"));
+    let output = command
+        .current_dir(workspace.path())
+        .env("APP_ENV", "production")
+        .args(["--agent", "run", "--", SHELL, SHELL_FLAG, script])
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&output).contains("production prod.test"),
+        "the process environment wins: {}",
         stdout(&output)
     );
 }

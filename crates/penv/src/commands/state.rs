@@ -8,13 +8,20 @@ use crate::agent::detect_here;
 use crate::commands::cloud::{self, Cloud};
 use crate::env::Env;
 use crate::error::CliError;
-use crate::files::{ENV_FILE, SCHEMA_FILE, find_schema, read_file, show};
+use crate::files::{ENV_FILE, SCHEMA_FILE, find_schema, read_file, show, value_files};
 use crate::output::{Output, Report};
 
-/// The state, and the one command that follows from it.
+/// Where values come from (local files or the cloud), and the one command that follows.
 pub fn run(out: &Output, cwd: &Path, env: &Env) -> Result<Report, CliError> {
     let schema_path = find_schema(cwd);
-    let has_env = cwd.join(ENV_FILE).is_file();
+    // Values sit beside the schema; with no schema yet, beside the caller.
+    let dir = schema_path
+        .as_deref()
+        .and_then(Path::parent)
+        .unwrap_or(cwd)
+        .to_path_buf();
+    let found = value_files(&dir);
+    let listed = found.iter().map(|p| show(p)).collect::<Vec<_>>().join(", ");
     let detection = detect_here(env, std::io::stdout().is_terminal());
     let policy = Policy::for_(&detection, false);
 
@@ -29,25 +36,47 @@ pub fn run(out: &Output, cwd: &Path, env: &Env) -> Result<Report, CliError> {
         )
     });
 
-    let (state, next, note, credential, cache_age) = match (&schema_path, &cloud) {
-        (None, _) if has_env => (
-            "unconfigured",
+    let environment = schema
+        .as_ref()
+        .map(|s| crate::source::environment(None, env, s, &dir))
+        .unwrap_or_else(|| crate::source::DEFAULT_ENVIRONMENT.to_string());
+
+    // Only the files this environment's cascade reads, in the order it reads them.
+    let layered: Vec<String> = penv_dotenv::cascade(&environment)
+        .iter()
+        .map(|name| dir.join(name))
+        .filter(|path| path.is_file())
+        .map(|path| show(&path))
+        .collect();
+
+    let (location, next, note, credential, cache_age) = match (&schema_path, &cloud) {
+        (None, _) if !found.is_empty() => (
+            "local",
             "penv init",
-            format!("There is a {ENV_FILE} here and no schema for it yet."),
+            format!("There are values here ({listed}) and no schema for them yet."),
             None,
             None,
         ),
         (None, _) => (
-            "unconfigured",
+            "local",
             "penv init",
-            format!("Write a {ENV_FILE} first; penv init reads it."),
+            format!("Write a {ENV_FILE} first; penv init reads it and every .env.* beside it."),
             None,
             None,
         ),
         (Some(_), None) => (
             "local",
             "penv check",
-            format!("Values come from {ENV_FILE} next to the schema."),
+            if layered.is_empty() {
+                format!(
+                    "No value files for {environment} next to the schema yet; write {ENV_FILE} or run penv set <KEY>."
+                )
+            } else {
+                format!(
+                    "Values for {environment} come from {}, later files winning.",
+                    layered.join(", ")
+                )
+            },
             None,
             None,
         ),
@@ -71,54 +100,60 @@ pub fn run(out: &Output, cwd: &Path, env: &Env) -> Result<Report, CliError> {
     };
 
     let style = out.style();
-    let mut text = format!(
-        "{}   {}\n{}    {}",
-        style.dim("state"),
-        style.bold(state),
-        style.dim("next"),
-        next
-    );
+    // One label column, wide enough for the longest label, padded before styling.
+    let row =
+        |label: &str, value: String| format!("{} {value}", style.dim(&format!("{label:<10}")));
+    let mut rows = vec![
+        row("version", env!("CARGO_PKG_VERSION").to_string()),
+        row("location", style.bold(location)),
+        row("env", environment.clone()),
+        row("next", next.to_string()),
+    ];
     if let Some((org, project)) = &cloud {
-        text.push_str(&format!(
-            "\n{} {org}/{project}\n{} {}",
-            style.dim("project"),
-            style.dim("credential"),
+        rows.push(row("project", format!("{org}/{project}")));
+        rows.push(row(
+            "credential",
             if credential == Some(true) {
                 "present"
             } else {
                 "none"
             }
+            .to_string(),
         ));
-        text.push_str(&format!(
-            "\n{}   {}",
-            style.dim("cache"),
+        rows.push(row(
+            "cache",
             match cache_age {
                 Some(seconds) => format!("{seconds}s old"),
                 None => "empty".to_string(),
-            }
+            },
         ));
     }
     if let Some(name) = detection.name() {
-        text.push_str(&format!(
-            "\n{}   {} ({})\n{} {}",
-            style.dim("agent"),
-            style.bold(name),
-            detection.confidence.as_str(),
-            style.dim("masking"),
-            if policy.mask { "on" } else { "off" },
+        rows.push(row(
+            "agent",
+            format!("{} ({})", style.bold(name), detection.confidence.as_str()),
+        ));
+        rows.push(row(
+            "masking",
+            if policy.mask { "on" } else { "off" }.to_string(),
         ));
     }
+    let mut text = rows.join("\n");
     text.push('\n');
     text.push_str(&style.dim(&note));
 
     Ok(Report::new(
         json!({
-            "state": state,
+            "version": env!("CARGO_PKG_VERSION"),
+            "location": location,
             "schema": schema_path.as_deref().map(show),
             "project": cloud.as_ref().map(|(org, project)| format!("{org}/{project}")),
             "org": cloud.as_ref().map(|(org, _)| org.clone()),
             "credential": credential,
             "cacheAge": cache_age,
+            "environment": environment,
+            "valueFiles": found.iter().map(|p| show(p)).collect::<Vec<_>>(),
+            "layered": layered,
             "next": next,
             "note": note,
             "agent": agent_json(&detection),

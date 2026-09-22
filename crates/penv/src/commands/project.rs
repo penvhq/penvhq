@@ -133,7 +133,8 @@ fn relink(cwd: &Path, org: &str, old: &str, slug: &str) -> Result<bool, CliError
     let Some(path) = find_schema(cwd) else {
         return Ok(false);
     };
-    let Ok(mut schema) = penv_schema::parse(&read_file(&path)?) else {
+    let source = read_file(&path)?;
+    let Ok(schema) = penv_schema::parse(&source) else {
         return Ok(false);
     };
     let linked = schema
@@ -147,8 +148,7 @@ fn relink(cwd: &Path, org: &str, old: &str, slug: &str) -> Result<bool, CliError
     if !linked {
         return Ok(false);
     }
-    schema.project = Some(slug.to_string());
-    write_file(&path, &penv_schema::render(&schema))?;
+    write_file(&path, &penv_schema::set_header(&source, org, slug))?;
     Ok(true)
 }
 

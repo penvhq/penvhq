@@ -1,6 +1,21 @@
 use crate::ir::{
-    BaseType, Diagnostic, Key, SCHEMA_VERSION, Schema, Type, is_public_prefixed, is_valid_key_name,
+    BaseType, Diagnostic, Import, Key, RequiredDefault, SCHEMA_VERSION, Schema, Type,
+    is_public_prefixed, is_valid_key_name,
 };
+use crate::resolve::is_expression;
+use crate::rotate::Span;
+
+/// Header decorators varlock reads and penv does not act on. They are named so a
+/// header block is still recognised as one, and each is reported once.
+const VARLOCK_HEADER: [&str; 7] = [
+    "generateTypes",
+    "plugin",
+    "redactLogs",
+    "preventLeaks",
+    "envFlag",
+    "setValuesBulk",
+    "disable",
+];
 
 /// Parse a `.env.schema`. Every problem in the file is reported at once.
 pub fn parse(input: &str) -> Result<Schema, Vec<Diagnostic>> {
@@ -25,6 +40,8 @@ struct Parser {
 struct Decorator {
     name: String,
     value: Option<String>,
+    /// Written as `@name(args)` rather than `@name=value`.
+    call: bool,
     line: u32,
     column: u32,
 }
@@ -44,8 +61,13 @@ impl Block {
         self.decorators.iter().any(|d| {
             matches!(
                 d.name.as_str(),
-                "penv" | "schema" | "defaultSensitive" | "defaultRequired"
-            )
+                "penv"
+                    | "schema"
+                    | "defaultSensitive"
+                    | "defaultRequired"
+                    | "currentEnv"
+                    | "import"
+            ) || VARLOCK_HEADER.contains(&d.name.as_str())
         })
     }
 }
@@ -54,6 +76,13 @@ impl Parser {
     fn error(&mut self, line: u32, column: u32, code: &str, message: impl Into<String>) {
         self.diags
             .push(Diagnostic::new(line, column, code, message));
+    }
+
+    /// Read past, reported, never fatal: a varlock schema must parse here.
+    fn warn(&mut self, d: &Decorator, code: &str, message: impl Into<String>) {
+        self.schema
+            .warnings
+            .push(Diagnostic::new(d.line, d.column, code, message));
     }
 
     fn run(&mut self, input: &str) {
@@ -67,6 +96,17 @@ impl Parser {
             let trimmed = line.trim();
 
             if trimmed.is_empty() {
+                if !block.is_empty() {
+                    if !first_block_done {
+                        self.take_header(&block);
+                    }
+                    first_block_done = true;
+                }
+                block = Block::default();
+                continue;
+            }
+
+            if is_divider(trimmed) {
                 if !block.is_empty() {
                     if !first_block_done {
                         self.take_header(&block);
@@ -143,7 +183,41 @@ impl Parser {
                 return;
             }
             let mut value = None;
-            if i < chars.len() && chars[i] == '=' {
+            let mut call = false;
+            if i < chars.len() && chars[i] == '(' {
+                let open = i;
+                let mut depth = 0usize;
+                let mut quoted: Option<char> = None;
+                while i < chars.len() {
+                    let c = chars[i];
+                    match quoted {
+                        Some(q) if c == q => quoted = None,
+                        Some(_) => {}
+                        None if c == '"' || c == '\'' => quoted = Some(c),
+                        None if c == '(' => depth += 1,
+                        None if c == ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        None => {}
+                    }
+                    i += 1;
+                }
+                if i >= chars.len() {
+                    self.error(
+                        line_no,
+                        column,
+                        "invalid_decorator",
+                        format!("line {line_no}: @{name}( is never closed"),
+                    );
+                    return;
+                }
+                value = Some(chars[open + 1..i].iter().collect());
+                call = true;
+                i += 1;
+            } else if i < chars.len() && chars[i] == '=' {
                 i += 1;
                 match self.read_value(&chars, &mut i, line_no, base_col) {
                     Some(v) => value = Some(v),
@@ -153,6 +227,7 @@ impl Parser {
             block.decorators.push(Decorator {
                 name,
                 value,
+                call,
                 line: line_no,
                 column,
             });
@@ -245,15 +320,69 @@ impl Parser {
                     }
                 }
                 "defaultRequired" => {
-                    if let Some(v) = self.flag(d) {
-                        self.schema.default_required = v;
+                    if d.value.as_deref() == Some("infer") {
+                        self.schema.default_required = RequiredDefault::Infer;
+                    } else if let Some(v) = self.flag(d) {
+                        self.schema.default_required = if v {
+                            RequiredDefault::Yes
+                        } else {
+                            RequiredDefault::No
+                        };
                     }
                 }
-                other => self.error(
-                    d.line,
-                    d.column,
+                "currentEnv" => match d.value.as_deref().map(|v| v.trim_start_matches('$')) {
+                    Some(key) if is_valid_key_name(key) => {
+                        self.schema.current_env = Some(key.to_string());
+                    }
+                    _ => self.error(
+                        d.line,
+                        d.column,
+                        "invalid_header",
+                        format!("line {}: @currentEnv takes a key, such as $APP_ENV", d.line),
+                    ),
+                },
+                "import" => {
+                    let args: Vec<String> = d
+                        .value
+                        .as_deref()
+                        .map(split_args)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|a| unquote(a.trim()))
+                        .filter(|a| !a.is_empty())
+                        .collect();
+                    match args.split_first() {
+                        Some((path, keys)) if d.call => self.schema.imports.push(Import {
+                            path: path.clone(),
+                            keys: keys.to_vec(),
+                            line: d.line,
+                        }),
+                        _ => self.error(
+                            d.line,
+                            d.column,
+                            "invalid_header",
+                            format!(
+                                "line {}: @import takes a path and optional keys, such as @import(../.env.schema, API_KEY)",
+                                d.line
+                            ),
+                        ),
+                    }
+                }
+                "plugin" => self.warn(
+                    d,
+                    "varlock_only",
+                    format!(
+                        "line {}: @plugin is varlock's; penv loads no plugins and ignored it",
+                        d.line
+                    ),
+                ),
+                other => self.warn(
+                    d,
                     "unknown_decorator",
-                    format!("line {}: @{other} is not a header decorator", d.line),
+                    format!(
+                        "line {}: penv ignored @{other}, which it does not act on",
+                        d.line
+                    ),
                 ),
             }
         }
@@ -338,7 +467,10 @@ impl Parser {
             return;
         }
 
-        let raw_default = unquote(line[eq + 1..].trim());
+        let written = line[eq + 1..].trim();
+        let single = written.len() >= 2 && written.starts_with('\'') && written.ends_with('\'');
+        let raw_default = unquote(written);
+        let default_expr = !single && is_expression(&raw_default);
         let default = if raw_default.is_empty() {
             None
         } else {
@@ -348,6 +480,7 @@ impl Parser {
         let mut key = Key {
             name,
             default,
+            default_expr,
             ..Key::default()
         };
         let mut type_seen = false;
@@ -361,35 +494,67 @@ impl Parser {
                     }
                 }
                 "required" | "optional" => {
-                    if d.value.is_some() {
-                        self.error(
-                            d.line,
-                            d.column,
-                            "invalid_decorator_value",
+                    let written = match d.value.as_deref() {
+                        None | Some("true") => Some(true),
+                        Some("false") => Some(false),
+                        Some(_) => None,
+                    };
+                    let per_env = d
+                        .value
+                        .as_deref()
+                        .and_then(|v| v.strip_prefix("forEnv("))
+                        .and_then(|v| v.strip_suffix(')'))
+                        .map(|inner| {
+                            split_args(inner)
+                                .iter()
+                                .map(|a| unquote(a.trim()))
+                                .filter(|a| !a.is_empty())
+                                .collect::<Vec<_>>()
+                        });
+                    match (written, per_env) {
+                        (Some(v), _) => key.required_decorator = Some(v == (d.name == "required")),
+                        (None, Some(envs)) if !envs.is_empty() => {
+                            key.required_in = Some((envs, d.name == "required"));
+                        }
+                        (None, _) => self.warn(
+                            d,
+                            "varlock_only",
                             format!(
-                                "line {}: @{} takes no value; write @required or @optional",
-                                d.line, d.name
+                                "line {}: penv ignored @{}={}; it takes true, false or forEnv(...)",
+                                d.line,
+                                d.name,
+                                d.value.as_deref().unwrap_or_default()
                             ),
-                        );
-                    } else {
-                        key.required_decorator = Some(d.name == "required");
+                        ),
                     }
                 }
-                "sensitive" => key.sensitive_decorator = self.flag(d),
+                "sensitive" => match d.value.as_deref() {
+                    None | Some("true") | Some("false") => key.sensitive_decorator = self.flag(d),
+                    Some(other) => self.warn(
+                        d,
+                        "varlock_only",
+                        format!(
+                            "line {}: penv ignored @sensitive={other}; it takes true or false",
+                            d.line
+                        ),
+                    ),
+                },
                 "example" => key.example = self.require_value(d),
                 "docs" => key.docs = self.require_value(d),
-                "since" => key.since = self.require_value(d),
                 "deprecated" => key.deprecated = Some(d.value.clone().unwrap_or_default()),
                 "rotate" => {
                     if let Some(v) = self.require_value(d) {
-                        if is_duration(&v) {
+                        if Span::parse(&v).is_some() {
                             key.rotate = Some(v);
                         } else {
                             self.error(
                                 d.line,
                                 d.column,
                                 "invalid_decorator_value",
-                                format!("line {}: @rotate takes a duration such as 90d", d.line),
+                                format!(
+                                    "line {}: @rotate takes y, m (months), w, d, h, min and s, largest first, such as 1y6m, 90d, 12h or 30min",
+                                    d.line
+                                ),
                             );
                         }
                     }
@@ -409,12 +574,13 @@ impl Parser {
                         key.dynamic = Some(d.name == "dynamic");
                     }
                 }
-                "dynamicFrom" => key.dynamic_from = self.require_value(d),
-                other => self.error(
-                    d.line,
-                    d.column,
+                other => self.warn(
+                    d,
                     "unknown_decorator",
-                    format!("line {}: @{other} is not a decorator penv knows", d.line),
+                    format!(
+                        "line {}: penv ignored @{other}, which it does not act on",
+                        d.line
+                    ),
                 ),
             }
         }
@@ -445,9 +611,11 @@ impl Parser {
             Some(false) => false,
             None => !prefixed && self.schema.default_sensitive,
         };
-        key.required = match key.required_decorator {
-            Some(v) => v,
-            None => key.default.is_none() && self.schema.default_required,
+        key.required = match (key.required_decorator, self.schema.default_required) {
+            (Some(v), _) => v,
+            (None, RequiredDefault::Yes) => key.default.is_none(),
+            (None, RequiredDefault::No) => false,
+            (None, RequiredDefault::Infer) => key.default.is_some(),
         };
 
         self.schema.keys.push(key);
@@ -471,12 +639,11 @@ impl Parser {
         };
 
         let Some(base) = BaseType::from_name(name) else {
-            self.error(
-                d.line,
-                d.column,
+            self.warn(
+                d,
                 "unknown_type",
                 format!(
-                    "line {}: {name} is not a penv type. Use string, number, boolean, url, email, port or enum. A whole number is number(isInt=true).",
+                    "line {}: penv checks {name} as a string; its types are string, number, boolean, url, email, port and enum, and a whole number is number(isInt=true)",
                     d.line
                 ),
             );
@@ -495,11 +662,14 @@ impl Parser {
                     let k = k.trim();
                     let v = unquote(v.trim());
                     if !base.constraints().contains(&k) {
-                        self.error(
-                            d.line,
-                            d.column,
+                        self.warn(
+                            d,
                             "unknown_constraint",
-                            format!("line {}: {} takes no {k} constraint", d.line, base.as_str()),
+                            format!(
+                                "line {}: penv ignored the {k} constraint, which {} does not take",
+                                d.line,
+                                base.as_str()
+                            ),
                         );
                         continue;
                     }
@@ -595,13 +765,9 @@ fn unquote(v: &str) -> String {
     v.to_string()
 }
 
-fn is_duration(v: &str) -> bool {
-    let Some(unit) = v.chars().last() else {
-        return false;
-    };
-    if !matches!(unit, 's' | 'm' | 'h' | 'd' | 'w') {
-        return false;
-    }
-    let digits = &v[..v.len() - 1];
-    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+/// `# ---`, or a labelled `# --- api ---`: a block boundary, the way varlock ends its header.
+fn is_divider(trimmed: &str) -> bool {
+    trimmed
+        .strip_prefix('#')
+        .is_some_and(|rest| rest.trim_start().starts_with("---"))
 }

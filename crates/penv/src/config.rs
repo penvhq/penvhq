@@ -1,0 +1,83 @@
+//! `.penv/config.toml` beside `.env.schema`: committed, so every clone on every
+//! machine reads the same settings. It holds dates and settings, never a value.
+
+use std::path::{Path, PathBuf};
+
+use crate::error::CliError;
+use crate::files::{read_file, show, write_file_making_parents};
+
+pub const CONFIG_FILE: &str = ".penv/config.toml";
+
+/// The file as a table, so sections this build does not know survive a write.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Config {
+    table: toml::Table,
+}
+
+impl Config {
+    pub fn path(dir: &Path) -> PathBuf {
+        dir.join(CONFIG_FILE)
+    }
+
+    pub fn load(dir: &Path) -> Result<Config, CliError> {
+        let path = Config::path(dir);
+        if !path.is_file() {
+            return Ok(Config::default());
+        }
+        Config::parse(&read_file(&path)?).map_err(|e| {
+            CliError::new(
+                "invalid_config",
+                format!("{} is not valid TOML: {e}", show(&path)),
+                "Fix the line it names, or delete the file to start it again.",
+            )
+        })
+    }
+
+    pub fn parse(text: &str) -> Result<Config, toml::de::Error> {
+        Ok(Config {
+            table: text.parse()?,
+        })
+    }
+
+    pub fn save(&self, dir: &Path) -> Result<PathBuf, CliError> {
+        let path = Config::path(dir);
+        write_file_making_parents(&path, &self.render())?;
+        Ok(path)
+    }
+
+    pub fn render(&self) -> String {
+        toml::to_string(&self.table).unwrap_or_default()
+    }
+
+    /// `[rotation]`: the day each key was last written in local mode.
+    pub fn rotated(&self, key: &str) -> Option<&str> {
+        self.table.get("rotation")?.get(key)?.as_str()
+    }
+
+    pub fn set_rotated(&mut self, key: &str, day: &str) {
+        let section = self
+            .table
+            .entry("rotation")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !section.is_table() {
+            *section = toml::Value::Table(toml::Table::new());
+        }
+        if let Some(table) = section.as_table_mut() {
+            table.insert(key.to_string(), toml::Value::String(day.to_string()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotation_dates_are_kept_and_other_sections_survive() {
+        let mut config = Config::parse("[future]\nsetting = true\n").unwrap();
+        config.set_rotated("STRIPE_SECRET_KEY", "2026-09-22");
+        let back = Config::parse(&config.render()).unwrap();
+        assert_eq!(back.rotated("STRIPE_SECRET_KEY"), Some("2026-09-22"));
+        assert!(back.render().contains("[future]"));
+    }
+}

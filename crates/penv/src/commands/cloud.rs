@@ -75,12 +75,47 @@ impl Cloud {
     }
 }
 
-/// `--env`, else `PENV_ENV`, else development.
-pub fn environment(flag: Option<&str>, env: &Env) -> String {
-    flag.filter(|v| !v.is_empty())
-        .or_else(|| env.get("PENV_ENV").filter(|v| !v.is_empty()))
-        .unwrap_or(DEFAULT_ENVIRONMENT)
-        .to_string()
+/// The environment a person named, or the one they pick from the project's list
+/// at a terminal, or development.
+pub fn pick_environment(
+    cloud: &Cloud,
+    bearer: &Bearer,
+    schema: &Schema,
+    schema_path: &Path,
+    flag: Option<&str>,
+    env: &Env,
+    may_ask: bool,
+) -> Result<String, CliError> {
+    let dir = schema_path.parent().unwrap_or(Path::new("."));
+    if let Some(named) = crate::source::named_environment(flag, env, schema, dir) {
+        return Ok(named);
+    }
+    let fallback = crate::source::DEFAULT_ENVIRONMENT.to_string();
+    let (Some(org), Some(project), true) = (&schema.org, &schema.project, may_ask) else {
+        return Ok(fallback);
+    };
+    let names = cloud
+        .api
+        .projects(bearer, org)
+        .map_err(|e| refuse(e, None))?
+        .into_iter()
+        .find(|p| p.slug.eq_ignore_ascii_case(project))
+        .map(|p| p.environments)
+        .unwrap_or_default();
+    if names.len() < 2 {
+        return Ok(names.into_iter().next().unwrap_or(fallback));
+    }
+    let initial = names.iter().position(|n| *n == fallback);
+    match crate::ui::select("Which environment?", &names, initial) {
+        Some(picked) => picked.map(|i| names[i].clone()).map_err(cancelled),
+        None => Ok(fallback),
+    }
+}
+
+/// `--env`, else `PENV_ENV`, else `@currentEnv`, else development.
+pub fn environment(flag: Option<&str>, env: &Env, schema: &Schema, schema_path: &Path) -> String {
+    let dir = schema_path.parent().unwrap_or(Path::new("."));
+    crate::source::environment(flag, env, schema, dir)
 }
 
 /// The address the schema names. A schema with no header is local, and says so.
@@ -145,7 +180,8 @@ pub fn link(
     let (org, project) = chosen.split_once('/').unwrap_or((&chosen, ""));
     schema.org = Some(org.to_string());
     schema.project = Some(project.to_string());
-    crate::files::write_file(schema_path, &penv_schema::render(schema))?;
+    let source = crate::files::read_file(schema_path)?;
+    crate::files::write_file(schema_path, &penv_schema::set_header(&source, org, project))?;
     note(&format!("linked {SCHEMA_FILE} to {chosen}."));
     Ok(())
 }
@@ -363,29 +399,83 @@ pub fn project_name(dir: &Path) -> String {
         .unwrap_or_else(|| "app".to_string())
 }
 
+/// Reads environments for one command: the cloud opens once, a bearer is minted
+/// once per org, and each address is read once through this host's cache.
+pub struct Fetcher<'a> {
+    env: &'a Env,
+    detection: &'a Detection,
+    cloud: Option<Cloud>,
+    bearers: Vec<(String, Bearer)>,
+    read: Vec<(String, Vec<penv_cloud::api::CloudKey>)>,
+}
+
+impl<'a> Fetcher<'a> {
+    pub fn new(env: &'a Env, detection: &'a Detection) -> Fetcher<'a> {
+        Fetcher {
+            env,
+            detection,
+            cloud: None,
+            bearers: Vec::new(),
+            read: Vec::new(),
+        }
+    }
+
+    /// The keys stored at `at`, values and write times included.
+    pub fn keys(&mut self, at: &Address) -> Result<Vec<penv_cloud::api::CloudKey>, CliError> {
+        let label = at.to_string();
+        if let Some((_, keys)) = self.read.iter().find(|(l, _)| *l == label) {
+            return Ok(keys.clone());
+        }
+        if self.cloud.is_none() {
+            self.cloud = Some(Cloud::open(self.env, self.detection)?);
+        }
+        let cloud = self.cloud.as_ref().expect("opened above");
+        let bearer = match self
+            .bearers
+            .iter()
+            .find(|(org, _)| org.eq_ignore_ascii_case(&at.org))
+        {
+            Some((_, bearer)) => bearer.clone(),
+            None => {
+                let bearer = cloud.bearer(self.env, Some(&at.org))?;
+                self.bearers.push((at.org.clone(), bearer.clone()));
+                bearer
+            }
+        };
+        let cache = cloud.cache(at, &bearer);
+        let spinner = crate::ui::spinner(&format!("Reading {at}"));
+        let resolved = penv_cloud::cache::fetch(&cloud.api, &bearer, at, cache.as_ref(), cloud.now)
+            .map_err(|e| refuse(e, Some(at)))?;
+        spinner.stop(&format!("Read {at}"));
+        if resolved.offline_warning {
+            crate::ui::warn(&format!(
+                "{at} could not be reached, so this used the development values penv saved last time."
+            ));
+        }
+        if !resolved.body.skipped.is_empty() {
+            crate::ui::warn(&format!(
+                "no stored value in {at}: {}. Set one with penv set <KEY>.",
+                resolved.body.skipped.join(", ")
+            ));
+        }
+        self.read.push((label, resolved.body.keys.clone()));
+        Ok(resolved.body.keys)
+    }
+
+    pub fn values(&mut self, at: &Address) -> Result<penv_schema::Values, CliError> {
+        Ok(self
+            .keys(at)?
+            .into_iter()
+            .filter_map(|key| Some((key.name, key.value?)))
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use penv_cloud::error::ApiError;
     use penv_schema::{BaseType, Type};
-
-    fn env(pairs: &[(&str, &str)]) -> Env {
-        Env::from_pairs(pairs)
-    }
-
-    #[test]
-    fn the_environment_falls_back_from_the_flag_to_the_variable_to_development() {
-        assert_eq!(environment(None, &env(&[])), "development");
-        assert_eq!(
-            environment(None, &env(&[("PENV_ENV", "staging")])),
-            "staging"
-        );
-        assert_eq!(
-            environment(Some("production"), &env(&[("PENV_ENV", "staging")])),
-            "production"
-        );
-        assert_eq!(environment(Some(""), &env(&[])), "development");
-    }
 
     #[test]
     fn a_forbidden_environment_is_exit_six_and_names_itself() {

@@ -6,7 +6,9 @@ use serde_json::json;
 
 use crate::env::Env;
 use crate::error::{CliError, Exit};
-use crate::files::{ENV_FILE, GITIGNORE_FILE, SCHEMA_FILE, read_file, show, write_file};
+use crate::files::{
+    ENV_FILE, GITIGNORE_FILE, SCHEMA_FILE, read_file, show, value_files, write_file,
+};
 use crate::output::{Output, Report, Style, table};
 use crate::prompt;
 
@@ -44,12 +46,21 @@ pub fn run(
 
     // A first run with nothing to read still leaves a repository penv works in.
     let env_path = cwd.join(ENV_FILE);
-    let created_dotenv = !env_path.is_file();
+    let created_dotenv = value_files(cwd).is_empty();
     if created_dotenv {
         write_file(&env_path, "")?;
     }
 
-    let dotenv = read(&read_file(&env_path)?);
+    // Every value file feeds the draft, `.env` first, so a varlock or
+    // dotenv-flow folder keeps the keys only its `.env.production` holds.
+    let mut dotenv = penv_dotenv::Dotenv::default();
+    for path in value_files(cwd) {
+        for entry in read(&read_file(&path)?).entries {
+            if dotenv.get(&entry.key).is_none() {
+                dotenv.entries.push(entry);
+            }
+        }
+    }
     let schema = infer(&dotenv);
     write_file(&schema_path, &render(&schema))?;
 

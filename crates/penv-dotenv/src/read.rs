@@ -5,6 +5,8 @@ pub struct Entry {
     pub key: String,
     pub value: String,
     pub line: u32,
+    /// Single-quoted or backticked: read as written, never expanded.
+    pub literal: bool,
 }
 
 /// A construct outside the safe subset. The file still parsed.
@@ -27,6 +29,21 @@ impl Dotenv {
             .iter()
             .find(|e| e.key == key)
             .map(|e| e.value.as_str())
+    }
+
+    /// Each value with whether it may be computed, for `penv_schema::resolve`.
+    pub fn raw(&self) -> std::collections::BTreeMap<String, penv_schema::resolve::Raw> {
+        self.entries
+            .iter()
+            .map(|e| {
+                let raw = if e.literal {
+                    penv_schema::resolve::Raw::literal(e.value.clone())
+                } else {
+                    penv_schema::resolve::Raw::computed(e.value.clone())
+                };
+                (e.key.clone(), raw)
+            })
+            .collect()
     }
 
     pub fn values(&self) -> Values {
@@ -121,18 +138,13 @@ pub fn read(input: &str) -> Dotenv {
         // Where the value starts on this line, so an escape can be pointed at
         // without printing what it sits in.
         let column = line.trim_end().len() - first.len() + 1;
+        let literal = first.starts_with(['\'', '`']);
         let value = read_value(first, &lines, &mut i, line_no, column, &mut out);
-        if value.contains('$') {
-            out.warn(
-                line_no,
-                "interpolation",
-                format!("{key} contains a $, which penv never expands"),
-            );
-        }
 
         match out.entries.iter_mut().find(|e| e.key == key) {
             Some(existing) => {
                 existing.value = value;
+                existing.literal = literal;
                 out.warnings.push(Warning {
                     line: line_no,
                     code: "duplicate_key",
@@ -143,6 +155,7 @@ pub fn read(input: &str) -> Dotenv {
                 key: key.to_string(),
                 value,
                 line: line_no,
+                literal,
             }),
         }
     }
@@ -281,7 +294,8 @@ fn unescape(value: &str, line_no: u32, at: usize, out: &mut Dotenv) -> String {
             Some((_, 't')) => {
                 warn(out, index);
                 result.push('\t');
-            }
+            } // Kept escaped: `\$` is how a computed value says a literal dollar.
+            Some((_, '$')) => result.push_str("\\$"),
             Some((_, quoted @ ('"' | '\\'))) => {
                 warn(out, index);
                 result.push(quoted);

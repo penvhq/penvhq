@@ -15,6 +15,7 @@ _penv() {
         'ls:List your keys and show which ones have a value'
         'check:Report schema problems and missing values'
         'gen:Write the typed file for your language (ts, py)'
+        'scan:Find secret values committed to files'
         'guard:Write the harness rules that keep agents out of .env'
         'reveal:Show one value; an AI agent needs your approval first'
         'project:Your projects: ls, new, rename, rm'
@@ -47,8 +48,9 @@ _penv() {
                 set) _arguments '--env[The environment to write to]:value:' '--value[Refused: a value passed here lands in the shell history]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
                 unset) _arguments '--env[The environment to write to]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
                 ls) _arguments '--env[The environment to read]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                check) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
+                check) _arguments '--env[The environment to check]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
                 gen) _arguments '--out[Write here instead, relative to the repository root]:value:' '--check[Compare with what is on disk instead of writing]' '--options[Show what this target'\''s options change instead of writing]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
+                scan) _arguments '--staged[Scan only what is staged for the next commit]' '--install-hook[Write a git pre-commit hook that runs penv scan --staged]' '--env[The environment whose values to look for]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
                 guard) _arguments '--all[Write every harness penv knows, installed or not]' '--check[Report coverage instead of writing]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
                 reveal) _arguments '--env[The environment to read]:value:' '--approval[Print the value a person approved under this id]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
                 project) _penv_project ;;

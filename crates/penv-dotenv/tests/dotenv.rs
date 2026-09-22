@@ -45,12 +45,7 @@ fn warns_on_constructs_outside_the_subset() {
     assert_eq!(env.get("A_KEY"), Some("two"), "the last value wins");
     assert_eq!(env.get("C_KEY"), Some("line one\nline two"));
     let found = codes(&env.warnings);
-    for expected in [
-        "duplicate_key",
-        "interpolation",
-        "multiline_value",
-        "invalid_line",
-    ] {
+    for expected in ["duplicate_key", "multiline_value", "invalid_line"] {
         assert!(found.contains(&expected), "missing {expected} in {found:?}");
     }
 }
@@ -72,11 +67,11 @@ fn writes_only_the_safe_subset() {
 
 #[test]
 fn the_writer_refuses_what_the_subset_excludes() {
-    assert_eq!(
-        write(&[("A_KEY", "$OTHER")]),
-        Err(WriteError::Interpolation {
-            key: "A_KEY".into()
-        })
+    assert_eq!(write(&[("A_KEY", "$OTHER")]).unwrap(), "A_KEY='$OTHER'\n");
+    let back = read("A_KEY='$OTHER'\n");
+    assert!(
+        back.entries[0].literal,
+        "a dollar is written so it reads back literally"
     );
     assert_eq!(
         write(&[("A_KEY", "one"), ("A_KEY", "two")]),
@@ -521,4 +516,20 @@ fn types_are_inferred_even_when_the_value_stays_out() {
         None,
         "the type came from the value, the value stayed out"
     );
+}
+
+#[test]
+fn upsert_and_remove_touch_only_the_key() {
+    let source = "# local values\nA_KEY=one\nB_KEY='two\nlines'\nC_KEY=three\n";
+    let set = penv_dotenv::upsert(source, "B_KEY", "fresh").unwrap();
+    assert_eq!(set, "# local values\nA_KEY=one\nB_KEY=fresh\nC_KEY=three\n");
+    let added = penv_dotenv::upsert(&set, "D_KEY", "four").unwrap();
+    assert!(added.ends_with("C_KEY=three\nD_KEY=four\n"), "{added}");
+    let (gone, found) = penv_dotenv::remove(&added, "A_KEY");
+    assert!(found);
+    assert_eq!(
+        gone,
+        "# local values\nB_KEY=fresh\nC_KEY=three\nD_KEY=four\n"
+    );
+    assert_eq!(penv_dotenv::upsert("", "A_KEY", "x").unwrap(), "A_KEY=x\n");
 }

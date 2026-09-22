@@ -261,6 +261,9 @@ pub struct CloudKey {
     pub schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// When the value was last written. `@rotate` counts from it.
+    #[serde(default, rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 impl CloudKey {
@@ -1192,8 +1195,10 @@ mod tests {
             version: Some(3),
             schema: Some(json!({ "type": "port" })),
             value: Some("3000".into()),
+            updated_at: Some("2026-09-22T10:00:00Z".into()),
         };
         let sent = key.to_write();
+        assert_eq!(sent.get("updatedAt"), None);
         assert_eq!(sent.get("kind"), None);
         assert_eq!(sent.get("version"), None);
         assert_eq!(sent["name"], "PORT");

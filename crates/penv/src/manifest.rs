@@ -113,12 +113,20 @@ const META: &[Meta] = &[
         path: "check",
         implemented: true,
         exit_codes: &[0, 1, 3],
+        env_flags: &[("env", "PENV_ENV")],
         ..DEFAULT_META
     },
     Meta {
         path: "gen",
         implemented: true,
         exit_codes: &[0, 1, 3],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "scan",
+        implemented: true,
+        exit_codes: &[0, 1, 3, 5],
+        env_flags: &[("env", "PENV_ENV")],
         ..DEFAULT_META
     },
     Meta {

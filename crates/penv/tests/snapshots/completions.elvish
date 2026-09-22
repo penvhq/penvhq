@@ -34,6 +34,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand 'ls' 'List your keys and show which ones have a value'
             cand 'check' 'Report schema problems and missing values'
             cand 'gen' 'Write the typed file for your language (ts, py)'
+            cand 'scan' 'Find secret values committed to files'
             cand 'guard' 'Write the harness rules that keep agents out of .env'
             cand 'reveal' 'Show one value; an AI agent needs your approval first'
             cand 'project' 'Your projects: ls, new, rename, rm'
@@ -109,6 +110,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
         }
         if (eq $command 'penv;check') {
+            cand '--env' 'The environment to check'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
@@ -117,6 +119,14 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--out' 'Write here instead, relative to the repository root'
             cand '--check' 'Compare with what is on disk instead of writing'
             cand '--options' 'Show what this target''s options change instead of writing'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;scan') {
+            cand '--staged' 'Scan only what is staged for the next commit'
+            cand '--install-hook' 'Write a git pre-commit hook that runs penv scan --staged'
+            cand '--env' 'The environment whose values to look for'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'

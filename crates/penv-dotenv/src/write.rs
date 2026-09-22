@@ -13,10 +13,6 @@ pub enum WriteError {
     #[error("{key} appears twice. Keep one value per key.")]
     DuplicateKey { key: String },
     #[error(
-        "{key} contains a $, which other tools read as a variable. Store the final value with no $ in it."
-    )]
-    Interpolation { key: String },
-    #[error(
         "{key} contains all three quote marks (' \" and `), so a file of KEY=value lines has no way to wrap it."
     )]
     Unquotable { key: String },
@@ -39,11 +35,6 @@ pub fn write(entries: &[(&str, &str)]) -> Result<String, WriteError> {
             });
         }
         seen.push(key);
-        if value.contains('$') {
-            return Err(WriteError::Interpolation {
-                key: key.to_string(),
-            });
-        }
         // A trailing CR is line-ending residue; CRLF and a lone CR are written as
         // the LF they mean, because only `\n` survives every reader.
         let value = value
@@ -59,10 +50,10 @@ pub fn write(entries: &[(&str, &str)]) -> Result<String, WriteError> {
 }
 
 /// Only `\n` inside double quotes is an escape every dialect reads back, so a
-/// value carrying a `"` or a `\` goes in a quote that reads literally, line
-/// breaks and all: `'`, or a backtick when the value holds a `'`.
+/// value carrying a `"`, a `\` or a `$` goes in a quote that reads literally,
+/// line breaks and all: `'`, or a backtick when the value holds a `'`.
 fn quote(value: &str) -> Option<String> {
-    if value.contains(['"', '\\']) {
+    if value.contains(['"', '\\', '$']) {
         let mark = ['\'', '`'].into_iter().find(|m| !value.contains(*m))?;
         return Some(format!("{mark}{value}{mark}"));
     }
@@ -73,4 +64,73 @@ fn quote(value: &str) -> Option<String> {
         return Some(format!("\"{value}\""));
     }
     Some(value.to_string())
+}
+
+/// Set one key in an existing file, leaving every other line as written. A key
+/// the file lacks is appended.
+pub fn upsert(source: &str, key: &str, value: &str) -> Result<String, WriteError> {
+    let line = write(&[(key, value)])?;
+    let (mut lines, at) = split_at_key(source, key);
+    match at {
+        Some((start, span)) => {
+            lines.splice(
+                start..start + span,
+                [line.trim_end_matches('\n').to_string()],
+            );
+        }
+        None => {
+            while lines.last().is_some_and(|l| l.is_empty()) {
+                lines.pop();
+            }
+            lines.push(line.trim_end_matches('\n').to_string());
+        }
+    }
+    Ok(join(lines))
+}
+
+/// Drop one key's lines. The file is returned unchanged when the key is absent.
+pub fn remove(source: &str, key: &str) -> (String, bool) {
+    let (mut lines, at) = split_at_key(source, key);
+    match at {
+        Some((start, span)) => {
+            lines.drain(start..start + span);
+            (join(lines), true)
+        }
+        None => (source.to_string(), false),
+    }
+}
+
+/// The file's lines, and where the last assignment of `key` starts and how
+/// many physical lines it covers.
+fn split_at_key(source: &str, key: &str) -> (Vec<String>, Option<(usize, usize)>) {
+    let lines: Vec<String> = source
+        .strip_suffix('\n')
+        .unwrap_or(source)
+        .split('\n')
+        .map(str::to_string)
+        .filter(|_| !source.is_empty())
+        .collect();
+    let read = crate::read(source);
+    let at = read.entries.iter().find(|e| e.key == key).map(|entry| {
+        let spans = read
+            .warnings
+            .iter()
+            .any(|w| w.line == entry.line && w.code == "multiline_value");
+        let span = if spans {
+            entry.value.matches('\n').count() + 1
+        } else {
+            1
+        };
+        (entry.line as usize - 1, span)
+    });
+    (lines, at)
+}
+
+fn join(lines: Vec<String>) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
 }

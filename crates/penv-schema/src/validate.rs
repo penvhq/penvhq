@@ -16,7 +16,7 @@ pub struct Violation {
 }
 
 impl Violation {
-    fn new(key: &str, rule: &str, message: impl Into<String>) -> Violation {
+    pub fn new(key: &str, rule: &str, message: impl Into<String>) -> Violation {
         Violation {
             key: key.to_string(),
             rule: rule.to_string(),

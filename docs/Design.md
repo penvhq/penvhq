@@ -5,7 +5,7 @@ penv is a secrets manager. The cloud (penv.cloud) is the store. The `penv` binar
 ## 1. Principles
 
 1. **The first minute needs no account.** `penv init` and `penv run` work on a plain `.env` before anyone logs in. The cloud is the upgrade that takes the second minute.
-2. **`.env` is the interchange format, never the truth once pushed.** The file is regenerable. Losing it costs nothing.
+2. **Local first.** Everything but sharing works with no account: layered `.env` files, computed values, validation, masking, rotation reminders and leak scanning. The cloud is where values go when a team shares them; locally, a file still wins over the cloud on the machine that holds it.
 3. **One binary, no runtime.** No Node, no plugins, no JavaScript config. A static binary per platform.
 4. **Validation happens in the binary before the process starts.** A Go service with no adapter still gets a refusal naming the key.
 5. **Types are generated, never a runtime.** Language targets are data folders (template plus type map). A new language is a folder.
@@ -15,7 +15,7 @@ penv is a secrets manager. The cloud (penv.cloud) is the store. The `penv` binar
 
 ## 2. Files in a repository
 
-Exactly one penv file is committed: `.env.schema`. There is no config file.
+Two things are committed: `.env.schema`, the contract, and the `.penv/` folder beside it, which holds settings every clone on every machine must agree on: `config.toml` (the `[rotation]` table today) and `targets/` (remembered `gen` output). Neither ever holds a value.
 
 ```dotenv
 # @penv=acme/api-gateway @schema=1
@@ -41,40 +41,70 @@ Rules:
 - The header is the first comment block, whether or not a blank line follows it; a first block that sits directly on a key and contains a header decorator is still the header. `@penv=<org>/<project>` names the cloud project; absent means local mode. `@schema=<n>` is the grammar version the file was written with.
 - Decorators sit in `#` comment lines directly above a key. A comment line not starting with `@` is the key's description. The blank line ends a block.
 - A decorator is `@name` or `@name=value`. Never positional. Order never matters. Quote a value that contains whitespace or `#`.
-- Vocabulary follows `@env-spec` (varlock) verbatim: `@type=`, `@required`, `@optional`, `@sensitive`, `@sensitive=false`, `@defaultSensitive`, `@defaultRequired`, `@example`, `@docs`. Types: `string`, `number`, `boolean`, `url`, `email`, `port`, `enum(a,b,c)`, plus the spec's function-call constraints such as `string(startsWith=sk_)` and `number(isInt=true)`. There is no `integer` type; integers are `number(isInt=true)`, and a target's `[types]` map may carry an `integer` entry used when that constraint is set. Whitespace inside parentheses is allowed.
+- A comment line of `---` (bare or labelled, `# --- api ---`) ends a block the way a blank line does.
+- Header decorators: `@penv=<org>/<project>`, `@schema=<n>`, `@defaultSensitive`, `@defaultRequired` (`true`, `false` or `infer`: required only when the schema line carries a value), `@currentEnv=$KEY` (the key whose value names the environment), `@import(<path>, KEY, ...)` (another schema's keys, all of them when none are named; the importing file's own block wins; a loop is an error).
+- Vocabulary follows [`@env-spec`](https://varlock.dev) verbatim: `@type=`, `@required`, `@optional`, `@sensitive`, `@sensitive=false`, `@defaultSensitive`, `@defaultRequired`, `@example`, `@docs`. Types: `string`, `number`, `boolean`, `url`, `email`, `port`, `enum(a,b,c)`, plus the spec's function-call constraints such as `string(startsWith=sk_)` and `number(isInt=true)`. There is no `integer` type; integers are `number(isInt=true)`, and a target's `[types]` map may carry an `integer` entry used when that constraint is set. Whitespace inside parentheses is allowed.
 - Required is inferred: an empty value is required, a value present on the line is the default and makes the key optional. `@required`/`@optional` override.
 - Sensitive is inferred: sensitive by default, public when the key carries a bundler prefix (`NEXT_PUBLIC_`, `VITE_`, `PUBLIC_`, `EXPO_PUBLIC_`, `NUXT_PUBLIC_`, `REACT_APP_`) or `@sensitive=false`. A key that is both prefixed and `@sensitive` fails `check`.
 - Adopted from the spec as-is: `@deprecated`, and the boolean `@dynamic`/`@static` pair (accepted and preserved, not used by penv).
-- penv extensions, only where the spec has no concept: `@since=<version>`, `@rotate=<duration>`, `@dynamicFrom=<engine>` (read-only marker rendered by the cloud). `@scope` does not exist; who reads a key is an authorization rule in the console.
-- One concept, one name. No aliases. Unknown decorators are an error from `check`.
+- One penv extension, where the spec has no concept: `@rotate=<span>`, a reminder that never blocks. A span is units largest first, each once: `y`, `m` (months), `w`, `d`, `h`, `min`, `s` (`1y6m`, `90d`, `12h`, `30min`). The clock is the value's last write: the cloud's `updatedAt` under a header, the `[rotation]` table in `.penv/config.toml` without one, which `penv set` fills. `check` names keys that are due, overdue or have no recorded write, and exits 0 for all three. `@scope` does not exist; who reads a key is an authorization rule in the console.
+- One concept, one name. No aliases. A decorator, type or constraint penv does not act on is a warning from `check`, never a parse failure, so any varlock schema parses; `@plugin` is named as varlock's.
 - Nearest `.env.schema` upward from the working directory wins. A monorepo holds one per app.
 
-The generated `.env` (from `pull`, or the developer's own in local mode) is plain: UTF-8 without BOM, LF, `KEY=value`, upper snake case keys, no `export`, no spaces around `=`, quotes only when needed, no `$`, no duplicates, no comments emitted.
+### Values
+
+Value files layer in the order dotenv-flow, Next.js and Vite use, later files winning:
+
+```text
+.env  ->  .env.local  ->  .env.<env>  ->  .env.<env>.local        (test skips .env.local)
+```
+
+`*.local` files belong to one machine and are never pushed. `.env.schema`, `.env.example`, `.env.sample`, `.env.template` and `.env.defaults` are not value files.
+
+A value is computed unless it is single-quoted or backticked:
+
+```dotenv
+DATABASE_URL=postgres://${DB_HOST}:${DB_PORT:-5432}/app     # ${KEY}, $KEY, ${KEY:-or}, ${KEY-or}; \$ for a literal $
+API_URL=if(eq($APP_ENV, production), api.acme.test, staging.acme.test)
+REPLICA_URL=penv(production/DATABASE_URL)
+LITERAL='${not expanded}'
+```
+
+Functions: `ref`, `concat`, `fallback`, `if`, `eq`, `not`, `isEmpty`, `forEnv`, `penv`. Any other `name(...)` value, a varlock plugin's `op(...)` included, is a validation failure naming the function rather than a literal string handed to the process; single-quote it to pass it as written. `exec` is refused by name: a schema never starts a process. A cycle, a chain deeper than 128 references, or a value that cannot be computed is a validation failure naming the key and never the value. A schema default may be computed the same way.
+
+Precedence, highest first: the process environment (a key it already sets keeps that value, as dotenv and varlock do), then the value files, then the cloud, then the schema default. The key `@currentEnv` names always holds the environment the command is for, so `--env production` and `$APP_ENV` agree. A `$KEY` that nothing sets resolves empty and is reported by the key holding it, never by the referenced name, which in an unquoted password is part of the secret. `@required=forEnv(a, b)` and `@optional=forEnv(a, b)` settle per environment.
+
+An environment name is letters, digits, `-`, `_` and inner dots, and never `local` or a suffix that names a non-value file (`schema`, `example`, `sample`, `template`, `defaults`, `vault`, `keys`, `me`), because it becomes part of a file name. `.env.vault`, `.env.keys` and `.env.me` (dotenv-vault, dotenvx) are never read as values. `@import` refuses a value file: its values would become defaults that `penv schema` prints past every guard.
+
+`penv(address)` reads another environment's value: `penv(KEY)`, `penv(env/KEY)`, `penv(project/env/KEY)`, `penv(org/project/env/KEY)`, with `@penv=` supplying what is left out. Under a header it reads the cloud, with this machine's files for that environment laid over it when it is the same project. Without one it reads that environment's files, and creates an empty `.env.<env>` (or `.env` for development) when there is none. Each address is read once per command.
+
+The files penv writes (from `pull`, `set`) are plain: UTF-8 without BOM, LF, `KEY=value`, upper snake case keys, no `export`, no spaces around `=`, quotes only when needed, a value holding `$` single-quoted so it reads back literally, no duplicates, no comments emitted. `set` and `unset` change their one key's lines and leave the rest of the file as written.
 
 Quoting is the subset Node's `util.parseEnv` and dotenv both read back, and no more: **inside double quotes, `\n` is an escape and nothing else is**. That is how a multi-line value such as a PEM key sits on one line. So the writer folds `\r\n` into `\n`, double-quotes a value that breaks lines escaping those newlines, and refuses it outright when it also holds a `"`, a `\` or a carriage return of its own, because none of those has a portable escape. A value holding a `"` or a `\` and no line break is single-quoted, where nothing is an escape, and is refused when it also holds a `'`. A value goes bare only when it holds no whitespace at all, no `#`, no quote and no backslash; anything else in between is double-quoted with nothing to escape. The reader still decodes `\r`, `\t`, `\"` and `\\` so a file another tool wrote is read rather than mangled, and warns once per value, naming the line and the column and never the character.
 
-## 3. State machine
+## 3. Location
 
 ```text
-local   .env on disk, .env.schema present, no @penv header or not logged in
-cloud   @penv header, credential in the keychain, .env absent (or present only after an explicit pull)
+local   value files on disk, .env.schema present, no @penv header or not logged in
+cloud   @penv header, credential in the keychain; value files present only when a person wrote or pulled them, and then they win on that machine
 ```
 
-`penv` with no arguments prints the state and the one next command.
+`penv` with no arguments prints the location (`local` or `cloud`), the version, the environment and the one next command. A folder with no schema is `local`, and its next command is `penv init`.
 
 ## 4. Commands
 
 | Command | Does | Fires automatically when |
 |---|---|---|
-| `penv` | Prints state and the one next command | no args |
-| `init` | Reads `.env` (writing an empty one when there is none), writes `.env.schema`, gitignores `.env`, prints what it inferred. Every key is sensitive and required unless bundler-prefixed. A value is copied into the schema as a default only when the key is bundler-prefixed, or the value is a boolean, an integer, a lowercase word of letters, a lowercase slug of at most 32 characters whose segments are joined by `-`, `_` or `.` and where one segment is letters only and no segment carrying a digit runs past four characters (`us-east-1`, `gpt-4o`, `api.internal`, never `a3f9c2d4e5b6`), or a localhost URL with no userinfo and no query. A key named for what it holds keeps its value out however dull it reads and whatever prefix it carries, so `NEXT_PUBLIC_SUPABASE_ANON_KEY` is not copied either: the words are `AUTH`, `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `PASS`, `PWD`, `PW`, `CREDENTIAL`, `CRED`, `DSN`, `SALT`, `SEED` and `SIGNATURE`, each matching the word itself or a plural of it in `S` or `ES`; sensitivity still follows the prefix, since a bundler-prefixed value reaches the browser either way. At a terminal, with no agent, it offers a picker over every harness penv knows with the installed ones already chosen; `--guards <NAMES>` (trimmed, deduped, and none when it names nothing) and `--no-guards` decide it without a prompt, and every other run guards the installed set. It then generates for every target this repository uses, resolving the output the way `gen` does; `--output <PATH>` names the file instead, and only when one target applies | `run` finds a `.env` with no schema |
+| `penv` | Prints the version, the location (`local` or `cloud`), the environment it resolves to, the value files that environment layers, and the one next command. Reads only; writes nothing | no args |
+| `init` | Reads every value file beside it, `.env` first, the rest adding keys the earlier ones lack (writing an empty `.env` only when there is no value file at all), writes `.env.schema`, gitignores `.env`, prints what it inferred. Every key is sensitive and required unless bundler-prefixed. A value is copied into the schema as a default only when the key is bundler-prefixed, or the value is a boolean, an integer, a lowercase word of letters, a lowercase slug of at most 32 characters whose segments are joined by `-`, `_` or `.` and where one segment is letters only and no segment carrying a digit runs past four characters (`us-east-1`, `gpt-4o`, `api.internal`, never `a3f9c2d4e5b6`), or a localhost URL with no userinfo and no query. A key named for what it holds keeps its value out however dull it reads and whatever prefix it carries, so `NEXT_PUBLIC_SUPABASE_ANON_KEY` is not copied either: the words are `AUTH`, `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `PASS`, `PWD`, `PW`, `CREDENTIAL`, `CRED`, `DSN`, `SALT`, `SEED` and `SIGNATURE`, each matching the word itself or a plural of it in `S` or `ES`; sensitivity still follows the prefix, since a bundler-prefixed value reaches the browser either way. At a terminal, with no agent, it offers a picker over every harness penv knows with the installed ones already chosen; `--guards <NAMES>` (trimmed, deduped, and none when it names nothing) and `--no-guards` decide it without a prompt, and every other run guards the installed set. It then generates for every target this repository uses, resolving the output the way `gen` does; `--output <PATH>` names the file instead, and only when one target applies | `run` finds any value file and no schema |
 | `run [--env E] -- cmd` | Validates, injects into the child only, masks child output when an agent is present | never |
-| `push` | Moves local values to the cloud, deletes `.env` | `init` when logged in, as an offer |
-| `pull` | Writes a plain `.env` | never |
+| `push [--env E]` | Moves the shared layers for the environment (`.env`, `.env.<env>`) to the cloud, computed, defaults left out, then deletes those files. `*.local` stays. With nothing named and a person at a terminal, offers the project's environments | `init` when logged in, as an offer |
+| `pull [--env E]` | Writes `.env` for development, `.env.<env>` otherwise, so `push` and `run` read it back as the same layer. Same picker as `push` | never |
 | `login` / `logout` | Device-code sign in; credential in the OS keychain | `run`/`push` lack a credential and a human is at a TTY |
-| `set KEY` / `unset KEY` | Prompted or piped write, never echoed | never |
+| `set KEY` / `unset KEY` | Prompted or piped write, never echoed. Under a header it writes the cloud; without one it writes `.env` or `.env.<env>` and records the moment in `.penv/config.toml` when the key has `@rotate` | never |
 | `ls` | Names, types, presence; values masked; JSON when stdout is not a TTY | never |
-| `check [KEY]` | Schema validity, missing values, why a key fails, guard status | `run` before exec; `init` after import |
+| `check [KEY] [--env E]` | Schema validity and warnings, missing values, values that cannot be computed, why a key fails, `@rotate` reminders, guard status. Reads what `run` reads; when the cloud cannot be read (CI with no credential) it checks the local files and says so | `run` before exec; `init` after import |
+| `scan [PATH...] [--staged] [--install-hook] [--env E]` | Looks for the environment's sensitive values, in every form `run` masks, in what git would commit (or the staged blobs, or the paths named). Names file, line and key, never the value; exit 3 on a finding. `--install-hook` writes a pre-commit hook running `penv scan --staged` and leaves a hook it did not write alone | never |
 | `gen <target>` | Writes the typed file for a language target and prints how to import it. `--out <PATH>` says where; without it penv asks at a terminal and skips anywhere else. Either answer is remembered. `--options` prints what this target's options change and what they are set to. No target lists them with their options and the directories they were detected in | `init`/`push` when a directory holds a target's detect file |
 | `guard [--check]` | Writes every recognised harness config; `--check` reports coverage | `init`; any command that detects a new harness |
 | `reveal KEY` | Prints one value. A person reads it straight; an agent session gets an approval id and exit 4 instead, and `--approval <ID>` prints the value once a person has approved it in the console | never |
@@ -86,7 +116,7 @@ cloud   @penv header, credential in the keychain, .env absent (or present only a
 Not commands: `env`/`use` (use `--env` or `PENV_ENV`, default `development`), `config`, `doctor` (it is `check`), `agent` (agents are detected).
 
 ### Environment selection
-`--env`, else `PENV_ENV`, else `development`. A human identity running `production` is refused unless the console unlocked it for that environment. Machine identities read their bound environment only.
+`--env`, else `PENV_ENV`, else the key `@currentEnv` names (the process, then `.env` and `.env.local`, then its default), else `development`. Local mode runs any environment its files describe, and warns naming the files used when `.env.<env>` is missing. A human identity running `production` in the cloud is refused unless the console unlocked it for that environment. Machine identities read their bound environment only.
 
 ### Output contract
 - Human at a TTY: aligned text, no spinners in non-TTY, `NO_COLOR` and `CLICOLOR=0` honoured.
@@ -101,7 +131,7 @@ Not commands: `env`/`use` (use `--env` or `PENV_ENV`, default `development`), `c
 
 ```text
 find .env.schema (nearest upward)               <1ms
-local mode: parse .env, validate, exec
+local mode: layer the value files, compute, validate, exec
 cloud mode:
   open encrypted cache (keychain key)          ~2ms
   fresh (<60s dev, 0s otherwise)  -> exec
@@ -109,6 +139,8 @@ cloud mode:
   changed -> GET, rewrite cache
   offline -> dev: use cache, warn once a day; other envs: fail closed (exit 5)
 no keychain (containers, servers) -> no cache, always online
+then: lay every local value file for the environment over the cloud values,
+      warn naming each key replaced and the file it came from; compute; validate; exec
 ```
 
 Target: under 50ms to exec on a warm cache. Injection is into the child environment only. Output masking scrubs the child's stdout and stderr for every sensitive value, boundary-safe across chunk splits, plus base64 and JSON-escaped forms of each value. The masker's secret list is every value present in the resolved environment except keys the schema marks public; a `.env` key the schema does not list is masked and `check` names it as drift. Masking is on by default when an agent marker is present, and never TTY-gated in that case. `--no-mask` is a `human: true` flag honoured only when stdin and stdout are both terminals and no agent is detected.
@@ -123,7 +155,7 @@ An agent session flips: JSON output, masking on, `reveal` sent through console a
 
 `reveal` under an agent creates an approval request carrying the key, this machine, the harness and the session, and exits 4 with the id, the console page and the expiry; the value is never in that answer. A person approves on the page, and `penv reveal KEY --approval <ID>` redeems it once, which is the audit row that names them both. A request nobody has answered yet is exit 4 again, a denial is exit 2, and an expired or spent id says to ask for a new one. Two asks for the same key in the same session reuse the one request rather than filling the console with duplicates. The routes are in [Cloud-API.md](./Cloud-API.md).
 
-`guard` writes what each harness enforces, from `.env.schema`, idempotently and additively. Guards are folders (`guards/<harness>/`) with a `guard.toml` (detect paths, files to merge, scope, and the hook response shape the harness expects) and templates; the binary knows no harness by name, and `penv hook <harness>` renders the deny response from the folder. Deny patterns are `.env` and `.env.*` (never `.env.schema`, which the hook allows by name), so a new environment file is covered without a list; the binary merges JSON or TOML fragments without ever weakening an existing rule. Ranked: Claude Code (`.claude/settings.json` deny rules in project scope, `sandbox.credentials` mask block printed for user scope, static-binary PreToolUse hook), Codex (permission profile denying `**/*.env`, `ignore_default_excludes=false`), Cursor (`.cursor/cli.json` deny, `.cursor/hooks.json` with `failClosed`), Amp (`amp.guardedFiles.allowlist: []`), Copilot CLI (permissions config plus `--secret-env-vars` names), Gemini (`.gemini/settings.json` PreToolUse), Cline (`.clinerules/hooks/`), Windsurf (`.windsurf/hooks.json`). Native Windows has no Claude Code sandbox; `guard --check` says so.
+`guard` writes what each harness enforces, from `.env.schema`, idempotently and additively. Guards are folders (`guards/<harness>/`) with a `guard.toml` (detect paths, files to merge, scope, and the hook response shape the harness expects) and templates; the binary knows no harness by name, and `penv hook <harness>` renders the deny response from the folder. Deny patterns are `.env` and `.env.*` (never `.env.schema`, which the hook allows by name), so a new environment file is covered without a list; the binary merges JSON or TOML fragments without ever weakening an existing rule. Ranked: Claude Code (`.claude/settings.json` deny rules in project scope, `sandbox.credentials` mask block printed for user scope, static-binary PreToolUse hook), Codex (permission profile denying `**/.env` and `**/.env.*`, `ignore_default_excludes=false`), Cursor (`.cursor/cli.json` deny, `.cursor/hooks.json` with `failClosed`), Amp (`amp.guardedFiles.allowlist: []`), Copilot CLI (permissions config), Gemini (`.gemini/settings.json` PreToolUse), Cline (`.clinerules/hooks/`), Windsurf (`.windsurf/hooks.json`). Native Windows has no Claude Code sandbox; `guard --check` says so.
 
 The hook binary is `penv` itself (`penv hook claude-code`), never a script needing an interpreter, because a missing interpreter fails open.
 
@@ -182,6 +214,11 @@ The API already exists in penv-cloud (`/api/v1/secrets`, `/api/v1/auth/{oidc,aws
 
 Cloud-side: the schema is stored per key next to values; the console renders and edits it; `push` and `pull` carry it. Push targets (Vercel, Netlify, etc.) are cloud integrations, not CLI features. There is no fetch SDK.
 
+**Implementation debt (penv-cloud).** Two things the CLI reads and the server does not yet guarantee:
+
+1. `updatedAt` (RFC 3339) on every key in `GET /envs`. `@rotate` counts from it; until it arrives, `check` reports cloud keys as having no recorded write.
+2. A verified override round trip. A local value file wins over the cloud on its machine, but today `run` cannot tell a deliberate override from a stale pulled copy, so every override warns the same way. The fix: `pull` records each key's `version` beside the file it writes, and `run` compares it with the cloud's, so it can say "stale: the cloud is at v7, `.env.production` holds v5" instead of "replaced". That needs `version` on every key in `GET /envs` (present) and `updatedAt` (above).
+
 ## 9. Claim
 
 ```text
@@ -238,3 +275,4 @@ Each crate depends only on `penv-schema` and the standard library unless the bri
 1. Local mode: schema, dotenv, `init`, `check`, `ls`, `run` with detection and masking, `gen` (ts, py), `guard`, `help --json`, bare `penv`, CI on GitHub Actions.
 2. Cloud mode: `login`, `push`, `pull`, `set`, `unset`, `reveal`, `machine enroll`, cache, environment refusal, audit stamping. penv-cloud is the first project through it, by hand. 2b is `reveal` under an agent, through console approval.
 3. Distribution: release workflow, installers, npm shim, `upgrade`, `completions`.
+4. Local first: the value-file cascade, `@currentEnv`, `@import`, computed values and `penv()`, varlock schemas parse with warnings, `@rotate` reminders with `.penv/config.toml`, local `set`/`unset`, `scan`. The varlock plugin that makes penv.cloud a varlock backend is a separate package.
