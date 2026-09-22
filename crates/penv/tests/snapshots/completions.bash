@@ -13,7 +13,7 @@ _penv() {
             -*) continue ;;
         esac
         case "${cmd:+$cmd }$word" in
-            init|run|push|pull|login|logout|set|unset|ls|check|gen|guard|reveal|machine|"machine enroll"|upgrade|completions|hook|schema|help) cmd="${cmd:+$cmd }$word" ;;
+            init|run|push|pull|login|logout|set|unset|ls|check|gen|guard|reveal|project|"project ls"|"project new"|"project rename"|"project rm"|env|"env ls"|"env new"|"env rename"|"env copy"|"env rm"|machine|"machine enroll"|upgrade|completions|hook|schema|help) cmd="${cmd:+$cmd }$word" ;;
             *) break ;;
         esac
     done
@@ -32,7 +32,7 @@ _penv() {
     words=""
     system=""
     case "$cmd" in
-        "") words="init run push pull login logout set unset ls check gen guard reveal machine upgrade completions hook schema help --json --format --agent" ;;
+        "") words="init run push pull login logout set unset ls check gen guard reveal project env machine upgrade completions hook schema help --json --format --agent" ;;
         init) words="--force --guards --no-guards --output --json --format --agent" ;;
         run) words="--env --no-mask --json --format --agent"; system=-c ;;
         push) words="--env --org --prune --json --format --agent" ;;
@@ -41,11 +41,22 @@ _penv() {
         logout) words="--json --format --agent" ;;
         set) words="--env --value --json --format --agent" ;;
         unset) words="--env --json --format --agent" ;;
-        ls) words="--json --format --agent" ;;
+        ls) words="--env --json --format --agent" ;;
         check) words="--json --format --agent" ;;
         gen) words="--out --check --options --json --format --agent" ;;
         guard) words="--all --check --json --format --agent" ;;
         reveal) words="--env --approval --json --format --agent" ;;
+        project) words="ls new rename rm --json --format --agent" ;;
+        "project ls") words="--org --json --format --agent" ;;
+        "project new") words="--org --json --format --agent" ;;
+        "project rename") words="--org --json --format --agent" ;;
+        "project rm") words="--org --json --format --agent" ;;
+        env) words="ls new rename copy rm --json --format --agent" ;;
+        "env ls") words="--json --format --agent" ;;
+        "env new") words="--json --format --agent" ;;
+        "env rename") words="--json --format --agent" ;;
+        "env copy") words="--json --format --agent" ;;
+        "env rm") words="--json --format --agent" ;;
         machine) words="enroll --json --format --agent" ;;
         "machine enroll") words="--json --format --agent" ;;
         upgrade) words="--check --json --format --agent" ;;

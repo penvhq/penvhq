@@ -1,7 +1,6 @@
 //! Where the binary meets penv.cloud: the client, the keychain, the cache
 //! directory, and the one place a `CloudError` becomes an exit code.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use penv_agent::Detection;
@@ -93,9 +92,91 @@ pub fn address(schema: &Schema, environment: &str) -> Result<Address, CliError> 
             format!(
                 "{SCHEMA_FILE} is not linked to a cloud project: it has no # @penv=org/project line."
             ),
-            "Run penv push. It creates the project and writes that line.",
+            "Run penv pull to link it to a project you already have, or penv push to create one from this folder.",
         )),
     }
+}
+
+/// Give a schema with no header one of the projects this account can see, and
+/// write the header. One project is taken; several are asked for at a terminal.
+pub fn link(
+    cloud: &Cloud,
+    bearer: &Bearer,
+    schema_path: &Path,
+    schema: &mut Schema,
+    may_ask: bool,
+) -> Result<(), CliError> {
+    let spinner = crate::ui::spinner("Looking for your projects");
+    let mut found: Vec<String> = Vec::new();
+    for org in cloud.api.orgs(bearer).map_err(|e| refuse(e, None))? {
+        let projects = cloud
+            .api
+            .projects(bearer, &org.slug)
+            .map_err(|e| refuse(e, None))?;
+        found.extend(projects.iter().map(|p| format!("{}/{}", org.slug, p.slug)));
+    }
+    spinner.stop(&format!("Found {} project(s)", found.len()));
+
+    let chosen = match found.len() {
+        0 => {
+            return Err(CliError::new(
+                "no_project",
+                "your account has no cloud project yet.",
+                "Run penv push to create one from this folder.",
+            ));
+        }
+        1 => found.remove(0),
+        _ if may_ask => ask_project(&found)?,
+        _ => {
+            return Err(CliError::new(
+                "project_required",
+                format!(
+                    "{SCHEMA_FILE} is not linked, and your account has {} projects: {}.",
+                    found.len(),
+                    found.join(", ")
+                ),
+                format!(
+                    "Make this the first line of {SCHEMA_FILE}: # @penv=<org>/<project> @schema=1"
+                ),
+            ));
+        }
+    };
+
+    let (org, project) = chosen.split_once('/').unwrap_or((&chosen, ""));
+    schema.org = Some(org.to_string());
+    schema.project = Some(project.to_string());
+    crate::files::write_file(schema_path, &penv_schema::render(schema))?;
+    note(&format!("linked {SCHEMA_FILE} to {chosen}."));
+    Ok(())
+}
+
+fn ask_project(found: &[String]) -> Result<String, CliError> {
+    if let Some(picked) = crate::ui::select("Which project is this folder?", found, None) {
+        return picked.map(|index| found[index].clone()).map_err(cancelled);
+    }
+    let mut prompt = String::from("Which project is this folder?\n");
+    for (index, name) in found.iter().enumerate() {
+        prompt.push_str(&format!("  {}. {name}\n", index + 1));
+    }
+    prompt.push_str("Number: ");
+    let answer = crate::prompt::read_line(&prompt)?;
+    answer
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .and_then(|number| found.get(number.checked_sub(1)?))
+        .cloned()
+        .ok_or_else(|| {
+            CliError::new(
+                "unreadable_selection",
+                format!(
+                    "{} is not one of the {} projects listed.",
+                    answer.trim(),
+                    found.len()
+                ),
+                "Run penv pull again and answer with a number such as 1.",
+            )
+        })
 }
 
 /// The per-key schema the cloud stores: what `penv schema --json` emits for
@@ -150,6 +231,23 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 format!("{} matches more than one project or environment.", if where_.is_empty() { "that name" } else { &where_ }),
                 "Rename one of them in the console, then run this again.",
             ),
+            (_, "exists") => CliError::new(
+                "exists",
+                "that name is already taken in this project.",
+                "Pick another name, or run penv env ls to see the ones in use.",
+            )
+            .with_exit(Exit::Validation),
+            (_, "live_leases") => CliError::new(
+                "live_leases",
+                "it still has temporary credentials in use, so the server will not delete it yet.",
+                "Revoke them in the console, or wait for them to expire, then run this again.",
+            ),
+            (_, "name_required") => CliError::new(
+                "name_required",
+                "the name is empty, or has no letters or digits in it.",
+                "Use a name such as billing or staging.",
+            )
+            .with_exit(Exit::Validation),
             (401, "expired") => CliError::new(
                 "expired",
                 "your login expired.",
@@ -162,12 +260,23 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 "Run penv login again. If PENV_TOKEN is set, check it is current.",
             )
             .with_exit(Exit::Auth),
+            (403, _) if at.is_none() => CliError::new(
+                "forbidden",
+                "your account is not allowed to do that. Servers and CI tokens can never create, rename or delete.",
+                "Sign in as a person with penv login, or ask an admin for the role in the console.",
+            )
+            .with_exit(Exit::Auth),
             (403, _) => CliError::new(
                 "environment_refused",
                 format!("your account has no access to {where_}."),
                 "Ask an admin to give you a role on that environment in the console, or pick another with --env <name>.",
             )
             .with_exit(Exit::EnvironmentRefused),
+            (404, _) if at.is_none() => CliError::new(
+                "not_found",
+                "that project or environment does not exist on the server.",
+                "Run penv project ls to see the names, then run this again.",
+            ),
             (404, _) => CliError::new(
                 "not_found",
                 format!("{where_} does not exist on the server."),
@@ -217,7 +326,16 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
 /// Everything penv says while a command is still working goes to stderr, so
 /// stdout stays the one object the output contract promises.
 pub fn note(line: &str) {
-    let _ = writeln!(std::io::stderr(), "penv: {line}");
+    crate::ui::note(line);
+}
+
+/// A picker left with Esc or Ctrl-C.
+pub fn cancelled(_: std::io::Error) -> CliError {
+    CliError::new(
+        "cancelled",
+        "nothing was chosen, so nothing changed.",
+        "Run the command again to choose.",
+    )
 }
 
 /// Open the verification page. A session with no terminal only prints it.

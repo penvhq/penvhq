@@ -8,13 +8,54 @@ pub enum Format {
     Text,
 }
 
+/// clap cannot group subcommands, so the grouping is written out. A test keeps
+/// every visible command on it.
+pub const HELP: &str = "{about}
+
+{usage-heading} {usage}
+
+Everyday
+  run        Run a command with your secrets loaded into it
+  ls         List your keys and show which ones have a value
+  set        Save one value (typed hidden, never shown)
+  unset      Delete one value
+  reveal     Show one value; an AI agent needs your approval first
+  check      Find problems in .env.schema and missing values
+
+Move values
+  pull       Write a .env file from the cloud
+  push       Send your local .env to the cloud, then delete the file
+
+Set up a folder
+  init       Create .env.schema from your .env and keep .env out of git
+  gen        Write the typed file for your language (ts, py)
+  guard      Write the rules that keep AI tools out of .env
+
+Cloud
+  login      Sign in
+  logout     Sign out on this machine
+  project    Your projects: ls, new, rename, rm
+  env        A project's environments: ls, new, rename, copy, rm
+  machine    Identities for servers and CI
+
+This tool
+  upgrade    Replace penv with the latest release
+  help       Show help for a command
+
+Options:
+{options}
+
+{after-help}
+";
+
 #[derive(Debug, Parser)]
 #[command(
     name = "penv",
     version,
     about = "penv gets the right values into the right process at the right time.",
     after_help = "Penv Cloud, the secrets manager behind this CLI: https://penv.cloud",
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    help_template = HELP
 )]
 pub struct Cli {
     /// Emit JSON on stdout, whatever stdout is attached to
@@ -75,12 +116,12 @@ pub enum Command {
         output: Option<std::path::PathBuf>,
     },
 
-    /// Validate, then run a command with the values in its environment only
+    /// Run a command with your secrets loaded into it
     Run {
         /// The environment to read
         #[arg(long)]
         env: Option<String>,
-        /// Leave the child's output unmasked
+        /// Show secrets in the command's output instead of hiding them
         #[arg(long)]
         no_mask: bool,
         /// The command to run
@@ -111,13 +152,13 @@ pub enum Command {
         i_am_human: bool,
     },
 
-    /// Sign in with a device code; the credential goes to the OS keychain
+    /// Sign in through your browser; the login is kept in your system's password store
     Login,
 
-    /// Remove the stored credential
+    /// Sign out on this machine
     Logout,
 
-    /// Write one value without echoing it
+    /// Save one value (typed hidden, never shown)
     Set {
         /// The key to write
         key: String,
@@ -129,7 +170,7 @@ pub enum Command {
         value: Option<String>,
     },
 
-    /// Remove one value
+    /// Delete one value
     Unset {
         /// The key to remove
         key: String,
@@ -138,8 +179,12 @@ pub enum Command {
         env: Option<String>,
     },
 
-    /// List keys, types and which ones have a value
-    Ls,
+    /// List your keys and show which ones have a value
+    Ls {
+        /// The environment to read
+        #[arg(long)]
+        env: Option<String>,
+    },
 
     /// Report schema problems and missing values
     Check {
@@ -147,7 +192,7 @@ pub enum Command {
         key: Option<String>,
     },
 
-    /// Write the typed file for a language target
+    /// Write the typed file for your language (ts, py)
     Gen {
         /// The target name, such as ts or py; omit it to list the targets
         target: Option<String>,
@@ -174,7 +219,7 @@ pub enum Command {
         check: bool,
     },
 
-    /// Print one value; an agent session needs a person's approval
+    /// Show one value; an AI agent needs your approval first
     Reveal {
         /// The key to reveal
         key: String,
@@ -186,35 +231,53 @@ pub enum Command {
         approval: Option<String>,
     },
 
-    /// Machine identities
+    /// Your projects: ls, new, rename, rm
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+
+    /// A project's environments: ls, new, rename, copy, rm
+    Env {
+        /// The project, as name or org/name; defaults to the one this folder is linked to
+        #[arg(long, short = 'p', global = true, value_name = "PROJECT")]
+        project: Option<String>,
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
+
+    /// Identities for servers and CI
     Machine {
         #[command(subcommand)]
         command: MachineCommand,
     },
 
-    /// Replace this binary from the latest release
+    /// Replace penv with the latest release
     Upgrade {
-        /// Report what the release carries instead of replacing anything
+        /// Only report what the latest release is
         #[arg(long)]
         check: bool,
     },
 
     /// Print the shell completion script
+    #[command(hide = true)]
     Completions {
         /// bash, zsh, fish, powershell or elvish
         shell: String,
     },
 
     /// Run as a harness hook; a payload it cannot read is refused
+    #[command(hide = true)]
     Hook {
         /// The harness, such as claude-code
         harness: String,
     },
 
     /// Print the schema as JSON
+    #[command(hide = true)]
     Schema,
 
-    /// Print the command manifest
+    /// Show help for a command
     Help {
         /// Print help for one command instead
         command: Option<String>,
@@ -222,10 +285,93 @@ pub enum Command {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum ProjectCommand {
+    /// List your projects and their environments
+    Ls {
+        /// Only this organisation
+        #[arg(long, value_name = "SLUG")]
+        org: Option<String>,
+    },
+    /// Create a project with a development environment
+    New {
+        /// The project name
+        name: String,
+        /// The organisation that owns it
+        #[arg(long, value_name = "SLUG")]
+        org: Option<String>,
+    },
+    /// Rename a project; a folder linked to it is updated too
+    Rename {
+        /// The current name
+        old: String,
+        /// The new name
+        new: String,
+        #[arg(long, value_name = "SLUG")]
+        org: Option<String>,
+    },
+    /// Delete a project and every value in it, for good
+    Rm {
+        /// The project name
+        name: String,
+        #[arg(long, value_name = "SLUG")]
+        org: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EnvCommand {
+    /// List the project's environments
+    Ls,
+    /// Create an empty environment
+    New {
+        /// The environment name
+        name: String,
+    },
+    /// Rename an environment
+    Rename {
+        /// The current name
+        old: String,
+        /// The new name
+        new: String,
+    },
+    /// Create an environment with another one's keys; values are never copied
+    Copy {
+        /// The environment to copy from
+        from: String,
+        /// The environment to create
+        to: String,
+    },
+    /// Delete an environment and every value in it, for good
+    Rm {
+        /// The environment name
+        name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum MachineCommand {
-    /// Bind a server keypair from a one-time secret
+    /// Give this server its own identity, from a one-time secret made in the console
     Enroll {
         /// The one-time enrolment secret
         secret: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn every_visible_command_is_on_the_grouped_help() {
+        for command in Cli::command()
+            .get_subcommands()
+            .filter(|c| !c.is_hide_set())
+        {
+            let listed = HELP
+                .lines()
+                .any(|line| line.trim_start().split(' ').next() == Some(command.get_name()));
+            assert!(listed, "{} is missing from HELP", command.get_name());
+        }
+    }
 }
