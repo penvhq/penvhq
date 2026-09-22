@@ -1152,6 +1152,124 @@ fn pull_with_no_header_and_no_login_says_to_sign_in() {
     assert!(error["fix"].as_str().unwrap().contains("penv login"));
 }
 
+// --- project and env --------------------------------------------------------
+
+const PROJECT_ROUTE: &str = "/api/v1/orgs/acme/projects/api-gateway";
+
+#[test]
+fn project_ls_lists_every_project_with_its_environments() {
+    let mock = Mock::new();
+    orgs_with_projects(&mock, &[PROJECT, "billing"]);
+    let workspace = Workspace::new(&[]);
+    let output = workspace.run(&mock, &["--json", "project", "ls"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json_of(&stdout(&output));
+    assert_eq!(report["projects"][1]["project"], "billing");
+    assert_eq!(report["projects"][0]["org"], "acme");
+}
+
+#[test]
+fn renaming_the_project_this_folder_is_linked_to_rewrites_the_header() {
+    let mock = Mock::new();
+    orgs_with_projects(&mock, &[PROJECT]);
+    mock.on(
+        "PATCH",
+        PROJECT_ROUTE,
+        200,
+        &json!({ "slug": "gateway", "name": "Gateway" }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let output = workspace.run(&mock, &["--json", "project", "rename", PROJECT, "Gateway"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(mock.last("PATCH", PROJECT_ROUTE).json()["name"], "Gateway");
+    assert_eq!(json_of(&stdout(&output))["relinked"], true);
+    assert!(
+        workspace
+            .read(".env.schema")
+            .starts_with("# @penv=acme/gateway"),
+        "{}",
+        workspace.read(".env.schema")
+    );
+}
+
+#[test]
+fn a_delete_without_a_person_at_a_terminal_is_exit_four_with_the_command_to_run() {
+    let mock = Mock::new();
+    orgs_with_projects(&mock, &[PROJECT]);
+    let workspace = Workspace::new(&[]);
+    let output = workspace.run(&mock, &["--json", "project", "rm", PROJECT]);
+
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "confirmation_required");
+    assert_eq!(error["replay"], format!("penv project rm {PROJECT}"));
+
+    let environment = workspace.run(
+        &mock,
+        &["--json", "env", "rm", "staging", "-p", "acme/billing"],
+    );
+    assert_eq!(
+        environment.status.code(),
+        Some(4),
+        "{}",
+        stderr(&environment)
+    );
+    assert_eq!(
+        json_of(&stderr(&environment))["replay"],
+        "penv env rm staging -p acme/billing"
+    );
+}
+
+#[test]
+fn env_copy_names_the_source_and_env_new_does_not() {
+    let mock = Mock::new();
+    let route = format!("{PROJECT_ROUTE}/environments");
+    mock.on(
+        "POST",
+        &route,
+        201,
+        &json!({ "name": "staging", "copied": 2 }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+
+    let copied = workspace.run(&mock, &["--json", "env", "copy", "development", "staging"]);
+    assert_eq!(copied.status.code(), Some(0), "{}", stderr(&copied));
+    assert_eq!(mock.last("POST", &route).json()["from"], "development");
+    assert_eq!(json_of(&stdout(&copied))["copied"], 2);
+
+    let made = workspace.run(&mock, &["--json", "env", "new", "staging"]);
+    assert_eq!(made.status.code(), Some(0), "{}", stderr(&made));
+    assert_eq!(mock.last("POST", &route).json().get("from"), None);
+}
+
+#[test]
+fn env_commands_in_a_folder_with_no_link_ask_for_the_project() {
+    let mock = Mock::new();
+    let workspace = Workspace::new(&[(".env.schema", &local_schema())]);
+    let output = workspace.run(&mock, &["--json", "env", "ls"]);
+
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "project_required", "{error}");
+    assert!(error["fix"].as_str().unwrap().contains("-p <project>"));
+}
+
+#[test]
+fn ls_in_a_linked_folder_reads_the_environment_it_is_asked_for() {
+    let mock = Mock::new();
+    let staging = "/api/v1/envs/acme/api-gateway/staging";
+    mock.on("GET", staging, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let output = workspace.run(&mock, &["--json", "ls", "--env", "staging"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json_of(&stdout(&output));
+    assert_eq!(report["env"], "acme/api-gateway/staging");
+    assert_eq!(report["keys"][0]["value"], "present");
+    assert!(!stdout(&output).contains(SECRET));
+}
+
 #[test]
 fn a_value_the_file_cannot_hold_is_left_out_and_the_rest_is_written() {
     let mock = Mock::new();

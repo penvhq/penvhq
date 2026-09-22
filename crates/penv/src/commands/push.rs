@@ -185,7 +185,11 @@ fn ensure_environment(cloud: &Cloud, bearer: &Bearer, at: &Address) -> Result<()
 
 /// `--org`, else the one org this person has, as the listing spells it. Several
 /// without a flag is a refusal that lists them.
-fn pick_org(cloud: &Cloud, bearer: &Bearer, flag: Option<&str>) -> Result<String, CliError> {
+pub(crate) fn pick_org(
+    cloud: &Cloud,
+    bearer: &Bearer,
+    flag: Option<&str>,
+) -> Result<String, CliError> {
     let orgs = cloud.api.orgs(bearer).map_err(|e| refuse(e, None))?;
     if let Some(asked) = flag.filter(|v| !v.is_empty()) {
         return orgs
@@ -199,7 +203,7 @@ fn pick_org(cloud: &Cloud, bearer: &Bearer, flag: Option<&str>) -> Result<String
                     "no_such_org",
                     format!("this account is in no organisation called {asked}."),
                     match orgs.is_empty() {
-                        true => "Create one in the console, then run penv push again.".to_string(),
+                        true => "Create one in the console, then run this again.".to_string(),
                         false => format!(
                             "Pass one of: {}.",
                             orgs.iter()
@@ -216,7 +220,7 @@ fn pick_org(cloud: &Cloud, bearer: &Bearer, flag: Option<&str>) -> Result<String
         0 => Err(CliError::new(
             "no_org",
             "this account is in no organisation yet.",
-            "Create one in the console, then run penv push again.",
+            "Create one in the console, then run this again.",
         )),
         _ => Err(CliError::new(
             "org_required",
@@ -228,7 +232,7 @@ fn pick_org(cloud: &Cloud, bearer: &Bearer, flag: Option<&str>) -> Result<String
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            "Run penv push --org <slug> to say which one owns this project.",
+            "Add --org <slug> to say which one you mean.",
         )),
     }
 }

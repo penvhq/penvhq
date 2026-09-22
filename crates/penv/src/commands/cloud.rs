@@ -231,6 +231,23 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 format!("{} matches more than one project or environment.", if where_.is_empty() { "that name" } else { &where_ }),
                 "Rename one of them in the console, then run this again.",
             ),
+            (_, "exists") => CliError::new(
+                "exists",
+                "that name is already taken in this project.",
+                "Pick another name, or run penv env ls to see the ones in use.",
+            )
+            .with_exit(Exit::Validation),
+            (_, "live_leases") => CliError::new(
+                "live_leases",
+                "it still has temporary credentials in use, so the server will not delete it yet.",
+                "Revoke them in the console, or wait for them to expire, then run this again.",
+            ),
+            (_, "name_required") => CliError::new(
+                "name_required",
+                "the name is empty, or has no letters or digits in it.",
+                "Use a name such as billing or staging.",
+            )
+            .with_exit(Exit::Validation),
             (401, "expired") => CliError::new(
                 "expired",
                 "your login expired.",
@@ -243,12 +260,23 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 "Run penv login again. If PENV_TOKEN is set, check it is current.",
             )
             .with_exit(Exit::Auth),
+            (403, _) if at.is_none() => CliError::new(
+                "forbidden",
+                "your account is not allowed to do that. Servers and CI tokens can never create, rename or delete.",
+                "Sign in as a person with penv login, or ask an admin for the role in the console.",
+            )
+            .with_exit(Exit::Auth),
             (403, _) => CliError::new(
                 "environment_refused",
                 format!("your account has no access to {where_}."),
                 "Ask an admin to give you a role on that environment in the console, or pick another with --env <name>.",
             )
             .with_exit(Exit::EnvironmentRefused),
+            (404, _) if at.is_none() => CliError::new(
+                "not_found",
+                "that project or environment does not exist on the server.",
+                "Run penv project ls to see the names, then run this again.",
+            ),
             (404, _) => CliError::new(
                 "not_found",
                 format!("{where_} does not exist on the server."),

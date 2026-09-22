@@ -229,6 +229,23 @@ pub struct Project {
     pub environments: Vec<String>,
 }
 
+/// What a delete erased, so the report can say how much is gone.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Deleted {
+    pub name: String,
+    #[serde(default)]
+    pub environments: u64,
+    #[serde(default)]
+    pub parameters: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct CreatedEnvironment {
+    pub name: String,
+    #[serde(default)]
+    pub copied: u64,
+}
+
 /// One parameter as the cloud holds it. `kind` and `version` are the server's
 /// own, so a write sends only what [`CloudKey::to_write`] carries.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -736,6 +753,95 @@ impl Api {
             url: url.clone(),
             reason: "no project slug in the answer".into(),
         })
+    }
+
+    fn project_url(&self, org: &str, project: &str) -> String {
+        self.url(&format!(
+            "/orgs/{}/projects/{}",
+            encode_segment(org),
+            encode_segment(project)
+        ))
+    }
+
+    fn environment_url(&self, org: &str, project: &str, environment: &str) -> String {
+        format!(
+            "{}/environments/{}",
+            self.project_url(org, project),
+            encode_segment(environment)
+        )
+    }
+
+    /// The answer carries the slug the new name became, which the header needs.
+    pub fn rename_project(
+        &self,
+        bearer: &Bearer,
+        org: &str,
+        project: &str,
+        name: &str,
+    ) -> Result<Project> {
+        let url = self.project_url(org, project);
+        let body = json!({ "name": name });
+        let mut response = self.attempt(&url, || {
+            self.authed(self.http.patch(&url), bearer).send_json(&body)
+        })?;
+        expect(&mut response, &[StatusCode::OK])?;
+        read_json(&url, &mut response)
+    }
+
+    pub fn delete_project(&self, bearer: &Bearer, org: &str, project: &str) -> Result<Deleted> {
+        let url = self.project_url(org, project);
+        let mut response =
+            self.attempt(&url, || self.authed(self.http.delete(&url), bearer).call())?;
+        expect(&mut response, &[StatusCode::OK])?;
+        read_json(&url, &mut response)
+    }
+
+    /// `from` copies another environment's keys and settings, never its values.
+    pub fn create_environment(
+        &self,
+        bearer: &Bearer,
+        org: &str,
+        project: &str,
+        name: &str,
+        from: Option<&str>,
+    ) -> Result<CreatedEnvironment> {
+        let url = format!("{}/environments", self.project_url(org, project));
+        let body = without_nulls(json!({ "name": name, "from": from }));
+        let mut response = self.attempt(&url, || {
+            self.authed(self.http.post(&url), bearer).send_json(&body)
+        })?;
+        expect(&mut response, &[StatusCode::CREATED, StatusCode::OK])?;
+        read_json(&url, &mut response)
+    }
+
+    pub fn rename_environment(
+        &self,
+        bearer: &Bearer,
+        org: &str,
+        project: &str,
+        environment: &str,
+        name: &str,
+    ) -> Result<()> {
+        let url = self.environment_url(org, project, environment);
+        let body = json!({ "name": name });
+        let mut response = self.attempt(&url, || {
+            self.authed(self.http.patch(&url), bearer).send_json(&body)
+        })?;
+        expect(&mut response, &[StatusCode::OK])
+    }
+
+    pub fn delete_environment(
+        &self,
+        bearer: &Bearer,
+        org: &str,
+        project: &str,
+        environment: &str,
+    ) -> Result<Deleted> {
+        let url = self.environment_url(org, project, environment);
+        let mut response =
+            self.attempt(&url, || self.authed(self.http.delete(&url), bearer).call())?;
+        expect(&mut response, &[StatusCode::OK])?;
+        read_json(&url, &mut response)
     }
 
     // --- credential exchanges ------------------------------------------------

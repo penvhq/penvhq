@@ -1,5 +1,6 @@
 mod check;
 pub mod cloud;
+mod environment;
 mod r#gen;
 pub mod guard;
 pub mod hook;
@@ -8,6 +9,7 @@ mod login;
 mod logout;
 mod ls;
 mod machine;
+mod project;
 mod pull;
 mod push;
 mod reveal;
@@ -107,7 +109,11 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             command: MachineCommand::Enroll { secret },
         }) => machine::enroll(out, cwd, secret, env),
         Some(Command::Check { key }) => check::run(out, cwd, key.as_deref()),
-        Some(Command::Ls) => ls::run(out, cwd),
+        Some(Command::Ls { env: name }) => ls::run(out, cwd, name.as_deref(), env),
+        Some(Command::Project { command }) => project::run(out, cwd, command, env, cli.agent),
+        Some(Command::Env { project, command }) => {
+            environment::run(out, cwd, project.as_deref(), command, env, cli.agent)
+        }
         Some(Command::Gen {
             target,
             out: to,

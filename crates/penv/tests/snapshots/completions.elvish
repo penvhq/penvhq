@@ -24,24 +24,26 @@ set edit:completion:arg-completer[penv] = {|@words|
     } else {
         if (eq $command 'penv') {
             cand 'init' 'Read .env, write .env.schema, and keep .env out of the repository'
-            cand 'run' 'Validate, then run a command with the values in its environment only'
+            cand 'run' 'Run a command with your secrets loaded into it'
             cand 'push' 'Move local values to the cloud and delete .env'
             cand 'pull' 'Write a plain .env from the cloud'
-            cand 'login' 'Sign in with a device code; the credential goes to the OS keychain'
-            cand 'logout' 'Remove the stored credential'
-            cand 'set' 'Write one value without echoing it'
-            cand 'unset' 'Remove one value'
-            cand 'ls' 'List keys, types and which ones have a value'
+            cand 'login' 'Sign in through your browser; the login is kept in your system''s password store'
+            cand 'logout' 'Sign out on this machine'
+            cand 'set' 'Save one value (typed hidden, never shown)'
+            cand 'unset' 'Delete one value'
+            cand 'ls' 'List your keys and show which ones have a value'
             cand 'check' 'Report schema problems and missing values'
-            cand 'gen' 'Write the typed file for a language target'
+            cand 'gen' 'Write the typed file for your language (ts, py)'
             cand 'guard' 'Write the harness rules that keep agents out of .env'
-            cand 'reveal' 'Print one value; an agent session needs a person''s approval'
-            cand 'machine' 'Machine identities'
-            cand 'upgrade' 'Replace this binary from the latest release'
+            cand 'reveal' 'Show one value; an AI agent needs your approval first'
+            cand 'project' 'Your projects: ls, new, rename, rm'
+            cand 'env' 'A project''s environments: ls, new, rename, copy, rm'
+            cand 'machine' 'Identities for servers and CI'
+            cand 'upgrade' 'Replace penv with the latest release'
             cand 'completions' 'Print the shell completion script'
             cand 'hook' 'Run as a harness hook; a payload it cannot read is refused'
             cand 'schema' 'Print the schema as JSON'
-            cand 'help' 'Print the command manifest'
+            cand 'help' 'Show help for a command'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
@@ -57,7 +59,7 @@ set edit:completion:arg-completer[penv] = {|@words|
         }
         if (eq $command 'penv;run') {
             cand '--env' 'The environment to read'
-            cand '--no-mask' 'Leave the child''s output unmasked'
+            cand '--no-mask' 'Show secrets in the command''s output instead of hiding them'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
@@ -101,6 +103,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
         }
         if (eq $command 'penv;ls') {
+            cand '--env' 'The environment to read'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
@@ -132,8 +135,76 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
         }
+        if (eq $command 'penv;project') {
+            cand 'ls' 'List your projects and their environments'
+            cand 'new' 'Create a project with a development environment'
+            cand 'rename' 'Rename a project; a folder linked to it is updated too'
+            cand 'rm' 'Delete a project and every value in it, for good'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;project;ls') {
+            cand '--org' 'Only this organisation'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;project;new') {
+            cand '--org' 'The organisation that owns it'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;project;rename') {
+            cand '--org' ''
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;project;rm') {
+            cand '--org' ''
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;env') {
+            cand 'ls' 'List the project''s environments'
+            cand 'new' 'Create an empty environment'
+            cand 'rename' 'Rename an environment'
+            cand 'copy' 'Create an environment with another one''s keys; values are never copied'
+            cand 'rm' 'Delete an environment and every value in it, for good'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;env;ls') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;env;new') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;env;rename') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;env;copy') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
+        if (eq $command 'penv;env;rm') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+        }
         if (eq $command 'penv;machine') {
-            cand 'enroll' 'Bind a server keypair from a one-time secret'
+            cand 'enroll' 'Give this server its own identity, from a one-time secret made in the console'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
@@ -144,7 +215,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
         }
         if (eq $command 'penv;upgrade') {
-            cand '--check' 'Report what the release carries instead of replacing anything'
+            cand '--check' 'Only report what the latest release is'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'

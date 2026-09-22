@@ -105,7 +105,8 @@ const META: &[Meta] = &[
     Meta {
         path: "ls",
         implemented: true,
-        exit_codes: &[0, 1, 3],
+        exit_codes: &[0, 1, 3, 5, 6],
+        env_flags: &[("env", "PENV_ENV")],
         ..DEFAULT_META
     },
     Meta {
@@ -133,6 +134,74 @@ const META: &[Meta] = &[
         requires_approval: true,
         exit_codes: &[0, 1, 2, 4, 5, 6],
         env_flags: &[("env", "PENV_ENV")],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "project",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "project ls",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "project new",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 3, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "project rename",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 3, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "project rm",
+        implemented: true,
+        requires_approval: true,
+        exit_codes: &[0, 1, 2, 4, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "env",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "env ls",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "env new",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 3, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "env rename",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 3, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "env copy",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 3, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "env rm",
+        implemented: true,
+        requires_approval: true,
+        exit_codes: &[0, 1, 2, 4, 5],
         ..DEFAULT_META
     },
     Meta {

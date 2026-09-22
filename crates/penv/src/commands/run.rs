@@ -178,7 +178,7 @@ fn cloud_values(
 }
 
 /// Local mode has one environment. `--env`, else `PENV_ENV`, else development.
-fn resolve_environment(flag: Option<&str>, env: &Env) -> Result<String, CliError> {
+pub(crate) fn resolve_environment(flag: Option<&str>, env: &Env) -> Result<String, CliError> {
     let flag = flag.filter(|v| !v.is_empty());
     let from_variable = flag.is_none();
     let name = flag

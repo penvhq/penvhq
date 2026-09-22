@@ -1268,7 +1268,7 @@ checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "penv"
-version = "1.0.0-alpha.4.6"
+version = "1.0.0-beta.1"
 dependencies = [
  "clap",
  "cliclack",
@@ -1286,11 +1286,11 @@ dependencies = [
 
 [[package]]
 name = "penv-agent"
-version = "1.0.0-alpha.4.6"
+version = "1.0.0-beta.1"
 
 [[package]]
 name = "penv-cloud"
-version = "1.0.0-alpha.4.6"
+version = "1.0.0-beta.1"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "penv-dotenv"
-version = "1.0.0-alpha.4.6"
+version = "1.0.0-beta.1"
 dependencies = [
  "penv-schema",
  "thiserror",
@@ -1314,7 +1314,7 @@ dependencies = [
 
 [[package]]
 name = "penv-guards"
-version = "1.0.0-alpha.4.6"
+version = "1.0.0-beta.1"
 dependencies = [
  "minijinja",
  "penv-schema",
@@ -1326,25 +1326,25 @@ dependencies = [
 
 [[package]]
 name = "penv-mask"
-version = "1.0.0-alpha.4.6"
+version = "1.0.0-beta.1"
 
 [[package]]
 name = "penv-release"
-version = "1.0.0-alpha.4.6"
+version = "1.0.0-beta.1"
 dependencies = [
  "penv-cloud",
 ]
 
 [[package]]
 name = "penv-schema"
-version = "1.0.0-alpha.4.6"
+version = "1.0.0-beta.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "penv-targets"
-version = "1.0.0-alpha.4.6"
+version = "1.0.0-beta.1"
 dependencies = [
  "minijinja",
  "penv-schema",

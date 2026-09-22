@@ -87,6 +87,14 @@ pub fn multiselect(
     Some(picker.interact())
 }
 
+/// One typed line. `None` means this session has to ask another way.
+pub fn input(title: &str) -> Option<std::io::Result<String>> {
+    if !pretty() {
+        return None;
+    }
+    Some(cliclack::input(title).required(false).interact())
+}
+
 /// A spinner for one network call. Silent wherever the pretty layer is off.
 pub struct Spinner(Option<cliclack::ProgressBar>);
 
