@@ -208,6 +208,13 @@ test('finding 2: an environment named feature/foo is one path segment, in penvBu
 });
 
 test('finding 3: cacheTtl applies to penvBulk(); without it every load reads', async (t) => {
+  // On macOS varlock decrypts its cache through a Secure Enclave daemon. On GitHub's
+  // macOS runners the daemon fails to bind its socket ("Address already in use", seen
+  // with VARLOCK_DEBUG=1), so every load re-reads, whatever the plugin does.
+  if (process.platform === 'darwin' && process.env.GITHUB_ACTIONS) {
+    t.skip('varlock\'s macOS cache daemon does not start on GitHub runners');
+    return;
+  }
   const bulkSchema = (init) => [
     `# @plugin(${PLUGIN})`, '# @penv=acme/api', `# @initPenv(token=$PENV_TOKEN, url="${URL_ROOT}"${init})`,
     '# @setValuesBulk(penvBulk(production))', '# ---', '# @type=penvToken', 'PENV_TOKEN=', 'STRIPE_KEY=',
@@ -215,9 +222,8 @@ test('finding 3: cacheTtl applies to penvBulk(); without it every load reads', a
   const dir = fs.mkdtempSync(path.join(scratch, 'cache-'));
   let before = requests.length;
   const first = await load(bulkSchema(', cacheTtl="1h"'), {}, dir);
-  // varlock keeps a disk cache only where its key store works. A CI VM without a
-  // usable Secure Enclave (macOS runners) falls back to memory, and then nothing
-  // outlives one load, whatever the plugin does.
+  // varlock keeps a disk cache only where its key store works. A machine with
+  // none falls back to memory, and then nothing outlives one load.
   const cacheDir = path.join(dir, '.config', 'varlock', 'cache');
   if (!fs.existsSync(cacheDir) || fs.readdirSync(cacheDir).length === 0) {
     t.skip(`varlock has no disk cache on this machine (${process.platform})`);
