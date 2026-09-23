@@ -104,7 +104,7 @@ Precedence, highest first: the process environment (a key it already sets keeps 
 
 An environment name is letters, digits, `-`, `_` and inner dots, and never `local` or a suffix that names a non-value file (`schema`, `example`, `sample`, `template`, `defaults`, `vault`, `keys`, `me`), because it becomes part of a file name. `.env.vault`, `.env.keys` and `.env.me` (dotenv-vault, dotenvx) are never read as values. `@import` refuses a value file: its values would become defaults that `penv schema` prints past every guard.
 
-`penv(address)` reads another environment's value: `penv()` (the key it sits on, the form `@varlock/penv-plugin` writes), `penv(KEY)`, `penv(env/KEY)`, `penv(project/env/KEY)`, `penv(org/project/env/KEY)`, with `@penv=` supplying what is left out. Under a header it reads the cloud, with this machine's files for that environment laid over it when it is the same project. Without one it reads that environment's files, and creates an empty `.env.<env>` (or `.env` for development) when there is none. Each address is read once per command.
+`penv(address)` reads another environment's value: `penv()` (the key it sits on, the form `@penvhq/varlock-plugin` writes), `penv(KEY)`, `penv(env/KEY)`, `penv(project/env/KEY)`, `penv(org/project/env/KEY)`, with `@penv=` supplying what is left out. Under a header it reads the cloud, with this machine's files for that environment laid over it when it is the same project. Without one it reads that environment's files, and creates an empty `.env.<env>` (or `.env` for development) when there is none. Each address is read once per command.
 
 The files penv writes (from `pull`, `set`) are plain: UTF-8 without BOM, LF, `KEY=value`, upper snake case keys, no `export`, no spaces around `=`, quotes only when needed, a value holding `$` single-quoted so it reads back literally, no duplicates, no comments emitted. `set` and `unset` change their one key's lines and leave the rest of the file as written.
 
@@ -284,10 +284,18 @@ The API already exists in penv-cloud (`/api/v1/secrets`, `/api/v1/auth/{oidc,aws
 
 Cloud-side: the schema is stored per key next to values; the console renders and edits it; `push` and `pull` carry it. Push targets (Vercel, Netlify, etc.) are cloud integrations, not CLI features. There is no fetch SDK and nothing to install in an app; the one piece of penv that runs inside an app is the preload `run` writes (section 5).
 
-**Implementation debt (penv-cloud).** Two things the CLI reads and the server does not yet guarantee:
+**Implementation debt (penv-cloud).** What the CLI and `@penvhq/varlock-plugin` read, and the server does not yet guarantee. The first two are missing; the rest must be verified against the deployed API before the plugin's first release is announced:
 
 1. `updatedAt` (RFC 3339) on every key in `GET /envs`. `@rotate` counts from it; until it arrives, `check` reports cloud keys as having no recorded write.
 2. A verified override round trip. A local value file wins over the cloud on its machine, but today `run` cannot tell a deliberate override from a stale pulled copy, so every override warns the same way. The fix: `pull` records each key's `version` beside the file it writes, and `run` compares it with the cloud's, so it can say "stale: the cloud is at v7, `.env.production` holds v5" instead of "replaced". That needs `version` on every key in `GET /envs` (present) and `updatedAt` (above).
+
+Must verify:
+
+3. **An environment name holding `/` is one path segment.** Clients send `feature/foo` as `/api/v1/envs/acme/api/feature%2Ffoo`. The server must decode each segment on its own, after routing: a framework or proxy that decodes `%2F` before routing sends that request to project `api`, environment `feature`, key `foo`, or to a 404. Test through the production edge (Vercel), not only the app.
+4. **Key names are data, never object keys with a prototype.** `__proto__`, `constructor` and `toString` are valid key names. Storing, listing and returning them must not touch `Object.prototype`: keep them in arrays or `Object.create(null)` maps, and check the JSON `GET /envs` returns lists `__proto__` as an ordinary key.
+5. **A `pck_` machine token is a bearer on `GET /envs`.** The plugin sends it directly, with no exchange. Confirm it is accepted there, that `403` answers an environment outside its scope and `401` an expired or revoked token, with the `{ "error": ... }` bodies the API section lists.
+6. **No redirects on the API.** Both clients refuse a redirect instead of following it, so `/api/v1/*` must answer directly, with no trailing-slash or locale redirect in front of it.
+7. **`GET /envs` is JSON on every status.** An HTML error page from the platform in front of the app (timeouts, 5xx) reaches the client as "not JSON". Serve JSON bodies for errors the app itself does not produce, or document which statuses may carry HTML.
 
 ### Deploying
 

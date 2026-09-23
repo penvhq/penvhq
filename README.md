@@ -437,10 +437,14 @@ A schema using `@assert`, `@rotate`, `match`, `random`, filters or `penv()` no l
 
 ### penv.cloud from varlock
 
-[`@varlock/penv-plugin`](https://varlock.dev/plugins/penv/) reads penv.cloud from varlock with the same header and addresses, so one `.env.schema` runs under both tools:
+[`@penvhq/varlock-plugin`](./packages/varlock-plugin/README.md) reads penv.cloud from varlock with the same header and addresses, so one `.env.schema` runs under both tools:
+
+```bash
+npm install -D @penvhq/varlock-plugin
+```
 
 ```dotenv
-# @plugin(@varlock/penv-plugin)
+# @plugin(@penvhq/varlock-plugin)
 # @penv=acme/api
 # @initPenv(environment=$APP_ENV, token=$PENV_TOKEN)
 # @currentEnv=$APP_ENV

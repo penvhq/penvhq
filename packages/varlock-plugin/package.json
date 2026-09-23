@@ -1,0 +1,40 @@
+{
+  "name": "@penvhq/varlock-plugin",
+  "version": "0.1.0",
+  "description": "varlock plugin that loads secrets from penv.cloud",
+  "type": "module",
+  "homepage": "https://github.com/penvhq/penvhq/tree/main/packages/varlock-plugin#readme",
+  "bugs": "https://github.com/penvhq/penvhq/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/penvhq/penvhq.git",
+    "directory": "packages/varlock-plugin"
+  },
+  "license": "MIT",
+  "exports": {
+    "./plugin": "./dist/plugin.cjs"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "esbuild src/plugin.ts --bundle --platform=node --format=cjs --target=node22 --external:varlock --outfile=dist/plugin.cjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/plugin.test.mjs"
+  },
+  "keywords": ["varlock", "varlock-plugin", "penv", "penv.cloud", "secrets", "env", ".env"],
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "varlock": ">=1.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0",
+    "varlock": "1.20.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
