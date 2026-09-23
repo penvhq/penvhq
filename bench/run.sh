@@ -4,6 +4,7 @@
 #   bench/run.sh                     # penv from PATH, varlock 1.20.0 from npm
 #   PENV=./target/release/penv bench/run.sh
 #   VARLOCK_VERSION=latest RUNS=50 bench/run.sh
+#   VARLOCK=~/.config/varlock/bin/varlock bench/run.sh   # varlock's standalone binary
 #
 # Needs: penv, node 18+ and npm, git, python3. Writes results to bench-results.json
 # in the current directory. Every secret below is fake.
@@ -22,10 +23,15 @@ for tool in node npm git python3; do command -v "$tool" >/dev/null || die "$tool
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/penv-bench.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 echo "penv:    $("$PENV" --version)"
-echo "varlock: installing $VARLOCK_VERSION into $WORK ..."
-(cd "$WORK" && printf '{"private":true}' > package.json && npm i -s "varlock@$VARLOCK_VERSION" >/dev/null 2>&1) \
-  || die "npm could not install varlock@$VARLOCK_VERSION"
-VARLOCK="$WORK/node_modules/.bin/varlock"
+if [ -n "${VARLOCK:-}" ]; then
+  [ -x "$VARLOCK" ] || die "VARLOCK=$VARLOCK is not an executable"
+  echo "varlock: using $VARLOCK"
+else
+  echo "varlock: installing $VARLOCK_VERSION from npm into $WORK ..."
+  (cd "$WORK" && printf '{"private":true}' > package.json && npm i -s "varlock@$VARLOCK_VERSION" >/dev/null 2>&1) \
+    || die "npm could not install varlock@$VARLOCK_VERSION"
+  VARLOCK="$WORK/node_modules/.bin/varlock"
+fi
 echo "varlock: $("$VARLOCK" --version)"
 echo "machine: $(uname -sm), node $(node --version), $RUNS runs per timing"
 echo

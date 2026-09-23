@@ -419,8 +419,8 @@ Measured on one project against varlock 1.20.0 ([method and script](./docs/BENCH
 
 | | penv | varlock |
 |---|---|---|
-| `run -- true` | ~6 ms | ~370 ms |
-| Peak memory | 11 MB | 95 MB |
+| `run -- true` | ~5 ms | ~230 ms (standalone), ~310 ms (npm) |
+| Peak memory | 11 MB | 70 MB (standalone), 95 MB (npm) |
 | URL built from a secret | masked | warning; value exposed |
 | Password containing `@` in a URL | `${DB_PASSWORD \| urlencode}` | invalid URL |
 | `${KEY:-fallback}` | supported | fails |
@@ -430,7 +430,7 @@ Measured on one project against varlock 1.20.0 ([method and script](./docs/BENCH
 | Server response holding a secret (Node.js, Python) | masked | sent unmasked |
 | `.env` with a secret, not gitignored | `check` fails | passes |
 
-Also in penv: a static binary with no Node.js, and masking inside Python processes.
+Also in penv: an 11.7 MB static binary (varlock's standalone binary is 105 MB and bundles Node.js), and masking inside Python processes.
 
 A schema using `@assert`, `@rotate`, `match`, `random`, filters or `penv()` no longer loads in varlock. `penv check` lists which of these the schema uses.
 

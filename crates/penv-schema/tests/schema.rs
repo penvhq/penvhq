@@ -619,3 +619,56 @@ fn the_header_names_a_provider_before_a_colon_and_keeps_it_on_rewrite() {
         "{rewritten}"
     );
 }
+
+#[test]
+fn hosts_lists_where_a_value_may_go_and_round_trips() {
+    let schema = parse(
+        "# @type=string @hosts=api.stripe.com\nA=\n\n# @type=string @hosts(api.stripe.com, \"*.stripe.com\")\nB=\n",
+    )
+    .unwrap();
+    assert_eq!(schema.get("A").unwrap().hosts, ["api.stripe.com"]);
+    assert_eq!(
+        schema.get("B").unwrap().hosts,
+        ["api.stripe.com", "*.stripe.com"]
+    );
+    let again = parse(&render(&schema)).unwrap();
+    assert_eq!(
+        again.get("B").unwrap().hosts,
+        schema.get("B").unwrap().hosts
+    );
+    assert!(schema.get("A").unwrap().to_json().get("hosts").is_some());
+
+    let plain = parse("# @type=string\nC=\n").unwrap();
+    assert!(
+        plain.get("C").unwrap().to_json().get("hosts").is_none(),
+        "absent unless set"
+    );
+
+    for bad in [
+        "@hosts=*",
+        "@hosts=https://a.com",
+        "@hosts=a.com:443",
+        "@hosts(a.com, *)",
+        "@hosts=",
+    ] {
+        let text = format!("# @type=string {bad}\nX=\n");
+        assert!(parse(&text).is_err(), "{bad} should be refused");
+    }
+}
+
+#[test]
+fn hosts_refuses_a_repeat_and_more_than_thirty_two() {
+    assert!(parse("# @hosts(a.com, a.com)\nK=\n").is_err());
+    let many: Vec<String> = (0..33).map(|i| format!("h{i}.example.com")).collect();
+    assert!(parse(&format!("# @hosts({})\nK=\n", many.join(", "))).is_err());
+    let ok: Vec<String> = (0..32).map(|i| format!("h{i}.example.com")).collect();
+    assert_eq!(
+        parse(&format!("# @hosts({})\nK=\n", ok.join(", ")))
+            .unwrap()
+            .get("K")
+            .unwrap()
+            .hosts
+            .len(),
+        32
+    );
+}

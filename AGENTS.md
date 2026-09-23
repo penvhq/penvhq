@@ -18,7 +18,6 @@ Never run `cargo build --release` locally. Release builds run in CI. `.cargo/con
 - **Drop-in or evict.** A language target, a harness guard, a credential kind, an output format or a command is added by adding a folder or a file and touching nothing that exists. If adding one requires editing a sibling, the seam is wrong; fix the seam.
 - **Data over code.** Targets and guards are folders of TOML plus templates. Command metadata is data the manifest publishes. If a thing can be a file the binary reads, it is not Rust.
 - **Pure cores.** Parsers, validation, detection, masking and merging are pure functions over values. I/O lives at the edge in the binary crate. Tests need no filesystem, network or clock.
-- **Minimal dependencies.** The allowed set is in the design. Adding a crate is a design change and needs the human.
 - **One concept, one name.** No aliases for decorators, flags or commands.
 - **Say only what is true.** Error messages name the key and the fix. The security claim text lives in one place.
 - **Comments:** one short line where the reason is not obvious. No block preambles, no restating the code. Replace a stale comment; never stack a new one on an old one.

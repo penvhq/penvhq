@@ -92,6 +92,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to read')
             [CompletionResult]::new('--no-mask', '--no-mask', [CompletionResultType]::ParameterValue, 'Show secrets in the command''s output instead of hiding them')
             [CompletionResult]::new('--no-preload', '--no-preload', [CompletionResultType]::ParameterValue, 'Do not load penv''s masking into the command''s runtime (Node, Bun, Deno, Python)')
+            [CompletionResult]::new('--sealed', '--sealed', [CompletionResultType]::ParameterValue, 'Give keys with @hosts to the command as placeholders; penv puts the values into requests to those hosts. Always on for an AI agent')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')

@@ -53,6 +53,7 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             env: environment,
             no_mask,
             no_preload,
+            sealed,
             command,
         }) => run::run(
             out,
@@ -60,6 +61,7 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             environment.as_deref(),
             *no_mask,
             *no_preload,
+            *sealed,
             command,
             env,
             cli.agent,

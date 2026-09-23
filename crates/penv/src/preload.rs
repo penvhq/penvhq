@@ -21,7 +21,7 @@ pub struct Files {
 /// This user's cache folder. Never the shared temp folder: another account on
 /// the machine could place its own file there first, and the child would run it
 /// with the secrets in its environment. With no home folder there is no preload.
-fn cache_dir() -> Option<PathBuf> {
+pub fn cache_dir() -> Option<PathBuf> {
     let var = |name: &str| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())

@@ -27,6 +27,7 @@ pub fn run(
     environment: Option<&str>,
     no_mask: bool,
     no_preload: bool,
+    sealed: bool,
     argv: &[String],
     process_env: &Env,
     agent_flag: bool,
@@ -185,7 +186,22 @@ pub fn run(
         }
         _ => crate::preload::Injection::default(),
     };
-    let code = spawn(argv, &values, &environment, secrets, &injection)?;
+    // Sealed: keys with @hosts reach the child as placeholders, and the proxy in
+    // this process puts the values into requests to those hosts. An agent is
+    // always sealed; a person asks for it with --sealed.
+    let mut child_values = values.clone();
+    let mut injection = injection;
+    if (agent || sealed)
+        && let Some(seal) = crate::sealed::run::prepare(&schema, &values, process_env, agent)?
+    {
+        {
+            for (name, placeholder) in &seal.placeholders {
+                child_values.insert(name.clone(), placeholder.clone());
+            }
+            injection.env.extend(seal.env);
+        }
+    }
+    let code = spawn(argv, &child_values, &environment, secrets, &injection)?;
     std::process::exit(after_build(dir, started, code, &named))
 }
 

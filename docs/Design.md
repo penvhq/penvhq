@@ -211,6 +211,29 @@ Bundlers that inline any referenced variable (Parcel, a hand-written `define`) h
 
 `check` also reads the setups that send keys to the client whatever their prefix. `react-native-config` with a sensitive key in a `.env` file, and babel's `transform-inline-environment-variables`, fail it: both ship every key. A `next.config`, `vite.config`, `nuxt.config`, `astro.config`, `svelte.config`, `webpack.config`, `rsbuild.config`, `rspack.config`, Expo `app.config` or babel config that names a sensitive key is a note, because it may only read the key on the server. Parcel in `package.json` is a note that the build scan covers it.
 
+
+### Sealed runs
+
+A key with `@hosts` reaches the command as a placeholder, and the value goes into its requests on the way out. Sealed is always on for an agent; a person asks for it with `run --sealed`.
+
+```dotenv
+# @type=string(startsWith=sk_live_, minLength=32) @hosts=api.stripe.com
+STRIPE_SECRET_KEY=
+```
+
+- **The placeholder** takes its shape from the key's type (`startsWith`, `endsWith`, `minLength`, `maxLength`), never from the value, with at least 24 random characters; `penvph_` is the fallback. A type that leaves no room (`matches`, not a string, too short a `maxLength`) is refused before the command starts (`cannot_seal`, exit 3).
+- **The proxy** runs inside `penv run`, on a loopback port, for the life of the command. The child's HTTP goes through it: `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY=""`, and `NODE_USE_ENV_PROXY=1` for Node's `fetch` and `http` (Node 22.21 and later).
+- **An allowed host** is intercepted with a certificate from an authority made for this run. Its key never leaves penv's memory; the child trusts its certificate through `NODE_EXTRA_CA_CERTS`, `DENO_CERT`, and a bundle of the system roots plus it in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE`. The upstream is verified against the Mozilla roots and the bundle penv's own `SSL_CERT_FILE` names.
+- **What is swapped:** a placeholder becomes the value in the request line and headers sent to a host the key's `@hosts` allows. A request body keeps the placeholder, so an allowed host's write API (a gist, an issue, a message) cannot publish a value. Any value in a response becomes its placeholder again. Requests ask for uncompressed responses so they can be read.
+- **Every other host** is a tunnel: nothing is read, nothing is swapped, and a placeholder sent there stays one. Plain HTTP gets values only for loopback hosts.
+- **HTTP/1.1** only through an allowed host: ALPN offers nothing else. An upgrade (WebSocket) through an allowed host is refused.
+- **Refused before the run:** a wildcard over a domain where anyone can get a name (`*.co.uk`, `*.vercel.app`, `*.amazonaws.com`); `@hosts` on a key that signs requests (`AWS_SECRET_ACCESS_KEY`, names with `SIGNING`, `HMAC`, `WEBHOOK_SECRET`, `JWT_SECRET`), which `check` also fails. `check` notes a `@hosts` key with no shape rule.
+- **Basic auth and echoes:** a placeholder inside `Authorization: Basic` is swapped after decoding it. A value in a response comes back as its placeholder as written, base64, percent-encoded or hex.
+- **Databases:** a `@type=url` key with `@hosts` naming its host gets a URL pointing at a loopback port penv listens on, with a placeholder password (`penvph…`).
+  - **Postgres** (`postgres://`, `postgresql://`): penv answers the command's login itself, as a cleartext password over loopback, and accepts only the placeholder. It then logs in to the real server with SCRAM-SHA-256, MD5 or cleartext, whichever the server asks for, and checks the server's SCRAM signature. TLS to the server follows the URL's `sslmode`: `disable`; `prefer`/`allow` (TLS when offered, certificate unchecked, as libpq does); `require` (TLS, unchecked); `verify-ca`/`verify-full` (checked against the Mozilla roots and penv's `SSL_CERT_FILE` bundle). After login, bytes pass both ways unread.
+  - **Redis** (`redis://`, `rediss://`): the placeholder becomes the password in `AUTH` and `HELLO … AUTH` only. Any other command keeps the placeholder, so `SET k <placeholder>` stores the placeholder. `rediss://` is TLS with the certificate checked.
+  - Any other scheme, a URL with no password, a multi-host URL, or a URL whose host `@hosts` does not name is refused (`cannot_seal`).
+- **Limits:** a signing secret (AWS SigV4, webhook HMAC, JWT keys) cannot be swapped in flight and should not carry `@hosts`. A client that ignores the proxy variables sends the placeholder directly and fails. On Windows, clients that use the OS certificate store (Python, curl) do not trust the run's authority.
 ## 6. Agents
 
 Detection is advisory and ordered, because vendors collide:
@@ -284,18 +307,19 @@ The API already exists in penv-cloud (`/api/v1/secrets`, `/api/v1/auth/{oidc,aws
 
 Cloud-side: the schema is stored per key next to values; the console renders and edits it; `push` and `pull` carry it. Push targets (Vercel, Netlify, etc.) are cloud integrations, not CLI features. There is no fetch SDK and nothing to install in an app; the one piece of penv that runs inside an app is the preload `run` writes (section 5).
 
-**Implementation debt (penv-cloud).** What the CLI and `@penvhq/varlock-plugin` read, and the server does not yet guarantee. The first two are missing; the rest must be verified against the deployed API before the plugin's first release is announced:
+**Implementation debt (penv-cloud).** What the CLI and `@penvhq/varlock-plugin` read, and the server does not yet guarantee. The first three are missing; the rest must be verified against the deployed API before the plugin's first release is announced:
 
 1. `updatedAt` (RFC 3339) on every key in `GET /envs`. `@rotate` counts from it; until it arrives, `check` reports cloud keys as having no recorded write.
-2. A verified override round trip. A local value file wins over the cloud on its machine, but today `run` cannot tell a deliberate override from a stale pulled copy, so every override warns the same way. The fix: `pull` records each key's `version` beside the file it writes, and `run` compares it with the cloud's, so it can say "stale: the cloud is at v7, `.env.production` holds v5" instead of "replaced". That needs `version` on every key in `GET /envs` (present) and `updatedAt` (above).
+2. `hosts` in the per-key schema, as [Cloud-API, `hosts`](./Cloud-API.md#hosts) specifies. `push` and `set` send it; until the server stores it, a `400 schema_invalid` on a write carrying `hosts` is retried once without it and the CLI warns. The committed `.env.schema` keeps `@hosts` either way.
+3. A verified override round trip. A local value file wins over the cloud on its machine, but today `run` cannot tell a deliberate override from a stale pulled copy, so every override warns the same way. The fix: `pull` records each key's `version` beside the file it writes, and `run` compares it with the cloud's, so it can say "stale: the cloud is at v7, `.env.production` holds v5" instead of "replaced". That needs `version` on every key in `GET /envs` (present) and `updatedAt` (above).
 
 Must verify:
 
-3. **An environment name holding `/` is one path segment.** Clients send `feature/foo` as `/api/v1/envs/acme/api/feature%2Ffoo`. The server must decode each segment on its own, after routing: a framework or proxy that decodes `%2F` before routing sends that request to project `api`, environment `feature`, key `foo`, or to a 404. Test through the production edge (Vercel), not only the app.
-4. **Key names are data, never object keys with a prototype.** `__proto__`, `constructor` and `toString` are valid key names. Storing, listing and returning them must not touch `Object.prototype`: keep them in arrays or `Object.create(null)` maps, and check the JSON `GET /envs` returns lists `__proto__` as an ordinary key.
-5. **A `pck_` machine token is a bearer on `GET /envs`.** The plugin sends it directly, with no exchange. Confirm it is accepted there, that `403` answers an environment outside its scope and `401` an expired or revoked token, with the `{ "error": ... }` bodies the API section lists.
-6. **No redirects on the API.** Both clients refuse a redirect instead of following it, so `/api/v1/*` must answer directly, with no trailing-slash or locale redirect in front of it.
-7. **`GET /envs` is JSON on every status.** An HTML error page from the platform in front of the app (timeouts, 5xx) reaches the client as "not JSON". Serve JSON bodies for errors the app itself does not produce, or document which statuses may carry HTML.
+4. **An environment name holding `/` is one path segment.** Clients send `feature/foo` as `/api/v1/envs/acme/api/feature%2Ffoo`. The server must decode each segment on its own, after routing: a framework or proxy that decodes `%2F` before routing sends that request to project `api`, environment `feature`, key `foo`, or to a 404. Test through the production edge (Vercel), not only the app.
+5. **Key names are data, never object keys with a prototype.** `__proto__`, `constructor` and `toString` are valid key names. Storing, listing and returning them must not touch `Object.prototype`: keep them in arrays or `Object.create(null)` maps, and check the JSON `GET /envs` returns lists `__proto__` as an ordinary key.
+6. **A `pck_` machine token is a bearer on `GET /envs`.** The plugin sends it directly, with no exchange. Confirm it is accepted there, that `403` answers an environment outside its scope and `401` an expired or revoked token, with the `{ "error": ... }` bodies the API section lists.
+7. **No redirects on the API.** Both clients refuse a redirect instead of following it, so `/api/v1/*` must answer directly, with no trailing-slash or locale redirect in front of it.
+8. **`GET /envs` is JSON on every status.** An HTML error page from the platform in front of the app (timeouts, 5xx) reaches the client as "not JSON". Serve JSON bodies for errors the app itself does not produce, or document which statuses may carry HTML.
 
 ### Deploying
 

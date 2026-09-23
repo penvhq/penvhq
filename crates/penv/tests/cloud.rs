@@ -1818,3 +1818,93 @@ fn ci_and_aws_credentials_are_withheld_from_a_config_named_root_too() {
         "no proof of any kind reached it"
     );
 }
+
+fn hosts_workspace() -> Workspace {
+    let schema = cloud_schema().replacen(
+        "STRIPE_SECRET_KEY=",
+        "# @hosts=api.stripe.com\nSTRIPE_SECRET_KEY=",
+        1,
+    );
+    Workspace::new(&[
+        (".env.schema", &schema),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ])
+}
+
+fn projects(mock: &Mock) {
+    mock.on(
+        "GET",
+        "/api/v1/orgs",
+        200,
+        &json!({ "orgs": [{ "slug": "acme", "name": "Acme" }] }).to_string(),
+    );
+    mock.on(
+        "GET",
+        "/api/v1/orgs/acme/projects",
+        200,
+        &json!({ "projects": [{ "slug": SLUG, "name": PROJECT, "environments": ["development"] }] }).to_string(),
+    );
+}
+
+const PUT_OK: &str = r#"{ "written": 1, "unchanged": 0, "pruned": 0, "etag": "\"abc\"" }"#;
+
+#[test]
+fn push_sends_hosts_in_the_key_schema() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on("PUT", ENVS, 200, PUT_OK);
+    let workspace = hosts_workspace();
+    let output = workspace.run(&mock, &["--json", "push"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let puts = mock.hits("PUT", ENVS);
+    assert_eq!(puts.len(), 1);
+    let body = puts[0].json();
+    let key = body["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == "STRIPE_SECRET_KEY")
+        .unwrap()
+        .clone();
+    assert_eq!(key["schema"]["hosts"], json!(["api.stripe.com"]), "{body}");
+    assert!(!stderr(&output).contains("does not store @hosts"));
+}
+
+#[test]
+fn a_server_that_does_not_store_hosts_yet_gets_the_push_without_it() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on("PUT", ENVS, 400, r#"{ "error": "schema_invalid" }"#);
+    mock.on("PUT", ENVS, 200, PUT_OK);
+    let workspace = hosts_workspace();
+    let output = workspace.run(&mock, &["--json", "push"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let puts = mock.hits("PUT", ENVS);
+    assert_eq!(puts.len(), 2, "one retry, no more");
+    assert!(puts[0].body.contains("\"hosts\""));
+    assert!(!puts[1].body.contains("\"hosts\""), "{}", puts[1].body);
+    assert!(
+        stderr(&output).contains("does not store @hosts yet"),
+        "{}",
+        stderr(&output)
+    );
+    let schema = std::fs::read_to_string(workspace.path().join(".env.schema")).unwrap();
+    assert!(
+        schema.contains("@hosts=api.stripe.com"),
+        "the file keeps it"
+    );
+}
+
+#[test]
+fn a_schema_error_with_no_hosts_to_drop_is_not_retried() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on("PUT", ENVS, 400, r#"{ "error": "schema_invalid" }"#);
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let output = workspace.run(&mock, &["--json", "push"]);
+    assert_ne!(output.status.code(), Some(0));
+    assert_eq!(mock.hits("PUT", ENVS).len(), 1);
+}

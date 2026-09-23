@@ -64,6 +64,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--env' 'The environment to read'
             cand '--no-mask' 'Show secrets in the command''s output instead of hiding them'
             cand '--no-preload' 'Do not load penv''s masking into the command''s runtime (Node, Bun, Deno, Python)'
+            cand '--sealed' 'Give keys with @hosts to the command as placeholders; penv puts the values into requests to those hosts. Always on for an AI agent'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
