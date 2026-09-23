@@ -211,6 +211,23 @@ Bundlers that inline any referenced variable (Parcel, a hand-written `define`) h
 
 `check` also reads the setups that send keys to the client whatever their prefix. `react-native-config` with a sensitive key in a `.env` file, and babel's `transform-inline-environment-variables`, fail it: both ship every key. A `next.config`, `vite.config`, `nuxt.config`, `astro.config`, `svelte.config`, `webpack.config`, `rsbuild.config`, `rspack.config`, Expo `app.config` or babel config that names a sensitive key is a note, because it may only read the key on the server. Parcel in `package.json` is a note that the build scan covers it.
 
+
+### Sealed runs
+
+A key with `@hosts` reaches the command as a placeholder, and the value goes into its requests on the way out. Sealed is always on for an agent; a person asks for it with `run --sealed`.
+
+```dotenv
+# @type=string(startsWith=sk_live_, minLength=32) @hosts=api.stripe.com
+STRIPE_SECRET_KEY=
+```
+
+- **The placeholder** takes its shape from the key's type (`startsWith`, `endsWith`, `minLength`, `maxLength`), never from the value, with at least 24 random characters; `penvph_` is the fallback. A type that leaves no room (`matches`, not a string, too short a `maxLength`) is refused before the command starts (`cannot_seal`, exit 3).
+- **The proxy** runs inside `penv run`, on a loopback port, for the life of the command. The child's HTTP goes through it: `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY=""`, and `NODE_USE_ENV_PROXY=1` for Node's `fetch` and `http` (Node 22.21 and later).
+- **An allowed host** is intercepted with a certificate from an authority made for this run. Its key never leaves penv's memory; the child trusts its certificate through `NODE_EXTRA_CA_CERTS`, `DENO_CERT`, and a bundle of the system roots plus it in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE`. The upstream is verified against the Mozilla roots and the bundle penv's own `SSL_CERT_FILE` names.
+- **What is swapped:** a placeholder becomes the value in the request line and headers sent to a host the key's `@hosts` allows. A request body keeps the placeholder, so an allowed host's write API (a gist, an issue, a message) cannot publish a value. Any value in a response becomes its placeholder again. Requests ask for uncompressed responses so they can be read.
+- **Every other host** is a tunnel: nothing is read, nothing is swapped, and a placeholder sent there stays one. Plain HTTP gets values only for loopback hosts.
+- **HTTP/1.1** only through an allowed host: ALPN offers nothing else. An upgrade (WebSocket) through an allowed host is refused.
+- **Limits:** a database URL (`@type=url` with `@hosts`) is refused until the database proxy lands. A signing secret (AWS SigV4, webhook HMAC, JWT keys) cannot be swapped in flight and should not carry `@hosts`. A client that ignores the proxy variables sends the placeholder directly and fails. On Windows, clients that use the OS certificate store (Python, curl) do not trust the run's authority.
 ## 6. Agents
 
 Detection is advisory and ordered, because vendors collide:

@@ -132,6 +132,9 @@ pub enum Command {
         /// Do not load penv's masking into the command's runtime (Node, Bun, Deno, Python)
         #[arg(long)]
         no_preload: bool,
+        /// Give keys with @hosts to the command as placeholders; penv puts the values into requests to those hosts. Always on for an AI agent
+        #[arg(long)]
+        sealed: bool,
         /// The command to run
         #[arg(last = true, num_args = 1..)]
         command: Vec<String>,
