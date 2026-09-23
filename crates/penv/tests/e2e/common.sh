@@ -13,7 +13,15 @@ done
 # A path a native program understands: C:\... under Git Bash, as it is elsewhere.
 native() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 WORK=$(mktemp -d)
-trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$WORK"' EXIT
+# A server still holding its files (Windows) must not turn a pass into a fail.
+cleanup() {
+  local status=$?
+  kill $(jobs -p) 2>/dev/null || true
+  wait 2>/dev/null || true
+  rm -rf "$WORK" 2>/dev/null || true
+  exit "$status"
+}
+trap cleanup EXIT
 cd "$WORK"
 openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 2 -subj "/CN=penv e2e CA" \
   -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign" 2>/dev/null
