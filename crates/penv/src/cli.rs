@@ -125,6 +125,9 @@ pub enum Command {
         /// Show secrets in the command's output instead of hiding them
         #[arg(long)]
         no_mask: bool,
+        /// Do not load penv's masking into the command's runtime (Node, Bun, Deno, Python)
+        #[arg(long)]
+        no_preload: bool,
         /// The command to run
         #[arg(last = true, num_args = 1..)]
         command: Vec<String>,

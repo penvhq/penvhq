@@ -119,6 +119,32 @@ pub const CLIENT_OUTPUT: [&str; 8] = [
     ".vercel/output/static",
 ];
 
+/// React Native release bundles land under the native projects, at paths that
+/// move between versions (`android/app/build/generated/assets/react/release/`,
+/// `android/app/build/ASSETS/createBundleReleaseJsAndAssets/`, Xcode's build
+/// products), so these folders are read for bundle files by name only.
+pub const NATIVE_OUTPUT: [&str; 2] = ["android/app/build", "ios/build"];
+
+fn is_native_bundle(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    name.ends_with(".bundle") || name.ends_with(".jsbundle") || name.ends_with(".hbc")
+}
+
+/// Bundles under the React Native build folders changed at or after `since`.
+pub fn native_bundles_since(dir: &Path, since: std::time::SystemTime) -> Vec<PathBuf> {
+    let roots: Vec<PathBuf> = NATIVE_OUTPUT
+        .iter()
+        .map(|d| dir.join(d))
+        .filter(|p| p.is_dir())
+        .collect();
+    let mut files = changed_since(&roots, since);
+    files.retain(|p| is_native_bundle(p));
+    files
+}
+
 /// Client output directories under `dir` that exist.
 pub fn client_output(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = CLIENT_OUTPUT
@@ -143,6 +169,11 @@ pub fn find(files: &[PathBuf], secrets: &[(String, String)]) -> Vec<(PathBuf, us
     let mut found = Vec::new();
     for file in files {
         let Some(text) = read_text(file) else {
+            // Hermes bytecode and other binary bundles keep strings as raw bytes:
+            // look for each value as written, and report the file without a line.
+            for name in raw_hits(file, secrets) {
+                found.push((file.clone(), 0, name));
+            }
             continue;
         };
         if !leaks_any(&values, &text) {
@@ -160,6 +191,31 @@ pub fn find(files: &[PathBuf], secrets: &[(String, String)]) -> Vec<(PathBuf, us
         }
     }
     found
+}
+
+/// Keys whose raw value appears in a binary file. Bundles may be large, so the
+/// size cap is higher for them.
+fn raw_hits(path: &Path, secrets: &[(String, String)]) -> Vec<String> {
+    let cap = if is_native_bundle(path) {
+        64 * 1024 * 1024
+    } else {
+        MAX_BYTES
+    };
+    let Ok(meta) = path.metadata() else {
+        return Vec::new();
+    };
+    if meta.len() > cap {
+        return Vec::new();
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    secrets
+        .iter()
+        .filter(|(_, v)| v.len() >= penv_mask::MIN_SECRET_LEN)
+        .filter(|(_, v)| bytes.windows(v.len()).any(|w| w == v.as_bytes()))
+        .map(|(n, _)| n.clone())
+        .collect()
 }
 
 fn read_text(path: &Path) -> Option<String> {

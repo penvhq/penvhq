@@ -61,6 +61,7 @@ set edit:completion:arg-completer[penv] = {|@words|
         if (eq $command 'penv;run') {
             cand '--env' 'The environment to read'
             cand '--no-mask' 'Show secrets in the command''s output instead of hiding them'
+            cand '--no-preload' 'Do not load penv''s masking into the command''s runtime (Node, Bun, Deno, Python)'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'

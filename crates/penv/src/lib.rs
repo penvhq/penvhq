@@ -14,6 +14,7 @@ pub mod error;
 pub mod files;
 pub mod manifest;
 pub mod output;
+pub mod preload;
 pub mod prompt;
 pub mod source;
 pub mod ui;

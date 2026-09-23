@@ -140,7 +140,7 @@ Functions, `${KEY}` expansion and `penv()` addresses: [Design, section 2](./docs
 An agent runs as you, so it can read what you can read. penv narrows that:
 
 - Nothing at rest once pushed. There is no `.env` to `cat`.
-- `penv run` injects into the child process only, and scrubs every sensitive value from the child's output on every run, in each encoded form [`penv-mask`](./crates/penv-mask/src/lib.rs) lists. `--no-mask` works only for a person at a terminal.
+- `penv run` injects into the child process only, and scrubs every sensitive value from the child's output on every run, in each encoded form [`penv-mask`](./crates/penv-mask/src/lib.rs) lists. `--no-mask` works only for a person at a terminal. For Node, Bun, Deno and Python, a preload also masks what the app hands `console` or `logging` and what it serves over HTTP: [Design, inside the process](./docs/Design.md#inside-the-process).
 - A `NEXT_PUBLIC_`, `VITE_`, `PUBLIC_`, `EXPO_PUBLIC_`, `NUXT_PUBLIC_`, `REACT_APP_`, `GATSBY_`, `VUE_APP_` or `STORYBOOK_` key built from a secret fails `check` and `run`. After a build, `run` reads `.next/static`, `dist`, `build`, `out` and the other browser output folders and fails on any secret it finds: [Design, browser safety](./docs/Design.md#browser-safety).
 - `penv guard` writes what each harness actually enforces, from the schema: deny rules and a sandbox block for Claude Code, a permission profile for Codex, deny rules and fail-closed hooks for Cursor, and the equivalents for Copilot, Gemini, Cline, Windsurf and Amp. The hook is the penv binary itself, never a script that fails open.
 - `reveal` needs a person to approve in the console. An agent can ask; a human clicks.

@@ -20,11 +20,13 @@ use crate::ui;
 /// Validate, then hand the values to one child process and nothing else. The
 /// child's output is this command's output, so penv writes only to stderr and
 /// leaves with the child's exit code.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     out: &Output,
     cwd: &Path,
     environment: Option<&str>,
     no_mask: bool,
+    no_preload: bool,
     argv: &[String],
     process_env: &Env,
     agent_flag: bool,
@@ -149,7 +151,38 @@ pub fn run(
     // Coarse filesystem clocks: a build that finishes within the same tick
     // still counts as after the start.
     let started = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
-    let code = spawn(argv, &values, &environment, secrets)?;
+    // The preload follows masking. Turning it off is a person's move, like
+    // --no-mask: an agent could otherwise start a server that echoes the
+    // environment and read the secret back over HTTP.
+    let wants_preload = !(no_preload && !agent && interactive)
+        && (agent
+            || crate::config::Config::load(dir)
+                .map(|c| c.preload())
+                .unwrap_or(true));
+    if no_preload && (agent || !interactive) {
+        ui::warn(
+            "--no-preload was ignored. It works only when you run penv yourself in a terminal, with no pipe and no AI agent.",
+        );
+    }
+    let injection = match (mask && wants_preload, crate::preload::files()) {
+        (true, Some(files)) => {
+            let names: Vec<String> = named.iter().map(|(n, _)| n.clone()).collect();
+            crate::preload::inject(
+                &files,
+                &names,
+                argv,
+                |name| {
+                    values
+                        .get(name)
+                        .cloned()
+                        .or_else(|| std::env::var(name).ok())
+                },
+                |program| crate::preload::deno_has_preload(program, &files),
+            )
+        }
+        _ => crate::preload::Injection::default(),
+    };
+    let code = spawn(argv, &values, &environment, secrets, &injection)?;
     std::process::exit(after_build(dir, started, code, &named))
 }
 
@@ -166,7 +199,8 @@ fn after_build(
         return code;
     }
     let dirs = super::scan::client_output(dir);
-    let files = super::scan::changed_since(&dirs, started);
+    let mut files = super::scan::changed_since(&dirs, started);
+    files.extend(super::scan::native_bundles_since(dir, started));
     if files.is_empty() {
         return code;
     }
@@ -175,9 +209,13 @@ fn after_build(
         return code;
     }
     for (file, line, key) in &found {
-        ui::warn(&format!(
-            "{}:{line} holds the value of {key}, and that folder ships to the browser.",
+        let at = if *line == 0 {
             show(file)
+        } else {
+            format!("{}:{line}", show(file))
+        };
+        ui::warn(&format!(
+            "{at} holds the value of {key}, and that file ships to the browser or the app."
         ));
     }
     ui::warn(
@@ -236,12 +274,23 @@ fn spawn(
     values: &Values,
     environment: &str,
     secrets: Vec<String>,
+    injection: &crate::preload::Injection,
 ) -> Result<i32, CliError> {
     let piped = !secrets.is_empty();
     let mut command = Command::new(program(&argv[0]));
-    command.args(&argv[1..]);
+    if injection.deno_args.is_empty() || argv.len() < 2 {
+        command.args(&argv[1..]);
+    } else {
+        command
+            .arg(&argv[1])
+            .args(&injection.deno_args)
+            .args(&argv[2..]);
+    }
     command.env("PENV_ENV", environment);
     for (key, value) in values {
+        command.env(key, value);
+    }
+    for (key, value) in &injection.env {
         command.env(key, value);
     }
     command.stdin(Stdio::inherit());

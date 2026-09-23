@@ -34,7 +34,7 @@ _penv() {
     case "$cmd" in
         "") words="init run push pull login logout set unset ls check gen scan guard reveal project env machine upgrade completions hook schema help --json --format --agent" ;;
         init) words="--force --guards --no-guards --output --json --format --agent" ;;
-        run) words="--env --no-mask --json --format --agent"; system=-c ;;
+        run) words="--env --no-mask --no-preload --json --format --agent"; system=-c ;;
         push) words="--env --org --prune --json --format --agent" ;;
         pull) words="--env --i-am-human --json --format --agent" ;;
         login) words="--json --format --agent" ;;

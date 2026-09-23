@@ -48,12 +48,14 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
         Some(Command::Run {
             env: environment,
             no_mask,
+            no_preload,
             command,
         }) => run::run(
             out,
             cwd,
             environment.as_deref(),
             *no_mask,
+            *no_preload,
             command,
             env,
             cli.agent,

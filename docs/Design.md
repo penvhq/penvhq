@@ -173,6 +173,29 @@ then: lay every local value file for the environment over the cloud values,
 
 Target: under 50ms to exec on a warm cache. Injection is into the child environment only. Output masking scrubs the child's stdout and stderr for every sensitive value, boundary-safe across chunk splits, plus base64 and JSON-escaped forms of each value. The masker's secret list is every value present in the resolved environment except keys the schema marks public; a `.env` key the schema does not list is masked and `check` names it as drift. Masking is on for every run, a person's terminal and CI included, because a log is copied further than anyone expects. `--no-mask` is a `human: true` flag honoured only when stdin and stdout are both terminals and no agent is detected. Masking pipes the child's output, so when penv itself is on a terminal it sets `FORCE_COLOR=1` and `CLICOLOR_FORCE=1` for the child, unless `NO_COLOR` or either variable is already set, to keep colour. A sensitive value shorter than 4 characters cannot be masked; `run` names the key and `check` notes it.
 
+### Inside the process
+
+The pipe sees what the child prints, not what it hands a log shipper or sends to a client. `run` closes that with a preload that ships inside the binary, is written to this user's cache folder (`~/.cache/penv`, `~/Library/Caches/penv`, `%LOCALAPPDATA%\penv`; never the shared temp folder, where another account could place its own file first; mode 700) and is loaded into the child's runtime:
+
+| Runtime | How it loads |
+|---|---|
+| Node, and everything launched through it (Next.js, Vite, Nuxt, Remix, Astro, tsx, npm scripts) | `NODE_OPTIONS=--require`, appended to any existing value |
+| Bun | `BUN_OPTIONS=--preload=`; Bun does not unquote it, so a cache path with a space leaves Bun to the pipe alone |
+| Deno | `--preload` added after `deno run`, `serve`, `test` and `watch`, when that Deno lists the flag (asked once per binary); `deno task` is left alone |
+| Python | `sitecustomize.py` first on `PYTHONPATH`; a project's own `sitecustomize` still runs after it |
+| Ruby, Java, .NET, PHP, Go, Rust and other compiled languages | not loaded; the pipe and the output scans are what cover them |
+
+What it masks:
+
+- JavaScript: `console` arguments, including functions a log shipper assigns later, because each method is an accessor that wraps whatever is set. Writes on sockets a server accepted, which cover `res.write`, raw `res.socket.write`, WebSocket frames and HTTPS plaintext. Bodies of a web `Response`, which cover `Bun.serve` and `Deno.serve`.
+- Python: log records at creation (`msg`, `args`) and `getMessage`. Bytes sent on accepted connections.
+
+Served bytes keep their length (two bytes kept, the rest `*`), so a `Content-Length` the app already sent stays right. Outbound requests are never touched: a secret in an `Authorization` header to its own API is doing its job. Key names arrive in `PENV_SENSITIVE`, and values are read from the child's own environment, so no second copy exists. Under Deno, only variables the app was granted are read, so the preload never raises a permission prompt. Any failure inside the preload leaves the app as it was.
+
+`--no-preload` and `.penv/config.toml` `[run] preload = false` turn it off for a person at a terminal. An agent session ignores both: otherwise an agent could start a server that echoes its environment and read the secret back over HTTP.
+
+This stops accidental leaks and naive echoes. It is not a sandbox: code written to disguise a value (reversed, XORed, split across writes) gets past any in-process masking. uvloop and other native event loops bypass Python's socket layer.
+
 ### Browser safety
 
 A key whose name starts with a public prefix is sent to the browser by its framework, so it is public: `NEXT_PUBLIC_` (Next.js), `VITE_` (Vite, and Remix, SolidStart and TanStack Start on it), `PUBLIC_` (SvelteKit, Astro, Rsbuild), `EXPO_PUBLIC_` (Expo), `NUXT_PUBLIC_` (Nuxt's public runtime config), `REACT_APP_` (Create React App), `GATSBY_` (Gatsby), `VUE_APP_` (Vue CLI), `STORYBOOK_` (Storybook). A custom Vite `envPrefix` or any other goes in `.penv/config.toml`:
@@ -184,7 +207,9 @@ prefixes = ["APP_PUBLIC_"]
 
 A public key defaults to `@sensitive=false`; marking one `@sensitive` is a schema error. A public key computed from a sensitive value (taint) fails `check` and stops `run` with exit 3, naming the key and prefix. A secret that only decides a public value (`NEXT_PUBLIC_MODE=if(startsWith($KEY, sk_live_), live, test)`) is allowed.
 
-Bundlers that inline any referenced variable (Parcel, a hand-written `define`) have no prefix to check, so the output is checked instead. After a run that exits 0, penv reads the files it wrote under `.next/static`, `out`, `dist`, `build`, `.output/public`, `.svelte-kit/output/client`, `storybook-static`, `.vercel/output/static`, and `public` when a Gatsby config is present. A sensitive value found there in any masked form turns the exit code into 3 and names file, line and key. Symbolic links are not followed and value files are skipped. `penv scan <dir>` runs the same check on demand.
+Bundlers that inline any referenced variable (Parcel, a hand-written `define`) have no prefix to check, so the output is checked instead. After a run that exits 0, penv reads the files it wrote under `.next/static`, `out`, `dist`, `build`, `.output/public`, `.svelte-kit/output/client`, `storybook-static`, `.vercel/output/static`, and `public` when a Gatsby config is present. React Native bundles are read by name (`*.bundle`, `*.jsbundle`, `*.hbc`) under `android/app/build` and `ios/build`, because their exact paths move between versions; Hermes bytecode is searched as raw bytes and reported without a line. A sensitive value found there in any masked form turns the exit code into 3 and names file, line and key. Symbolic links are not followed and value files are skipped. `penv scan <dir>` runs the same check on demand.
+
+`check` also reads the setups that send keys to the client whatever their prefix. `react-native-config` with a sensitive key in a `.env` file, and babel's `transform-inline-environment-variables`, fail it: both ship every key. A `next.config`, `vite.config`, `nuxt.config`, `astro.config`, `svelte.config`, `webpack.config`, `rsbuild.config`, `rspack.config`, Expo `app.config` or babel config that names a sensitive key is a note, because it may only read the key on the server. Parcel in `package.json` is a note that the build scan covers it.
 
 ## 6. Agents
 
@@ -255,7 +280,7 @@ One fixture schema is snapshot-rendered through every target in CI. `gen --check
 
 The API already exists in penv-cloud (`/api/v1/secrets`, `/api/v1/auth/{oidc,aws,keypair,revoke}`, `/api/v1/dynamic`). A machine identity is bound to one project and environment with a role and proves itself by one of: `oidc` (platform JWT exchanged for a short-lived credential; the binary fixes the lifetime at 15 minutes), `aws-iam` (SigV4-signed STS request), `bound-keypair` (Ed25519 challenge-response with a generation counter, for hosts that can attest nothing), `token` (`pck_` bearer with a required expiry; the last resort). The variable is `PENV_TOKEN`.
 
-Cloud-side: the schema is stored per key next to values; the console renders and edits it; `push` and `pull` carry it. Push targets (Vercel, Netlify, etc.) are cloud integrations, not CLI features. There is no fetch SDK.
+Cloud-side: the schema is stored per key next to values; the console renders and edits it; `push` and `pull` carry it. Push targets (Vercel, Netlify, etc.) are cloud integrations, not CLI features. There is no fetch SDK and nothing to install in an app; the one piece of penv that runs inside an app is the preload `run` writes (section 5).
 
 **Implementation debt (penv-cloud).** Two things the CLI reads and the server does not yet guarantee:
 

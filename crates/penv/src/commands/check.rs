@@ -135,6 +135,12 @@ pub fn run(
             notes.push(format!("{key} is built from a sensitive value, so penv masks it though it is marked @sensitive=false"));
         }
     }
+    let (config_violations, config_notes) =
+        bundler_configs(dir, &schema, &resolved.tainted, &resolved.layers.origin);
+    if only.is_none() {
+        violations.extend(config_violations);
+    }
+    notes.extend(config_notes);
     if let Some(features) = penv_only(&schema_path) {
         notes.push(format!(
             "{} uses penv-only features ({features}); varlock will not load it",
@@ -393,4 +399,128 @@ fn penv_only(schema_path: &Path) -> Option<String> {
         acc
     });
     (!found.is_empty()).then(|| found.join(", "))
+}
+
+/// Config files that can send any variable to the client, whatever its prefix:
+/// Next.js `env`, Vite and webpack `define`, Expo `extra`, Nuxt
+/// `runtimeConfig.public`, Astro `astro:env`, Rsbuild and Rspack `define`.
+const BUNDLER_CONFIGS: [&str; 11] = [
+    "next.config",
+    "vite.config",
+    "nuxt.config",
+    "astro.config",
+    "svelte.config",
+    "webpack.config",
+    "rsbuild.config",
+    "rspack.config",
+    "app.config",
+    "babel.config",
+    ".babelrc",
+];
+
+/// Bundler setups that ship server keys to the client. Two are certain and fail
+/// `check`: `react-native-config`, which puts every key in `.env` into the app,
+/// and babel's inline-environment plugin, which inlines every variable at build.
+/// A config file that names a sensitive key is a note: it may only read it on
+/// the server. Parcel inlines what browser code names; the build scan covers it.
+fn bundler_configs(
+    dir: &Path,
+    schema: &penv_schema::Schema,
+    tainted: &std::collections::BTreeSet<String>,
+    origin: &std::collections::BTreeMap<String, std::path::PathBuf>,
+) -> (Vec<Violation>, Vec<String>) {
+    let sensitive: Vec<&str> = schema
+        .keys
+        .iter()
+        .map(|k| k.name.as_str())
+        .filter(|name| source::is_sensitive(schema, tainted, name))
+        .collect();
+    let mut violations = Vec::new();
+    let mut notes = Vec::new();
+    let package = std::fs::read_to_string(dir.join("package.json")).unwrap_or_default();
+    let depends = |name: &str| package.contains(&format!("\"{name}\""));
+
+    if depends("react-native-config") {
+        let in_dotenv: Vec<&str> = sensitive
+            .iter()
+            .copied()
+            .filter(|name| {
+                origin
+                    .get(*name)
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(".env"))
+            })
+            .collect();
+        if !in_dotenv.is_empty() {
+            violations.push(Violation::new(
+                "react-native-config",
+                "public",
+                format!(
+                    "react-native-config puts every key in .env into the app bundle, and these are sensitive: {}. Move them to penv.cloud or a server, or stop reading them from .env.",
+                    in_dotenv.join(", ")
+                ),
+            ));
+        }
+    }
+
+    let mut configs: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            BUNDLER_CONFIGS
+                .iter()
+                .any(|c| name == *c || name.starts_with(&format!("{c}.")))
+        })
+        .collect();
+    configs.sort();
+    let inline_plugin = "transform-inline-environment-variables";
+    if (depends(&format!("babel-plugin-{inline_plugin}"))
+        || package.contains(inline_plugin)
+        || configs
+            .iter()
+            .any(|c| std::fs::read_to_string(c).is_ok_and(|t| t.contains(inline_plugin))))
+        && !sensitive.is_empty()
+    {
+        violations.push(Violation::new(
+            "babel",
+            "public",
+            format!(
+                "babel's {inline_plugin} inlines every environment variable into the bundle, sensitive ones included: {}. Use its include list, or a public prefix.",
+                sensitive.join(", ")
+            ),
+        ));
+    }
+    for config in &configs {
+        let Ok(text) = std::fs::read_to_string(config) else {
+            continue;
+        };
+        let named: Vec<&str> = sensitive
+            .iter()
+            .copied()
+            .filter(|k| names(&text, k))
+            .collect();
+        if !named.is_empty() {
+            notes.push(format!(
+                "{} names {}: a value placed in Next.js env, a define, Expo extra or Nuxt runtimeConfig.public ships to the client",
+                show(config),
+                named.join(", ")
+            ));
+        }
+    }
+    if depends("parcel") {
+        notes.push("Parcel inlines every process.env value browser code names; penv run checks its output after the build".into());
+    }
+    (violations, notes)
+}
+
+/// True when `key` appears as a whole name in `text`.
+fn names(text: &str, key: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    text.match_indices(key).any(|(at, _)| {
+        !word(text[..at].chars().next_back()) && !word(text[at + key.len()..].chars().next())
+    })
 }

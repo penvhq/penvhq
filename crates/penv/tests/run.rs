@@ -58,7 +58,11 @@ impl Workspace {
         let dir = std::env::temp_dir().join(name);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         for (file, contents) in files {
-            std::fs::write(dir.join(file), contents).expect("a scratch file");
+            let path = dir.join(file);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("a scratch folder");
+            }
+            std::fs::write(path, contents).expect("a scratch file");
         }
         Workspace(dir)
     }
@@ -820,4 +824,194 @@ fn init_keeps_the_schema_version_in_config_and_a_newer_one_is_refused() {
     .unwrap();
     let check = stdout(&workspace.penv(&["check"]));
     assert!(check.contains("reads up to version 1"), "{check}");
+}
+
+// --- in-process masking, native bundles, bundler configs -----------------------
+
+fn on_path(program: &str) -> bool {
+    Command::new(program)
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+const SERVE_NODE: &str = r#"
+const http = require("http");
+const s = http.createServer((q, r) => r.end("env=" + process.env.STRIPE_SECRET_KEY));
+s.listen(0, async () => {
+  const body = await (await fetch(`http://127.0.0.1:${s.address().port}/`)).text();
+  const logged = [];
+  const log = console.log; console.log = (...a) => logged.push(a.join(" "));
+  // An in-process shipper reads what the app hands console, before the pipe.
+  const shipper = console.error; console.error = (...a) => logged.push(a.join(" ")); 
+  console.info("k=" + process.env.STRIPE_SECRET_KEY);
+  console.log = log; console.error = shipper;
+  process.stdout.write(JSON.stringify({ served: !body.includes(process.env.STRIPE_SECRET_KEY), length: body.length }) + "\n");
+  s.close();
+});
+"#;
+
+#[test]
+fn node_serves_a_masked_body_of_the_same_length() {
+    if !on_path("node") {
+        return;
+    }
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        ("serve.js", SERVE_NODE),
+    ]);
+    let output = workspace.penv(&["run", "--", "node", "serve.js"]);
+    let text = stdout(&output);
+    assert!(
+        text.contains("\"served\":true"),
+        "{text} {}",
+        stderr(&output)
+    );
+    assert!(
+        text.contains(&format!("\"length\":{}", 4 + SECRET.len())),
+        "a Content-Length stays right: {text}"
+    );
+}
+
+#[test]
+fn python_masks_served_bytes_and_log_records_and_keeps_the_projects_sitecustomize() {
+    if !on_path("python3") {
+        return;
+    }
+    let app = r#"
+import builtins, logging, os, threading, urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
+K = os.environ["STRIPE_SECRET_KEY"]
+seen = []
+class Grab(logging.Handler):
+    def emit(self, r): seen.append(r.getMessage())
+logging.getLogger().addHandler(Grab()); logging.getLogger().setLevel(logging.INFO)
+logging.info("k=%s", K)
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        b = ("env=" + K).encode(); self.send_response(200); self.send_header("content-length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *a): pass
+s = HTTPServer(("127.0.0.1", 0), H); threading.Thread(target=s.serve_forever, daemon=True).start()
+body = urllib.request.urlopen(f"http://127.0.0.1:{s.server_port}/").read().decode()
+print("served", K not in body, "logged", K not in seen[0], "project", getattr(builtins, "PROJECT_HOOK", False))
+s.shutdown()
+"#;
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        ("app.py", app),
+        (
+            "hooks/sitecustomize.py",
+            "import builtins\nbuiltins.PROJECT_HOOK = True\n",
+        ),
+    ]);
+    let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .current_dir(workspace.path())
+        .env("PYTHONPATH", workspace.path().join("hooks"))
+        .args(["run", "--", "python3", "app.py"])
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&output).contains("served True logged True project True"),
+        "{} {}",
+        stdout(&output),
+        stderr(&output)
+    );
+}
+
+#[test]
+fn config_can_turn_the_preload_off_for_a_person_but_never_for_an_agent() {
+    if !on_path("node") {
+        return;
+    }
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        ("serve.js", SERVE_NODE),
+    ]);
+    std::fs::create_dir_all(workspace.path().join(".penv")).unwrap();
+    std::fs::write(
+        workspace.path().join(".penv/config.toml"),
+        "[run]\npreload = false\n",
+    )
+    .unwrap();
+    let person = stdout(&workspace.penv(&["run", "--", "node", "serve.js"]));
+    assert!(person.contains("\"served\":false"), "config off: {person}");
+    let agent = stdout(&workspace.penv(&["--agent", "run", "--", "node", "serve.js"]));
+    assert!(
+        agent.contains("\"served\":true"),
+        "an agent cannot turn it off: {agent}"
+    );
+    let flag = workspace.penv(&["run", "--no-preload", "--", "node", "serve.js"]);
+    assert!(
+        stderr(&flag).contains("--no-preload was ignored"),
+        "{}",
+        stderr(&flag)
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn a_secret_in_a_react_native_bundle_fails_the_build_run_text_or_bytecode() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let bundle = "android/app/build/generated/assets/react/release";
+    std::fs::create_dir_all(workspace.path().join(bundle)).unwrap();
+    let text = workspace.run(
+        &[],
+        &format!("echo \"var k='$STRIPE_SECRET_KEY'\" > {bundle}/index.android.bundle"),
+    );
+    assert_eq!(text.status.code(), Some(3), "{}", stderr(&text));
+    assert!(stderr(&text).contains("index.android.bundle:1 holds the value of STRIPE_SECRET_KEY"));
+    std::fs::create_dir_all(workspace.path().join("ios/build")).unwrap();
+    let bytecode = workspace.run(
+        &[],
+        "printf 'HBC\\000\\001%s\\000' \"$STRIPE_SECRET_KEY\" > ios/build/main.jsbundle",
+    );
+    assert_eq!(bytecode.status.code(), Some(3), "{}", stderr(&bytecode));
+    assert!(
+        stderr(&bytecode).contains("main.jsbundle holds the value of STRIPE_SECRET_KEY"),
+        "{}",
+        stderr(&bytecode)
+    );
+    assert!(!stderr(&bytecode).contains(SECRET));
+}
+
+#[test]
+fn bundler_setups_that_ship_every_key_fail_check_and_a_config_naming_one_is_noted() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        (
+            "package.json",
+            "{\"dependencies\":{\"react-native-config\":\"1\"}}",
+        ),
+        (
+            "next.config.js",
+            "module.exports = { env: { KEY: process.env.STRIPE_SECRET_KEY } };\n",
+        ),
+    ]);
+    let check = stdout(&workspace.penv(&["check"]));
+    assert!(
+        check.contains("react-native-config puts every key in .env"),
+        "{check}"
+    );
+    assert!(
+        check.contains("next.config.js names STRIPE_SECRET_KEY"),
+        "{check}"
+    );
+    std::fs::write(
+        workspace.path().join("package.json"),
+        "{\"devDependencies\":{\"babel-plugin-transform-inline-environment-variables\":\"1\"}}",
+    )
+    .unwrap();
+    let check = stdout(&workspace.penv(&["check"]));
+    assert!(
+        check.contains("inlines every environment variable"),
+        "{check}"
+    );
+    assert!(!check.contains(SECRET));
 }

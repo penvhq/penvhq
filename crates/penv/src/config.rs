@@ -91,6 +91,16 @@ impl Config {
             .unwrap_or_default()
     }
 
+    /// `[run] preload`: false keeps penv's masking out of the child's runtime.
+    /// Absent means true.
+    pub fn preload(&self) -> bool {
+        self.table
+            .get("run")
+            .and_then(|t| t.get("preload"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    }
+
     /// `[rotation]`: the day each key was last written in local mode.
     pub fn rotated(&self, key: &str) -> Option<&str> {
         self.table.get("rotation")?.get(key)?.as_str()

@@ -63,6 +63,7 @@ complete -c penv -n '__fish_penv_at "init"' -l output -r -d 'Write the generated
 complete -c penv -n '__fish_penv_at "run"' -F -a '(__fish_complete_command)'
 complete -c penv -n '__fish_penv_at "run"' -l env -r -d 'The environment to read'
 complete -c penv -n '__fish_penv_at "run"' -l no-mask -d 'Show secrets in the command'\''s output instead of hiding them'
+complete -c penv -n '__fish_penv_at "run"' -l no-preload -d 'Do not load penv'\''s masking into the command'\''s runtime (Node, Bun, Deno, Python)'
 complete -c penv -n '__fish_penv_at "push"' -l env -r -d 'The environment to write to'
 complete -c penv -n '__fish_penv_at "push"' -l org -r -d 'The organisation that owns a project penv is about to create'
 complete -c penv -n '__fish_penv_at "push"' -l prune -d 'Delete cloud keys the schema no longer lists'
