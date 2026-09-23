@@ -8,6 +8,7 @@ pub mod credential;
 pub mod error;
 pub mod fetch;
 pub mod keychain;
+pub mod provider;
 pub mod signature;
 pub mod tls;
 

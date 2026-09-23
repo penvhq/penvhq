@@ -86,6 +86,9 @@ impl Workspace {
         let dir = root.join(PROJECT);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         for (file, contents) in files {
+            if let Some(parent) = dir.join(file).parent() {
+                std::fs::create_dir_all(parent).expect("a scratch directory");
+            }
             std::fs::write(dir.join(file), contents).expect("a scratch file");
         }
         Workspace { root, dir }
@@ -1672,5 +1675,146 @@ fn a_ca_bundle_the_user_can_write_is_refused_for_an_agent_and_used_for_a_person(
         "{} {}",
         stdout(&broken),
         stderr(&broken)
+    );
+}
+
+// --- providers ----------------------------------------------------------------------
+
+fn provider_schema(prefix: &str) -> String {
+    cloud_schema().replacen("@penv=acme/", &format!("@penv={prefix}acme/"), 1)
+}
+
+fn run_values(workspace: &Workspace, mock: &Mock, extra: &[&str]) -> std::process::Output {
+    workspace
+        .command(mock)
+        .args(extra)
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn penv_named_as_the_provider_reads_like_no_prefix() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &provider_schema("penv:"))]);
+    let out = run_values(&workspace, &mock, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(mock.hits("GET", ENVS).len(), 1);
+}
+
+#[test]
+fn a_provider_penv_does_not_have_is_refused_by_name_before_any_request() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &provider_schema("doppler:"))]);
+    let out = run_values(&workspace, &mock, &[]);
+    assert_ne!(out.status.code(), Some(0));
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains("unknown_provider") && said.contains("doppler") && said.contains("penv"),
+        "{said}"
+    );
+    assert!(
+        mock.hits("GET", ENVS).is_empty(),
+        "nothing is sent to a provider penv does not know"
+    );
+
+    // --provider picks one for this run, whatever the header says.
+    let out = run_values(&workspace, &mock, &["--provider", "penv"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(mock.hits("GET", ENVS).len(), 1);
+}
+
+#[test]
+fn a_root_named_only_in_config_never_receives_a_token_from_the_environment() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let config = format!("[providers.penv]\nurl = \"{}\"\n", mock.url());
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".penv/config.toml", &config),
+    ]);
+    // PENV_TOKEN is set by the harness; only config.toml names the root.
+    let out = workspace
+        .command(&mock)
+        .env_remove("PENV_URL")
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains("credential_withheld") && said.contains("PENV_URL="),
+        "{said}"
+    );
+    assert!(!said.contains(TOKEN), "the token is never printed");
+    assert!(
+        mock.requests().is_empty(),
+        "nothing at all reached the config-named root"
+    );
+
+    // Naming the same root in PENV_URL is a choice made on purpose: the token goes.
+    let out = run_values(&workspace, &mock, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(mock.hits("GET", ENVS).len(), 1);
+}
+
+#[test]
+fn penv_url_beats_the_root_config_names() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (
+            ".penv/config.toml",
+            "[providers.penv]\nurl = \"http://127.0.0.1:9\"\n",
+        ),
+    ]);
+    let out = run_values(&workspace, &mock, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(mock.hits("GET", ENVS).len(), 1);
+}
+
+#[test]
+fn ci_and_aws_credentials_are_withheld_from_a_config_named_root_too() {
+    let mock = Mock::new();
+    let config = format!("[providers.penv]\nurl = \"{}\"\n", mock.url());
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".penv/config.toml", &config),
+    ]);
+    let kinds: [&[(&str, &str)]; 2] = [
+        &[("PENV_OIDC_TOKEN", "eyJ.FAKE.jwt")],
+        &[
+            ("AWS_ACCESS_KEY_ID", "AKIAFAKE"),
+            ("AWS_SECRET_ACCESS_KEY", "FAKEsecret"),
+        ],
+    ];
+    for vars in kinds {
+        let mut command = workspace.command(&mock);
+        command.env_remove("PENV_URL").env_remove("PENV_TOKEN");
+        for (k, v) in vars {
+            command.env(k, v);
+        }
+        let out = command
+            .args(["run", "--"])
+            .args(SHELL)
+            .arg(ECHO_VALUES)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(5), "{vars:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("credential_withheld")
+                || stdout(&out).contains("credential_withheld")
+        );
+    }
+    assert!(
+        mock.requests().is_empty(),
+        "no proof of any kind reached it"
     );
 }

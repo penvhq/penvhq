@@ -329,6 +329,8 @@ penv pull --env staging             # writes .env.staging
 penv reveal STRIPE_SECRET_KEY       # one value; agents need approval
 ```
 
+penv.cloud is provider `penv`, the default. `@penv=<provider>:org/project` names another provider, `--provider` overrides it for one command, and `[providers.<slug>] url` in `.penv/config.toml` points at a self-hosted API: [providers](./docs/PROVIDERS.md).
+
 After `push`, teammates run `penv login` and the same `penv run` command. A local file overrides the cloud value on that machine; `penv run` names each overridden key.
 
 ## Deployment

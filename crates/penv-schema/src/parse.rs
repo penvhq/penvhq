@@ -320,8 +320,9 @@ impl Parser {
     fn take_header(&mut self, block: &Block) {
         for d in &block.decorators {
             match d.name.as_str() {
-                "penv" => match d.value.as_deref().and_then(split_project) {
-                    Some((org, project)) => {
+                "penv" => match d.value.as_deref().and_then(split_address) {
+                    Some((provider, org, project)) => {
+                        self.schema.provider = provider;
                         self.schema.org = Some(org);
                         self.schema.project = Some(project);
                     }
@@ -329,7 +330,10 @@ impl Parser {
                         d.line,
                         d.column,
                         "invalid_header",
-                        format!("line {}: @penv takes org/project", d.line),
+                        format!(
+                            "line {}: @penv takes org/project, or provider:org/project",
+                            d.line
+                        ),
                     ),
                 },
                 "schema" => match d.value.as_deref().and_then(|v| v.parse::<u32>().ok()) {
@@ -743,6 +747,29 @@ impl Parser {
         ty.constraints.sort_by(|a, b| a.0.cmp(&b.0));
         ty
     }
+}
+
+/// `org/project` or `provider:org/project`. A provider is a lowercase word.
+fn split_address(v: &str) -> Option<(Option<String>, String, String)> {
+    let (provider, rest) = match v.split_once(':') {
+        Some((provider, rest)) if is_provider(provider) => (Some(provider.to_string()), rest),
+        Some(_) => return None,
+        None => (None, v),
+    };
+    if rest.contains(':') {
+        return None;
+    }
+    let (org, project) = split_project(rest)?;
+    Some((provider, org, project))
+}
+
+pub(crate) fn is_provider(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn split_project(v: &str) -> Option<(String, String)> {

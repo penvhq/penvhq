@@ -142,7 +142,7 @@ pub fn set_header(source: &str, org: &str, project: &str) -> String {
         "@setValuesBulk",
         "@disable",
     ];
-    let token = format!("@penv={org}/{project}");
+    let mut token = format!("@penv={org}/{project}");
     let mut lines: Vec<String> = source.split('\n').map(str::to_string).collect();
     let block: Vec<usize> = lines
         .iter()
@@ -163,6 +163,10 @@ pub fn set_header(source: &str, org: &str, project: &str) -> String {
             let end = line[at..]
                 .find(char::is_whitespace)
                 .map_or(line.len(), |e| at + e);
+            // The provider the header names stays; only the address changes.
+            if let Some((provider, _)) = line[at + "@penv=".len()..end].split_once(':') {
+                token = format!("@penv={provider}:{org}/{project}");
+            }
             line.replace_range(at..end, &token);
             return lines.join("\n");
         }

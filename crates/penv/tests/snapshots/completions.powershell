@@ -7,6 +7,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
 
     $valued = @{
         '--format' = @('json', 'text')
+        '--provider' = @()
         '--guards' = @()
         '--output' = @()
         '--env' = @()
@@ -73,6 +74,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;init' {
@@ -83,6 +85,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;run' {
@@ -92,6 +95,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;push' {
@@ -101,6 +105,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;pull' {
@@ -109,18 +114,21 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;login' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;logout' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;set' {
@@ -129,6 +137,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;unset' {
@@ -136,6 +145,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;ls' {
@@ -143,6 +153,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;check' {
@@ -150,6 +161,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;gen' {
@@ -159,6 +171,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;scan' {
@@ -168,6 +181,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;guard' {
@@ -176,6 +190,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;reveal' {
@@ -184,6 +199,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;project' {
@@ -194,6 +210,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;project;ls' {
@@ -201,6 +218,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;project;new' {
@@ -208,6 +226,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;project;rename' {
@@ -215,6 +234,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;project;rm' {
@@ -222,6 +242,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;env' {
@@ -233,36 +254,42 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;env;ls' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;env;new' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;env;rename' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;env;copy' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;env;rm' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;machine' {
@@ -270,12 +297,14 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;machine;enroll' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;upgrade' {
@@ -283,6 +312,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;completions' {
@@ -294,24 +324,28 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;hook' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;schema' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
         'penv;help' {
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
     })

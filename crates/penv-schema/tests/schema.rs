@@ -590,3 +590,32 @@ fn import_reads_varlocks_pick_list_and_the_positional_form() {
         parse("# @import(./shared/.env.schema, API_KEY)\n\n# @type=string\nA=\n").unwrap();
     assert_eq!(positional.imports[0].keys, ["API_KEY"]);
 }
+
+#[test]
+fn the_header_names_a_provider_before_a_colon_and_keeps_it_on_rewrite() {
+    let schema = parse("# @penv=doppler:acme/api\n\n# @type=port\nPORT=3000\n").unwrap();
+    assert_eq!(schema.provider.as_deref(), Some("doppler"));
+    assert_eq!(schema.org.as_deref(), Some("acme"));
+    assert_eq!(schema.project.as_deref(), Some("api"));
+
+    let plain = parse("# @penv=acme/api\n\n# @type=port\nPORT=3000\n").unwrap();
+    assert_eq!(plain.provider, None, "no prefix is penv.cloud");
+
+    for bad in [
+        "Doppler:acme/api",
+        "dop pler:acme/api",
+        ":acme/api",
+        "doppler:acme",
+        "a:b:c/d",
+    ] {
+        let text = format!("# @penv={bad}\n\n# @type=port\nPORT=3000\n");
+        assert!(parse(&text).is_err(), "{bad} should be refused");
+    }
+
+    let rewritten =
+        penv_schema::set_header("# @penv=doppler:acme/api\n\nPORT=3000\n", "acme", "web");
+    assert!(
+        rewritten.starts_with("# @penv=doppler:acme/web"),
+        "{rewritten}"
+    );
+}

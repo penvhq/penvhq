@@ -17,6 +17,7 @@ pub mod manifest;
 pub mod output;
 pub mod preload;
 pub mod prompt;
+pub mod providers;
 pub mod source;
 pub mod ui;
 pub mod upgrade;

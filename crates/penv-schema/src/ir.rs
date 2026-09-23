@@ -73,6 +73,9 @@ pub struct Import {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
+    /// The provider `@penv=` names before a colon (`doppler:acme/api`); none
+    /// means penv.cloud.
+    pub provider: Option<String>,
     pub org: Option<String>,
     pub project: Option<String>,
     pub schema_version: u32,
@@ -92,6 +95,7 @@ pub struct Schema {
 impl Default for Schema {
     fn default() -> Self {
         Schema {
+            provider: None,
             org: None,
             project: None,
             schema_version: SCHEMA_VERSION,
@@ -151,6 +155,7 @@ impl Schema {
     pub fn to_json(&self) -> Value {
         json!({
             "schemaVersion": self.schema_version,
+                        "provider": self.provider,
             "org": self.org,
             "project": self.project,
             "defaultSensitive": self.default_sensitive,

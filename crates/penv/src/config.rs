@@ -101,6 +101,16 @@ impl Config {
             .unwrap_or(true)
     }
 
+    /// `[providers.<slug>] url`: where that provider's API is, when not its default.
+    pub fn provider_url(&self, slug: &str) -> Option<String> {
+        self.table
+            .get("providers")?
+            .get(slug)?
+            .get("url")?
+            .as_str()
+            .map(str::to_string)
+    }
+
     /// `[targets.<name>]`: where `penv gen` writes and the options it uses.
     pub fn target(&self, name: &str) -> Option<toml::Table> {
         self.table.get("targets")?.get(name)?.as_table().cloned()

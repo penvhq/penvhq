@@ -71,6 +71,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub agent: bool,
 
+    /// Read values from this provider instead of the one @penv= names
+    #[arg(long, global = true, value_name = "PROVIDER")]
+    pub provider: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
