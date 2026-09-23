@@ -106,6 +106,10 @@ impl Workspace {
     /// no cache directory, so nothing on this host is read or written.
     fn command(&self, mock: &Mock) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_penv"));
+        command.env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        );
         command
             .current_dir(&self.dir)
             .env("PENV_URL", mock.url())
@@ -424,10 +428,14 @@ fn pull_is_refused_for_an_agent_and_written_for_a_person() {
         !stdout(&allowed).contains(SECRET),
         "pull prints the count, not the values"
     );
-    assert_eq!(
-        workspace.read(".env"),
-        format!("STRIPE_SECRET_KEY={SECRET}\nPORT=3000\n")
+    // Sensitive values land encrypted (the default); the rest in plain text.
+    let written = workspace.read(".env");
+    assert!(
+        written.starts_with("STRIPE_SECRET_KEY=enc:v1:"),
+        "{written}"
     );
+    assert!(written.ends_with("\nPORT=3000\n"), "{written}");
+    assert!(!written.contains(SECRET));
 }
 
 // --- set and unset ----------------------------------------------------------
@@ -1907,4 +1915,29 @@ fn a_schema_error_with_no_hosts_to_drop_is_not_retried() {
     let output = workspace.run(&mock, &["--json", "push"]);
     assert_ne!(output.status.code(), Some(0));
     assert_eq!(mock.hits("PUT", ENVS).len(), 1);
+}
+
+#[test]
+fn push_sends_an_encrypted_value_decrypted() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on("PUT", ENVS, 200, PUT_OK);
+    let workspace = hosts_workspace();
+    let encrypted = workspace.run(&mock, &["encrypt"]);
+    assert_eq!(encrypted.status.code(), Some(0), "{}", stderr(&encrypted));
+    assert!(workspace.read(".env").contains("enc:v1:"));
+    let output = workspace.run(&mock, &["--json", "push"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let body = mock.last("PUT", ENVS).json();
+    let key = body["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == "STRIPE_SECRET_KEY")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        key["value"], SECRET,
+        "the cloud gets the value, never the local encryption"
+    );
 }

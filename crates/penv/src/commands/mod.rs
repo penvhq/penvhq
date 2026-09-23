@@ -1,5 +1,6 @@
 mod check;
 pub mod cloud;
+mod crypt;
 mod environment;
 mod r#gen;
 pub mod guard;
@@ -131,6 +132,8 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
         ),
         Some(Command::Ls { env: name }) => ls::run(out, cwd, name.as_deref(), env),
         Some(Command::Why { key, env: name }) => why::run(out, cwd, key, name.as_deref(), env),
+        Some(Command::Encrypt) => crypt::run(out, cwd, true, env, cli.agent),
+        Some(Command::Decrypt) => crypt::run(out, cwd, false, env, cli.agent),
         Some(Command::Project { command }) => project::run(out, cwd, command, env, cli.agent),
         Some(Command::Env { project, command }) => {
             environment::run(out, cwd, project.as_deref(), command, env, cli.agent)

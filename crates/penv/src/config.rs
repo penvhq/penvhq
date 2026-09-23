@@ -8,10 +8,116 @@ use crate::files::{read_file, show, write_file_making_parents};
 
 pub const CONFIG_FILE: &str = ".penv/config.toml";
 
-/// The file as a table, so sections this build does not know survive a write.
+/// A new `.penv/config.toml`: every setting with the value penv uses when it is
+/// absent, and what the other value does. `{version}` is the schema version.
+pub const TEMPLATE: &str = r#"# penv settings for this repository. Every setting is listed with the value
+# penv uses when it is absent. Commit this file.
+
+[schema]
+# The .env.schema language version this repository is written in.
+version = {version}
+
+[run]
+# Load penv's masking into the Node, Bun, Deno and Python processes penv run
+# starts, so the app's own logs and responses hide secrets.
+# false: only penv run's output pipe hides them; what the app writes to a file
+# or sends over the network is not masked. An AI agent's run keeps it on.
+preload = true
+
+[local]
+# Encrypt sensitive values penv writes to .env files (penv set, penv pull,
+# random()) with a key in this machine's keychain; penv decrypts them when it
+# reads. A tool that reads .env itself (docker compose, a framework started
+# without penv run) sees enc:v1:... instead of the value.
+# false: penv writes values in plain text. penv decrypt converts files back.
+encrypt = true
+
+[public]
+# Prefixes that ship a key to the browser, beyond the frameworks' own
+# (NEXT_PUBLIC_, VITE_, PUBLIC_, NUXT_PUBLIC_, EXPO_PUBLIC_, REACT_APP_, ...).
+prefixes = []
+"#;
+
+/// The file as a table, so sections this build does not know survive a write,
+/// and as its text, so a write keeps every comment and the order it had.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
     table: toml::Table,
+    text: Option<String>,
+}
+
+pub fn template() -> String {
+    TEMPLATE.replace("{version}", &penv_schema::SCHEMA_VERSION.to_string())
+}
+
+/// `text` with every section and setting the template has and it lacks, each
+/// with the template's comments. What is already there is left as it is.
+pub fn with_defaults(text: &str) -> String {
+    let (Ok(mut doc), Ok(template)) = (
+        text.parse::<toml_edit::DocumentMut>(),
+        template().parse::<toml_edit::DocumentMut>(),
+    ) else {
+        return text.to_string();
+    };
+    for (name, item) in template.iter() {
+        match doc.get_mut(name) {
+            None => {
+                doc.insert(name, item.clone());
+            }
+            Some(existing) => {
+                let (Some(have), Some(want)) = (existing.as_table_mut(), item.as_table()) else {
+                    continue;
+                };
+                for (key, value) in want.iter() {
+                    if !have.contains_key(key)
+                        && let Some((formatted, _)) = want.get_key_value(key)
+                    {
+                        have.insert_formatted(formatted, value.clone());
+                    }
+                }
+            }
+        }
+    }
+    doc.to_string()
+}
+
+/// Write every value `table` holds into `doc`, keeping what `doc` already says
+/// about the rest: comments, order, and settings the table does not name.
+fn upsert(doc: &mut toml_edit::Table, table: &toml::Table) {
+    for (key, value) in table {
+        match value {
+            toml::Value::Table(inner) => {
+                let entry = doc
+                    .entry(key)
+                    .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+                if !entry.is_table() {
+                    *entry = toml_edit::Item::Table(toml_edit::Table::new());
+                }
+                if let Some(t) = entry.as_table_mut() {
+                    upsert(t, inner);
+                }
+            }
+            other => {
+                let rendered = other.to_string();
+                let same = doc
+                    .get(key)
+                    .and_then(|i| i.as_value())
+                    .is_some_and(|v| v.to_string().trim() == rendered.trim());
+                if !same && let Ok(v) = rendered.parse::<toml_edit::Value>() {
+                    match doc.get_mut(key).and_then(|i| i.as_value_mut()) {
+                        Some(slot) => {
+                            let decor = slot.decor().clone();
+                            *slot = v;
+                            *slot.decor_mut() = decor;
+                        }
+                        None => {
+                            doc.insert(key, toml_edit::Item::Value(v));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Config {
@@ -36,6 +142,7 @@ impl Config {
     pub fn parse(text: &str) -> Result<Config, toml::de::Error> {
         Ok(Config {
             table: text.parse()?,
+            text: Some(text.to_string()),
         })
     }
 
@@ -45,8 +152,28 @@ impl Config {
         Ok(path)
     }
 
+    /// The file to write: the text it was read from (a new file starts from the
+    /// template), with every value this config holds written in.
     pub fn render(&self) -> String {
-        toml::to_string(&self.table).unwrap_or_default()
+        let base = self.text.clone().unwrap_or_else(template);
+        match base.parse::<toml_edit::DocumentMut>() {
+            Ok(mut doc) => {
+                upsert(doc.as_table_mut(), &self.table);
+                doc.to_string()
+            }
+            Err(_) => toml::to_string(&self.table).unwrap_or_default(),
+        }
+    }
+
+    /// Add every setting the template lists and this file lacks, with its
+    /// comment, so the file names everything penv reads.
+    pub fn fill_defaults(&mut self) {
+        let base = self.text.clone().unwrap_or_else(template);
+        let filled = with_defaults(&base);
+        if let Ok(table) = filled.parse() {
+            self.table = table;
+        }
+        self.text = Some(filled);
     }
 
     /// `[schema] version`: the schema language version. It lives here, not in
@@ -97,6 +224,16 @@ impl Config {
         self.table
             .get("run")
             .and_then(|t| t.get("preload"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    }
+
+    /// `[local] encrypt`: sensitive values penv writes to .env files are
+    /// encrypted. Absent means true.
+    pub fn encrypt(&self) -> bool {
+        self.table
+            .get("local")
+            .and_then(|t| t.get("encrypt"))
             .and_then(|v| v.as_bool())
             .unwrap_or(true)
     }

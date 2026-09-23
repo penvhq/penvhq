@@ -306,6 +306,8 @@ fn spawn(
             .args(&argv[2..]);
     }
     command.env("PENV_ENV", environment);
+    // The key that decrypts value files stays with penv.
+    command.env_remove(crate::localcrypt::KEY_VAR);
     for (key, value) in values {
         command.env(key, value);
     }

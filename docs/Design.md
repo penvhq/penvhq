@@ -65,6 +65,23 @@ Rules:
 - One concept, one name. No aliases. A decorator, type or constraint penv does not act on is a warning from `check`, never a parse failure, so any varlock schema parses; `@plugin` is named as varlock's.
 - Nearest `.env.schema` upward from the working directory wins. A monorepo holds one per app.
 
+### Settings
+
+`.penv/config.toml` is committed. `penv init` writes every setting at its default with a comment saying what the other value does, and on an existing file adds only what is missing; every later write (`gen`, `set` rotation dates) edits values in place and keeps comments and order.
+
+| Setting | Default | Other value |
+|---|---|---|
+| `[schema] version` | the current schema language | an older one, for an older penv |
+| `[run] preload` | `true` | `false`: only `run`'s output pipe masks; kept on for an agent |
+| `[local] encrypt` | `true` | `false`: `set`, `pull` and `random()` write plain text |
+| `[public] prefixes` | `[]` | extra prefixes that ship a key to the browser |
+| `[targets.<n>]` | written by `gen` | output and options per language |
+| `[providers.<slug>] url` | none | another root for that provider (never receives a token-type credential) |
+
+### Values at rest
+
+With `[local] encrypt` on, a sensitive value penv writes is `enc:v1:<base64>`: ChaCha20-Poly1305 (the cache's own sealing, `penv_cloud::cache::seal`), a fresh 96-bit nonce per write, the key name as associated data. The key is 32 random bytes per machine user: the OS keychain (item `local/local-key` under service `penv`), else `~/.config/penv/local.key` mode 600 with a warning when it is made, or `PENV_LOCAL_KEY`. Decryption happens in `source::layers`, the one place every command reads value files, so `run`, `ls`, `check`, `why` and `push` see values and nothing else changes; a value this machine cannot decrypt stops the command (`decrypt_failed`, exit 3) naming key and file. `penv run` removes `PENV_LOCAL_KEY` from the child. `penv encrypt` and `penv decrypt` convert the value files beside the schema, sensitive keys only (an undeclared key counts as sensitive; a line that computes from other keys stays as written), editing lines in place; `decrypt` is refused for an agent. The key file fallback keeps values out of commits and casual reads, not away from a process running as the user.
+
 ### Values
 
 Value files layer in the order dotenv-flow, Next.js and Vite use, later files winning:

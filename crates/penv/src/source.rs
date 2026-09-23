@@ -296,9 +296,37 @@ pub fn layers(dir: &Path, files: &[String]) -> Result<Layers, CliError> {
             continue;
         }
         let read = penv_dotenv::read(&read_file(&path)?);
-        for (key, raw) in read.raw() {
-            out.origin.insert(key.clone(), path.clone());
-            out.raw.insert(key, raw);
+        let mut key: Option<[u8; 32]> = None;
+        for (name, mut raw) in read.raw() {
+            // An encrypted value is decrypted here, the one place every
+            // command reads value files through.
+            if crate::localcrypt::is_encrypted(&raw.text) {
+                if key.is_none() {
+                    key = crate::localcrypt::key(false)?;
+                }
+                let Some(k) = key.as_ref() else {
+                    return Err(CliError::new(
+                        "decrypt_failed",
+                        format!(
+                            "{name} in {} is encrypted, and this machine holds no penv key.",
+                            show(&path)
+                        ),
+                        format!(
+                            "Set it again with penv set {name}, or supply the key in {}.",
+                            crate::localcrypt::KEY_VAR
+                        ),
+                    )
+                    .with_exit(Exit::Validation));
+                };
+                raw = Raw::literal(crate::localcrypt::decrypt(
+                    k,
+                    &name,
+                    &raw.text,
+                    &show(&path),
+                )?);
+            }
+            out.origin.insert(name.clone(), path.clone());
+            out.raw.insert(name, raw);
         }
         out.warnings
             .extend(read.warnings.into_iter().map(|w| (path.clone(), w)));
@@ -625,7 +653,8 @@ fn randoms(
         } else {
             String::new()
         };
-        let written = penv_dotenv::upsert(&existing, &key, &value).map_err(|e| {
+        let stored = crate::localcrypt::stored(dir, &key, &value, true)?;
+        let written = penv_dotenv::upsert(&existing, &key, &stored).map_err(|e| {
             CliError::new(
                 "unwritable_value",
                 e.to_string(),

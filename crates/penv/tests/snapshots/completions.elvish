@@ -32,6 +32,8 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand 'set' 'Save one value (typed hidden, never shown)'
             cand 'unset' 'Delete one value'
             cand 'ls' 'List your keys and show which ones have a value'
+            cand 'encrypt' 'Encrypt the sensitive values in the .env files beside .env.schema'
+            cand 'decrypt' 'Write the encrypted values in the .env files back in plain text'
             cand 'why' 'Say where a key''s value comes from and how penv treats it, never the value'
             cand 'check' 'Report schema problems and missing values'
             cand 'gen' 'Write the typed file for your language (ts, py, go, rust, php, java, csharp)'
@@ -117,6 +119,18 @@ set edit:completion:arg-completer[penv] = {|@words|
         }
         if (eq $command 'penv;ls') {
             cand '--env' 'The environment to read'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
+        if (eq $command 'penv;encrypt') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
+        if (eq $command 'penv;decrypt') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'

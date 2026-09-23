@@ -28,6 +28,10 @@ fn workspace() -> std::path::PathBuf {
 
 fn why(dir: &std::path::Path, args: &[&str]) -> (i32, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(dir)
         .args(args)
         .output()

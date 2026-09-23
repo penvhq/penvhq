@@ -130,7 +130,34 @@ It reads the repository's source for `process.env`, `import.meta.env`, `Deno.env
 
 `penv why KEY` says which file, cloud environment or default a value came from, which files it overrides, which keys it is built on, and whether it is masked, public or sealed. It never prints the value.
 
+## Encryption at Rest
+
+Sensitive values penv writes to `.env` files are encrypted: `penv set`, `penv pull` and `random()` write `KEY=enc:v1:…`, and every penv command decrypts where it reads.
+
+```console
+$ printf 'sk_live_…' | penv set STRIPE_SECRET_KEY
+$ cat .env
+STRIPE_SECRET_KEY=enc:v1:cGVudmMx1b0Izhu…
+PORT=3000
+$ penv encrypt      # existing plain-text values
+$ penv decrypt      # back to plain text (refused for an AI agent)
+```
+
+- **Key:** 32 random bytes per machine user, kept in the OS keychain. Without a keychain (containers, headless Linux), a file `~/.config/penv/local.key` readable only by you holds it. `PENV_LOCAL_KEY` (64 hex characters) supplies it instead. `penv run` never passes that variable to the command.
+- **Scope:** sensitive keys only. `@sensitive=false` values stay readable. The key name is bound to its ciphertext, so a value moved to another key does not decrypt.
+- **`push`** decrypts on your machine and sends the value; penv.cloud encrypts it with KMS as before.
+- **Other readers:** a tool that reads `.env` itself (docker compose, a framework started without `penv run`) sees `enc:v1:…`. Start it through `penv run`, or turn encryption off:
+
+```toml
+# .penv/config.toml
+[local]
+encrypt = false
+```
+
+`penv init` writes `.penv/config.toml` with every setting at its default, each with what the other value does. On a repository that already has one, it adds the settings the file lacks and keeps the rest as written.
+
 ## Environments
+
 
 File order matches [dotenv-flow](https://github.com/kerimdzhanov/dotenv-flow), [Next.js](https://nextjs.org/docs/app/guides/environment-variables) and [Vite](https://vite.dev/guide/env-and-mode). A later file overrides an earlier one:
 
@@ -269,8 +296,7 @@ Matches raw, base64, hex and URL-encoded forms. Reports file, line and key; neve
 ## Typed Access
 
 ```bash
-penv gen ts
-penv gen py
+penv gen ts        # also py, go, rust, php, java, csharp
 ```
 
 `gen ts` writes one typed `env` and a [Standard Schema](https://standardschema.dev) validator. The same import works in server and client code:
@@ -480,7 +506,9 @@ penv run -- npm run dev       # native; @plugin and @initPenv are ignored
 | `check [KEY] [--env E]` | validate; assertions, rotation, client bundle checks |
 | `scan [PATH...] [--staged] [--install-hook]` | secret values in files |
 | `ls` | keys, types, presence |
-| `gen ts\|py` | typed file |
+| `why KEY` | where a value comes from, never the value |
+| `encrypt` / `decrypt` | convert the `.env` files' secrets |
+| `gen ts\|py\|go\|rust\|php\|java\|csharp` | typed file |
 | `guard` | agent deny rules |
 | `set KEY` / `unset KEY` | write or remove one value |
 | `push` / `pull` | sync with penv.cloud |

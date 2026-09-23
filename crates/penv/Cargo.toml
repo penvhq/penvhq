@@ -32,4 +32,5 @@ rustls.workspace = true
 serde_json.workspace = true
 sha2 = "0.11.0"
 toml.workspace = true
+toml_edit = "0.25"
 webpki-roots.workspace = true
