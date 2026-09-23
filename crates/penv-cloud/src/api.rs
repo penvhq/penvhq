@@ -441,6 +441,7 @@ pub struct Api {
 impl Api {
     pub fn new(base_url: &str) -> Result<Api> {
         let config = ureq::Agent::config_builder()
+            .tls_config(crate::tls::config())
             .max_redirects(0)
             .max_redirects_will_error(true)
             .http_status_as_error(false)

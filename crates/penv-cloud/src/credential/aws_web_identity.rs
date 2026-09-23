@@ -62,6 +62,7 @@ impl AwsWebIdentity {
             form(token.trim())
         );
         let agent: ureq::Agent = ureq::Agent::config_builder()
+            .tls_config(crate::tls::config())
             .timeout_global(Some(Duration::from_secs(10)))
             .http_status_as_error(false)
             // The web identity token goes to STS and nowhere a redirect points.

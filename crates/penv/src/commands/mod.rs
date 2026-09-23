@@ -29,6 +29,9 @@ use crate::output::{Output, Report};
 use penv_schema::Schema;
 
 pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report, CliError> {
+    if cli.agent {
+        crate::agent::flag_session();
+    }
     match &cli.command {
         None => state::run(out, cwd, env),
         Some(Command::Init {

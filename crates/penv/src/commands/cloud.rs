@@ -28,6 +28,7 @@ pub struct Cloud {
 
 impl Cloud {
     pub fn open(env: &Env, detection: &Detection) -> Result<Cloud, CliError> {
+        trust(env, detection.is_agent() || crate::agent::flagged())?;
         let api = Api::from_env(env.as_map())
             .map_err(|e| refuse(e, None))?
             .stamped(detection.name(), detection.session_id.as_deref());
@@ -375,6 +376,18 @@ pub fn cancelled(_: std::io::Error) -> CliError {
 }
 
 /// Open the verification page. A session with no terminal only prints it.
+/// Settle which certificate authorities penv trusts before the first request:
+/// the compiled-in roots, or the bundle `SSL_CERT_FILE` names.
+pub fn trust(env: &Env, agent: bool) -> Result<(), CliError> {
+    penv_cloud::tls::configure(env.as_map(), agent).map_err(|message| {
+        CliError::new(
+            "untrusted_ca_bundle",
+            message,
+            "Unset SSL_CERT_FILE to use the roots built into penv, or point it at a bundle the system owns, such as /etc/ssl/certs/ca-certificates.crt.",
+        )
+    })
+}
+
 pub fn open_browser(url: &str) -> bool {
     let (program, args): (&str, Vec<&str>) = if cfg!(windows) {
         ("cmd", vec!["/C", "start", "", url])

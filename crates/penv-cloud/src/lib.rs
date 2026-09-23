@@ -9,6 +9,7 @@ pub mod error;
 pub mod fetch;
 pub mod keychain;
 pub mod signature;
+pub mod tls;
 
 pub use api::{
     AGENT_HEADER, Address, Api, Approval, Bearer, Challenge, CloudKey, DEFAULT_BASE_URL,

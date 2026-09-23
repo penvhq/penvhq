@@ -28,6 +28,12 @@ irm https://penv.cloud/install.ps1 | iex     # Windows
 npm i -g @penvhq/cli@next                         # any of them, when npm should own it
 ```
 
+```dockerfile
+COPY --from=ghcr.io/penvhq/penv:1 /penv /usr/local/bin/penv   # any Linux image
+```
+
+The image is the signed static binary on `scratch`: [packaging/docker](./packaging/docker/README.md).
+
 The first two put one static binary in `~/.penv/bin`, or `%USERPROFILE%\.penv\bin` on Windows, and print the line that adds it to your PATH; no rc file is edited and nothing else is written. `PENV_INSTALL_DIR` moves it, `PENV_VERSION` pins a tag, and every download is checked against the digest the release publishes before it lands. The PowerShell one writes your user PATH when you ask: `-AddToPath` when you run the file, `$env:PENV_ADD_TO_PATH = '1'` when you pipe it through `iex`, which has no flags to pass. Builds: linux and macOS on x86\_64 and arm64, Windows on x86\_64 and arm64.
 
 Every release signs its checksum file with penv's Ed25519 release key. A build that carries a release key refuses a download whose signature does not hold; a build carrying none cannot upgrade at all and is replaced by running an installer above. The shell installer checks the signature wherever OpenSSL 1.1.1 or newer is on PATH, and the PowerShell one says so and installs on the digest, since .NET has no Ed25519.

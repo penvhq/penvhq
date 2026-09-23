@@ -68,6 +68,7 @@ impl AwsContainer {
             (None, token) => token.clone(),
         };
         let agent: ureq::Agent = ureq::Agent::config_builder()
+            .tls_config(crate::tls::config())
             .timeout_global(Some(Duration::from_secs(5)))
             .http_status_as_error(false)
             // A redirect could carry the authorization token to another host.

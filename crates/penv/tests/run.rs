@@ -75,6 +75,7 @@ impl Workspace {
     fn penv(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_penv"))
             .current_dir(&self.0)
+            .env_remove("SSL_CERT_FILE")
             .args(args)
             .output()
             .expect("penv runs")
@@ -83,7 +84,11 @@ impl Workspace {
     /// `penv --agent run [args] -- <shell> <flag> <script>`.
     fn run(&self, args: &[&str], script: &str) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_penv"));
-        command.current_dir(&self.0).arg("--agent").arg("run");
+        command
+            .current_dir(&self.0)
+            .env_remove("SSL_CERT_FILE")
+            .arg("--agent")
+            .arg("run");
         command.args(args);
         command.arg("--").arg(SHELL).arg(SHELL_FLAG).arg(script);
         command.output().expect("penv runs")

@@ -152,6 +152,16 @@ fn swap_failed(path: &Path, e: &Swap) -> CliError {
 }
 
 fn get(url: &str, accept: &str) -> Result<Vec<u8>, CliError> {
+    // A release is checked against its signature, so a bundle cannot slip in a
+    // binary; it only has to let the download through an inspecting proxy.
+    let process: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    penv_cloud::tls::configure(&process, false).map_err(|message| {
+        CliError::new(
+            "untrusted_ca_bundle",
+            message,
+            "Unset SSL_CERT_FILE to use the roots built into penv, or point it at a readable PEM bundle.",
+        )
+    })?;
     let response = fetch::get(url, accept).map_err(|e| {
         CliError::new(
             "release_unreachable",

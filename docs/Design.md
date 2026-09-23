@@ -305,13 +305,15 @@ steps:
 
 ```dockerfile
 # Docker, ECS, EKS, Cloud Run, Fly: values at start, never in a layer
-RUN curl -fsSL https://penv.cloud/install | sh
-RUN --mount=type=secret,id=penv_token PENV_TOKEN=$(cat /run/secrets/penv_token) penv run --env production -- npm run build
+COPY --from=ghcr.io/penvhq/penv:1 /penv /usr/local/bin/penv
+RUN --mount=type=secret,id=penv_token,env=PENV_TOKEN penv run --env production -- npm run build
 ENTRYPOINT ["penv", "run", "--env", "production", "--"]
 CMD ["node", "server.js"]
 ```
 
 AWS Lambda managed runtimes (Node.js, Python, Java, .NET, Ruby) take `packaging/lambda/`: a layer with `bin/penv` and `penv-wrapper`, enabled by `AWS_LAMBDA_EXEC_WRAPPER=/opt/penv-wrapper` and `PENV_ENV`. The wrapper runs from `LAMBDA_TASK_ROOT`, keeps the preload under `/tmp/.cache`, and refuses to start without an `.env.schema` rather than let `run` write one. `build-layer.sh` fetches the release through `install.sh`, so the layer gets the same signature and digest checks as an install. Vercel and Netlify functions, Cloudflare Workers and Vercel Edge do not run penv at runtime: their values come from penv.cloud.
+
+**Which authorities are trusted.** Every request penv makes trusts the Mozilla roots compiled into the binary, so a host with no CA bundle, such as a `scratch` image, still reaches penv.cloud, and a network that re-signs TLS is refused. `SSL_CERT_FILE` replaces those roots with the PEM bundle it names, the way OpenSSL, curl and Python read it: that is how a TLS-inspecting proxy is trusted. A named file that cannot be read or holds no certificate is an error, never a silent fallback. In an agent session the bundle is used only when this user cannot write it, because an agent that could plant a bundle, and a proxy with it, would read penv's credential and every value; a bundle the user cannot write passes, and so does a distribution's own root-owned trust store (`/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/cert.pem`, `/etc/ssl/ca-bundle.pem`), which is the only case that lets an agent running as root behind a proxy reach penv.cloud; a root agent could change that store, but that is the machine's trust, not a file planted for penv.
 
 ## 9. Claim
 
@@ -346,7 +348,9 @@ The npm side is the pattern Biome and Turborepo publish Rust binaries with, and 
 
 The workflow creates the release once as a draft, in a job the six build jobs need, so nothing races to create it and the builds only upload into it; the `sign` job is what takes it out of draft. That job refuses the tag first when `v<tag>` is not the `[workspace.package]` version in `Cargo.toml`, and it is where the two installers are uploaded.
 
-`penv upgrade` replaces the binary an installer placed. It refuses under `node_modules` and names `npm i -g @penvhq/cli`, alongside the same refusal for Homebrew, Nix, winget and Scoop, because that binary belongs to the package a manager put it in. Homebrew tap, winget and a Docker image are still to come. Release builds run only in CI; this development machine runs `cargo check` and `cargo test` with two jobs.
+`penv upgrade` replaces the binary an installer placed. It refuses under `node_modules` and names `npm i -g @penvhq/cli`, alongside the same refusal for Homebrew, Nix, winget and Scoop, because that binary belongs to the package a manager put it in. Homebrew tap and winget are still to come.
+
+**The image.** `ghcr.io/penvhq/penv` holds the signed static Linux binary at `/penv` for amd64 and arm64, on `scratch`, as uid 65532, with OCI labels for source, version, revision and licence. Tags: the version always; `X.Y`, `X` and `latest` for a plain release; `next` for a prerelease. The release workflow's `image` job runs after the `sign` job publishes the release. `packaging/docker/fetch.sh` takes both binaries through `install.sh`, and fails where `install.sh` would install on the digest alone for want of OpenSSL. `packaging/docker/Dockerfile` copies them in with no build step, so the image holds the bytes the release signed, and both platforms build without emulation. Release binaries are stripped (`[profile.release] strip = true`): the static x86_64 binary is 11.4 MB where it was 14.8 MB. The first image is published by the first release tagged after this change; `v1.0.0-beta.1` has none. Release builds run only in CI; this development machine runs `cargo check` and `cargo test` with two jobs.
 
 ## 11. Crate layout
 

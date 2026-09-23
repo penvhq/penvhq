@@ -16,3 +16,16 @@ pub fn detect_here(env: &Env, tty: bool) -> Detection {
     cx.ancestry = &processes;
     detect(&cx)
 }
+
+static FLAGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Remember that `--agent` was passed, for checks deep in a command that only
+/// see what detection found.
+pub fn flag_session() {
+    FLAGGED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// True when `--agent` was passed to this process.
+pub fn flagged() -> bool {
+    FLAGGED.load(std::sync::atomic::Ordering::Relaxed)
+}

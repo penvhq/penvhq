@@ -27,3 +27,8 @@ penv-dotenv = { path = "crates/penv-dotenv" }
 penv-targets = { path = "crates/penv-targets" }
 penv-guards = { path = "crates/penv-guards" }
 penv-cloud = { path = "crates/penv-cloud" }
+
+# Symbols add about a quarter to the binary and every download, npm package and
+# image carries them. Panics still print their message and location.
+[profile.release]
+strip = true

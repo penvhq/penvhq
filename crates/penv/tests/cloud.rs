@@ -110,6 +110,7 @@ impl Workspace {
             .env_remove("PENV_ENV")
             .env_remove("LOCALAPPDATA")
             .env_remove("XDG_CACHE_HOME")
+            .env_remove("SSL_CERT_FILE")
             .env_remove("HOME");
         // The suite itself may be running under an agent, and these tests decide
         // for themselves which sessions are one.
@@ -1600,4 +1601,68 @@ fn a_refused_web_identity_says_why_without_echoing_the_token() {
     let text = format!("{}{}", stdout(&output), stderr(&output));
     assert!(text.contains("AccessDenied"), "{text}");
     assert!(!text.contains("eyJ.secret.jwt"));
+}
+
+// --- which certificate authorities are trusted ---------------------------------
+
+#[test]
+fn a_ca_bundle_the_user_can_write_is_refused_for_an_agent_and_used_for_a_person() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let bundle = workspace.path().join("ca.pem");
+    let system = [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+    ]
+    .into_iter()
+    .find(|p| std::path::Path::new(p).is_file());
+    let Some(system) = system else {
+        return;
+    };
+    std::fs::copy(system, &bundle).unwrap();
+
+    let agent = workspace
+        .command(&mock)
+        .env("SSL_CERT_FILE", &bundle)
+        .args(["--agent", "run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert_ne!(agent.status.code(), Some(0));
+    let said = format!("{}{}", stdout(&agent), stderr(&agent));
+    assert!(said.contains("untrusted_ca_bundle"), "{said}");
+    assert!(
+        mock.hits("GET", ENVS).is_empty(),
+        "nothing is sent through a bundle an agent could have written"
+    );
+
+    let person = workspace
+        .command(&mock)
+        .env("SSL_CERT_FILE", &bundle)
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert_eq!(person.status.code(), Some(0), "{}", stderr(&person));
+
+    std::fs::write(&bundle, "not a certificate\n").unwrap();
+    let broken = workspace
+        .command(&mock)
+        .env("SSL_CERT_FILE", &bundle)
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert!(
+        stderr(&broken).contains("holds no PEM certificate")
+            || stdout(&broken).contains("holds no PEM certificate"),
+        "{} {}",
+        stdout(&broken),
+        stderr(&broken)
+    );
 }
