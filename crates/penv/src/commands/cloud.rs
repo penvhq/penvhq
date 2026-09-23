@@ -250,6 +250,10 @@ pub fn key_schema(key: &Key) -> Value {
     let mut json = key.to_json();
     if let Some(object) = json.as_object_mut() {
         object.remove("name");
+        // penv.cloud refuses fields it does not know (Design, implementation debt:
+        // `hosts`). The committed schema carries @hosts either way, so the key
+        // goes up without it until the server stores it.
+        object.remove("hosts");
     }
     json
 }

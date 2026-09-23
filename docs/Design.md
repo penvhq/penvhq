@@ -287,7 +287,7 @@ Cloud-side: the schema is stored per key next to values; the console renders and
 **Implementation debt (penv-cloud).** What the CLI and `@penvhq/varlock-plugin` read, and the server does not yet guarantee. The first three are missing; the rest must be verified against the deployed API before the plugin's first release is announced:
 
 1. `updatedAt` (RFC 3339) on every key in `GET /envs`. `@rotate` counts from it; until it arrives, `check` reports cloud keys as having no recorded write.
-2. `hosts` in the per-key schema. A key with `@hosts` carries `"hosts": ["api.stripe.com", …]` in the object `push` sends, and the API refuses fields it does not know (`400 schema_invalid`). The server must store and return it, and the console should show it.
+2. `hosts` in the per-key schema. The API refuses fields it does not know (`400 schema_invalid`), so `push` leaves `hosts` out of each key's schema object today; the committed `.env.schema` still carries `@hosts`. The server must accept, store and return `"hosts": ["api.stripe.com", …]`, and the console should show it; then `push` sends it.
 3. A verified override round trip. A local value file wins over the cloud on its machine, but today `run` cannot tell a deliberate override from a stale pulled copy, so every override warns the same way. The fix: `pull` records each key's `version` beside the file it writes, and `run` compares it with the cloud's, so it can say "stale: the cloud is at v7, `.env.production` holds v5" instead of "replaced". That needs `version` on every key in `GET /envs` (present) and `updatedAt` (above).
 
 Must verify:

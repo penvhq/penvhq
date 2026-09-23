@@ -1818,3 +1818,14 @@ fn ci_and_aws_credentials_are_withheld_from_a_config_named_root_too() {
         "no proof of any kind reached it"
     );
 }
+
+#[test]
+fn push_leaves_hosts_out_of_the_key_schema_until_the_server_accepts_it() {
+    let schema =
+        penv_schema::parse("# @type=string @hosts=api.stripe.com\nSTRIPE_SECRET_KEY=\n").unwrap();
+    let key = schema.get("STRIPE_SECRET_KEY").unwrap();
+    assert_eq!(key.hosts, ["api.stripe.com"]);
+    let sent = penv::commands::cloud::key_schema(key);
+    assert!(sent.get("hosts").is_none(), "{sent}");
+    assert!(sent.get("name").is_none());
+}
