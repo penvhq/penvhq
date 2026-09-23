@@ -58,14 +58,76 @@ fn number(ty: &Type, name: &str) -> Option<usize> {
     constraint(ty, name).and_then(|v| v.trim().parse().ok())
 }
 
+/// Domains under which anyone can get a name: country second levels and
+/// hosting platforms. `*.vercel.app` would send a value to every stranger's
+/// deploy, so a wildcard directly over one of these is refused.
+pub const SHARED_SUFFIXES: &[&str] = &[
+    "co.uk",
+    "org.uk",
+    "ac.uk",
+    "gov.uk",
+    "me.uk",
+    "ltd.uk",
+    "plc.uk",
+    "com.au",
+    "net.au",
+    "org.au",
+    "co.nz",
+    "co.jp",
+    "ne.jp",
+    "or.jp",
+    "co.za",
+    "co.in",
+    "co.kr",
+    "com.br",
+    "com.cn",
+    "com.mx",
+    "com.ng",
+    "com.sg",
+    "com.tr",
+    "com.ar",
+    "com.hk",
+    "com.tw",
+    "github.io",
+    "gitlab.io",
+    "vercel.app",
+    "netlify.app",
+    "pages.dev",
+    "workers.dev",
+    "herokuapp.com",
+    "fly.dev",
+    "onrender.com",
+    "web.app",
+    "firebaseapp.com",
+    "appspot.com",
+    "azurewebsites.net",
+    "cloudfront.net",
+    "amazonaws.com",
+    "blob.core.windows.net",
+    "ngrok.io",
+    "ngrok-free.app",
+    "trycloudflare.com",
+    "deno.dev",
+    "replit.app",
+    "glitch.me",
+    "surge.sh",
+    "railway.app",
+    "up.railway.app",
+    "supabase.co",
+    "repl.co",
+];
+
 /// `api.example.com`, `localhost`, `10.0.0.5` or `*.example.com`: lowercase
-/// labels, a wildcard only as the whole first label and with two labels after
-/// it, and no scheme, port, path or user.
+/// labels, a wildcard only as the whole first label, with two labels after it
+/// and never directly over a shared suffix, and no scheme, port, path or user.
 pub fn is_host_pattern(host: &str) -> bool {
     let (wild, rest) = match host.strip_prefix("*.") {
         Some(rest) => (true, rest),
         None => (false, host),
     };
+    if wild && SHARED_SUFFIXES.contains(&rest) {
+        return false;
+    }
     let labels: Vec<&str> = rest.split('.').collect();
     if rest.is_empty() || rest.len() > 253 || (wild && labels.len() < 2) {
         return false;
@@ -178,6 +240,9 @@ mod tests {
         for bad in [
             "*",
             "*.com",
+            "*.co.uk",
+            "*.vercel.app",
+            "*.amazonaws.com",
             "https://a.com",
             "a.com:443",
             "a.com/x",

@@ -38,6 +38,16 @@ pub fn prepare(
         let Some(value) = values.get(&key.name).filter(|v| !v.is_empty()) else {
             continue;
         };
+        if let Some(why) = super::signing_secret(&key.name) {
+            return Err(refuse(
+                "cannot_seal",
+                format!(
+                    "{} has @hosts, but {why}, so a placeholder cannot stand in for it.",
+                    key.name
+                ),
+                format!("Remove @hosts from {}.", key.name),
+            ));
+        }
         if key.ty.base == BaseType::Url {
             return Err(refuse(
                 "sealed_database",

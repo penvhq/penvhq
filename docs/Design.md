@@ -227,6 +227,8 @@ STRIPE_SECRET_KEY=
 - **What is swapped:** a placeholder becomes the value in the request line and headers sent to a host the key's `@hosts` allows. A request body keeps the placeholder, so an allowed host's write API (a gist, an issue, a message) cannot publish a value. Any value in a response becomes its placeholder again. Requests ask for uncompressed responses so they can be read.
 - **Every other host** is a tunnel: nothing is read, nothing is swapped, and a placeholder sent there stays one. Plain HTTP gets values only for loopback hosts.
 - **HTTP/1.1** only through an allowed host: ALPN offers nothing else. An upgrade (WebSocket) through an allowed host is refused.
+- **Refused before the run:** a wildcard over a domain where anyone can get a name (`*.co.uk`, `*.vercel.app`, `*.amazonaws.com`); `@hosts` on a key that signs requests (`AWS_SECRET_ACCESS_KEY`, names with `SIGNING`, `HMAC`, `WEBHOOK_SECRET`, `JWT_SECRET`), which `check` also fails. `check` notes a `@hosts` key with no shape rule.
+- **Basic auth and echoes:** a placeholder inside `Authorization: Basic` is swapped after decoding it. A value in a response comes back as its placeholder as written, base64, percent-encoded or hex.
 - **Limits:** a database URL (`@type=url` with `@hosts`) is refused until the database proxy lands. A signing secret (AWS SigV4, webhook HMAC, JWT keys) cannot be swapped in flight and should not carry `@hosts`. A client that ignores the proxy variables sends the placeholder directly and fails. On Windows, clients that use the OS certificate store (Python, curl) do not trust the run's authority.
 ## 6. Agents
 

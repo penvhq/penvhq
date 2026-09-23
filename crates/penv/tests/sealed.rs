@@ -49,7 +49,8 @@ fn read_request(reader: &mut impl BufRead) -> (Vec<String>, String) {
 }
 
 fn answer(stream: &mut impl Write) {
-    let body = format!("{{\"echo\":\"{REAL}\"}}");
+    let b64 = penv_cloud::b64::encode(REAL.as_bytes());
+    let body = format!("{{\"echo\":\"{REAL}\",\"b64\":\"{b64}\"}}");
     write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -145,6 +146,7 @@ fn a_sealed_command_holds_a_placeholder_and_the_allowed_host_gets_the_value_in_t
     let script = format!(
         "echo \"env=$STRIPE_SECRET_KEY\"; \
          curl -s --fail https://localhost:{port}/v1 -H \"Authorization: Bearer $STRIPE_SECRET_KEY\" -d \"k=$STRIPE_SECRET_KEY\"; echo; \
+         curl -s --fail -u \"$STRIPE_SECRET_KEY:\" https://localhost:{port}/basic; echo; \
          curl -s http://127.0.0.1:{plain_port}/other -H \"Authorization: Bearer $STRIPE_SECRET_KEY\"; echo"
     );
     let out = Command::new(env!("CARGO_BIN_EXE_penv"))
@@ -172,10 +174,14 @@ fn a_sealed_command_holds_a_placeholder_and_the_allowed_host_gets_the_value_in_t
         !stdout.contains(REAL),
         "the command never sees the value: {stdout}"
     );
+    let placeholder_b64 = penv_cloud::b64::encode(placeholder.as_bytes());
     assert!(
-        stdout.contains(&format!("{{\"echo\":\"{placeholder}\"}}")),
-        "an echoed value comes back as the placeholder: {stdout}"
+        stdout.contains(&format!(
+            "{{\"echo\":\"{placeholder}\",\"b64\":\"{placeholder_b64}\"}}"
+        )),
+        "an echoed value, raw or base64, comes back as the placeholder: {stdout}"
     );
+    assert!(!stdout.contains(&penv_cloud::b64::encode(REAL.as_bytes())));
 
     let seen = seen.lock().unwrap();
     let (head, body) = &seen[0];
@@ -188,6 +194,15 @@ fn a_sealed_command_holds_a_placeholder_and_the_allowed_host_gets_the_value_in_t
         body,
         &format!("k={placeholder}"),
         "the body keeps the placeholder"
+    );
+    let basic = format!(
+        "Authorization: Basic {}",
+        penv_cloud::b64::encode(format!("{REAL}:").as_bytes())
+    );
+    assert!(
+        seen[1].0.iter().any(|l| l == &basic),
+        "curl -u gets the value inside Basic: {:?}",
+        seen[1].0
     );
 
     let plain = plain_seen.lock().unwrap();
@@ -223,4 +238,45 @@ fn a_key_whose_type_leaves_no_room_is_refused_before_the_command_starts() {
             || String::from_utf8_lossy(&out.stdout).contains("cannot_seal")
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_signing_secret_with_hosts_fails_check_and_is_never_sealed() {
+    let dir = scratch("signing");
+    std::fs::write(
+        dir.join(".env.schema"),
+        "# @type=string(minLength=40) @hosts=sts.amazonaws.com\nAWS_SECRET_ACCESS_KEY=\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".env"),
+        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI_K7MDENG_bPxRfiCYEXAMPLEKEYxx\n",
+    )
+    .unwrap();
+    let check = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .current_dir(&dir)
+        .args(["--format", "text", "check"])
+        .output()
+        .unwrap();
+    assert_eq!(check.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("SigV4"),
+        "{}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+    let run = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .current_dir(&dir)
+        .args(["run", "--sealed", "--", "sh", "-c", "echo started"])
+        .output()
+        .unwrap();
+    assert_ne!(run.status.code(), Some(0));
+    assert!(!String::from_utf8_lossy(&run.stdout).contains("started"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_wildcard_over_a_hosting_platform_is_refused() {
+    let schema = penv_schema::parse("# @hosts(\"*.vercel.app\")\nK=\n");
+    assert!(schema.is_err());
+    assert!(penv_schema::parse("# @hosts(\"*.acme.vercel.app\")\nK=\n").is_ok());
 }

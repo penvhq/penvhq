@@ -110,17 +110,25 @@ impl Proxy {
     /// Value → placeholder, for every sealed key: an echoed secret goes back
     /// to the child only as its placeholder.
     fn response_swaps(&self) -> Swaps {
-        let mut swaps: Vec<(Vec<u8>, Vec<u8>)> = self
-            .keys
-            .iter()
-            .filter(|k| k.value.len() >= 4)
-            .map(|k| {
+        let mut swaps: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for k in self.keys.iter().filter(|k| k.value.len() >= 4) {
+            // The value as written, and as an echo commonly carries it:
+            // base64 (a decoded Basic header), percent-encoded, hex.
+            let forms = [
+                (k.value.clone(), k.placeholder.clone()),
                 (
-                    k.value.clone().into_bytes(),
-                    k.placeholder.clone().into_bytes(),
-                )
-            })
-            .collect();
+                    penv_cloud::b64::encode(k.value.as_bytes()),
+                    penv_cloud::b64::encode(k.placeholder.as_bytes()),
+                ),
+                (percent(&k.value), percent(&k.placeholder)),
+                (hex(&k.value), hex(&k.placeholder)),
+            ];
+            for (from, to) in forms {
+                if from.len() >= 4 && !swaps.iter().any(|(f, _)| f == from.as_bytes()) {
+                    swaps.push((from.into_bytes(), to.into_bytes()));
+                }
+            }
+        }
         // Longest first, so a value that contains another is swapped whole.
         swaps.sort_by_key(|s| std::cmp::Reverse(s.0.len()));
         Swaps(swaps)
@@ -189,6 +197,7 @@ impl Proxy {
                 .next()
                 .unwrap_or_default()
                 .to_string();
+            basic_auth(&mut request, &request_swaps);
             // Compressed responses cannot be read for values to swap back.
             request.set("Accept-Encoding", "identity".to_string());
             if request
@@ -318,6 +327,48 @@ impl Proxy {
         let _ = client.shutdown(Shutdown::Both);
         Ok(())
     }
+}
+
+/// `Authorization: Basic base64(user:placeholder)`, as `curl -u` and most HTTP
+/// clients send it: the placeholder is inside the base64, so decode, swap, and
+/// encode again.
+fn basic_auth(head: &mut Head, swaps: &Swaps) {
+    let Some(value) = head.get("authorization").map(str::to_string) else {
+        return;
+    };
+    let Some(encoded) = value
+        .strip_prefix("Basic ")
+        .or_else(|| value.strip_prefix("basic "))
+    else {
+        return;
+    };
+    let Some(decoded) = penv_cloud::b64::decode(encoded.trim()) else {
+        return;
+    };
+    let swapped = swaps.apply(&decoded);
+    if swapped != decoded {
+        head.set(
+            "Authorization",
+            format!("Basic {}", penv_cloud::b64::encode(&swapped)),
+        );
+    }
+}
+
+fn percent(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+fn hex(value: &str) -> String {
+    value.bytes().map(|b| format!("{b:02x}")).collect()
 }
 
 #[derive(Debug)]

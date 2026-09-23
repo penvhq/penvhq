@@ -99,7 +99,7 @@ Accept it when every rule holds; otherwise `400 schema_invalid` with `"field": "
 |---|---|---|
 | An array of 1 to 32 strings; an empty array is absent | `["api.stripe.com"]` | `"api.stripe.com"`, `[]` kept as a value, 33 entries |
 | Each is a host name or IPv4 address: lowercase labels of `a-z`, `0-9`, `-`, 1 to 63 characters, not starting or ending with `-`, 253 characters in all | `db-1.internal`, `10.0.0.5`, `localhost` | `API.stripe.com`, `-a.com`, `a..com` |
-| A wildcard only as the whole first label, followed by at least two labels | `*.stripe.com` | `*`, `*.com`, `api.*.com` |
+| A wildcard only as the whole first label, followed by at least two labels, and never directly over a domain where anyone can get a name (the CLI's list: `SHARED_SUFFIXES` in `crates/penv-schema/src/placeholder.rs`) | `*.stripe.com`, `*.acme.vercel.app` | `*`, `*.com`, `api.*.com`, `*.co.uk`, `*.vercel.app` |
 | No scheme, port, path, query or user | | `https://a.com`, `a.com:443`, `a.com/v1`, `u@a.com` |
 | No duplicates | | `["a.com", "a.com"]` |
 
