@@ -126,9 +126,9 @@ note REDIS_URL is read in src/cache.ts:4 and not declared in .env.schema
 note declared in .env.schema and not mentioned in any source file: OLD_FLAG
 ```
 
-`penv why KEY` says which file, cloud environment or default a value came from, which files it overrides, which keys it is built on, and whether it is masked, public or sealed. It never prints the value.
-
 It reads the repository's source for `process.env`, `import.meta.env`, `Deno.env.get`, `os.environ`, `os.getenv`, `env::var`, `os.Getenv`, `System.getenv`, `Environment.GetEnvironmentVariable`, `ENV[]`, `getenv` and Prisma's `env()`. Platform variables (`NODE_ENV`, `VERCEL_*`, `CI`, ...) and files `penv gen` writes are left out. `penv check --strict` fails on an undeclared read.
+
+`penv why KEY` says which file, cloud environment or default a value came from, which files it overrides, which keys it is built on, and whether it is masked, public or sealed. It never prints the value.
 
 
 ## Environments
