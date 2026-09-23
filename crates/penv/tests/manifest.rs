@@ -183,7 +183,7 @@ fn global_flags_are_listed_once() {
         .iter()
         .map(|f| f["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["json", "format", "agent"]);
+    assert_eq!(names, ["json", "format", "agent", "provider"]);
     for command in commands(&manifest) {
         let flags: Vec<&str> = command["flags"]
             .as_array()
