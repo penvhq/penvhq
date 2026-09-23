@@ -29,6 +29,26 @@ check() {
   if [ $ok = 1 ]; then echo "ok   $lang"; else echo "FAIL $lang"; echo "  good: $good"; echo "  bad:  $bad"; failed=1; fi
 }
 
+if have npm && have node; then
+  # The strictest settings a project is likely to use: an unused declaration or
+  # a missing `override` is an error, as a linter would report it.
+  d=$WORK/ts && mkdir -p "$d" && cp "$SNAP/ts.env.ts" "$d/env.ts"
+  cat >"$d/shims.d.ts" <<'TS'
+interface ImportMetaEnv { [key: string]: string | undefined }
+interface ImportMeta { readonly env: ImportMetaEnv }
+TS
+  cat >"$d/tsconfig.json" <<'JSON'
+{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler", "strict": true,
+  "noEmit": true, "skipLibCheck": true, "noUnusedLocals": true, "noUnusedParameters": true,
+  "noImplicitOverride": true, "types": ["node"], "lib": ["ES2022"] }, "files": ["env.ts", "shims.d.ts"] }
+JSON
+  if (cd "$d" && npm i -s --no-audit --no-fund typescript@5 @types/node@22 >/dev/null 2>&1 && ./node_modules/.bin/tsc -p .); then
+    echo "ok   ts"
+  else
+    echo "FAIL ts"; failed=1
+  fi
+else skip ts npm; fi
+
 if have go; then
   d=$WORK/go && mkdir -p "$d/env" && cp "$SNAP/go.env.go" "$d/env/env.go"
   printf 'module example.test/app\n\ngo 1.21\n' >"$d/go.mod"
