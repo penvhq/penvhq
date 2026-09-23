@@ -34,7 +34,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand 'ls' 'List your keys and show which ones have a value'
             cand 'why' 'Say where a key''s value comes from and how penv treats it, never the value'
             cand 'check' 'Report schema problems and missing values'
-            cand 'gen' 'Write the typed file for your language (ts, py)'
+            cand 'gen' 'Write the typed file for your language (ts, py, go, rust, php, java, csharp)'
             cand 'scan' 'Find secret values committed to files'
             cand 'guard' 'Write the harness rules that keep agents out of .env'
             cand 'reveal' 'Show one value; an AI agent needs your approval first'

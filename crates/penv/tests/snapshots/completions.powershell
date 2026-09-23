@@ -60,7 +60,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List your keys and show which ones have a value')
             [CompletionResult]::new('why', 'why', [CompletionResultType]::ParameterValue, 'Say where a key''s value comes from and how penv treats it, never the value')
             [CompletionResult]::new('check', 'check', [CompletionResultType]::ParameterValue, 'Report schema problems and missing values')
-            [CompletionResult]::new('gen', 'gen', [CompletionResultType]::ParameterValue, 'Write the typed file for your language (ts, py)')
+            [CompletionResult]::new('gen', 'gen', [CompletionResultType]::ParameterValue, 'Write the typed file for your language (ts, py, go, rust, php, java, csharp)')
             [CompletionResult]::new('scan', 'scan', [CompletionResultType]::ParameterValue, 'Find secret values committed to files')
             [CompletionResult]::new('guard', 'guard', [CompletionResultType]::ParameterValue, 'Write the harness rules that keep agents out of .env')
             [CompletionResult]::new('reveal', 'reveal', [CompletionResultType]::ParameterValue, 'Show one value; an AI agent needs your approval first')

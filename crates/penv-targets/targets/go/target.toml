@@ -1,0 +1,26 @@
+name = "go"
+output = "env/env.go"
+detect = ["go.mod"]
+import = "import \"<module>/env\""
+
+[options]
+package = "env"
+
+[[option]]
+name = "package"
+default = "env"
+about = "The Go package name of the generated file."
+
+[types]
+string = "string"
+number = "float64"
+integer = "int64"
+boolean = "bool"
+url = "string"
+email = "string"
+port = "int"
+enum = "'string'"
+
+[check]
+command = ["gofmt", "-l", "-e", "{file}"]
+probe = ["gofmt", "-h"]

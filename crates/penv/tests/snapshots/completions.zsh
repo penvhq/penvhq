@@ -15,7 +15,7 @@ _penv() {
         'ls:List your keys and show which ones have a value'
         'why:Say where a key'\''s value comes from and how penv treats it, never the value'
         'check:Report schema problems and missing values'
-        'gen:Write the typed file for your language (ts, py)'
+        'gen:Write the typed file for your language (ts, py, go, rust, php, java, csharp)'
         'scan:Find secret values committed to files'
         'guard:Write the harness rules that keep agents out of .env'
         'reveal:Show one value; an AI agent needs your approval first'
