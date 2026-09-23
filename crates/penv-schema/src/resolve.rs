@@ -341,10 +341,16 @@ impl Run<'_> {
                 when_empty,
             } => {
                 let set = self.raw.contains_key(key) || self.outside.contains_key(key);
-                let value = self.quietly(&Expr::Ref(key.clone()))?;
+                // Looking is control: only a value that is used is a dependency,
+                // so a fallback taken does not inherit the key's sensitivity.
+                self.control += 1;
+                let value = self.quietly(&Expr::Ref(key.clone()));
+                self.control -= 1;
+                let value = value?;
                 if !set || (*when_empty && value.is_empty()) {
                     self.eval(or)
                 } else {
+                    self.depend(key);
                     Ok(value)
                 }
             }
@@ -1071,6 +1077,27 @@ mod tests {
         assert!(
             !e.iter().any(|e| e.message.contains("staging")),
             "the value is never named"
+        );
+    }
+
+    #[test]
+    fn a_fallback_taints_only_when_the_key_it_falls_back_from_is_used() {
+        let raw: BTreeMap<String, Raw> = [
+            (
+                "REGION".to_string(),
+                Raw::computed("${AWS_REGION:-us-east-1}"),
+            ),
+            ("TOKEN_OR".to_string(), Raw::computed("${TOKEN:-none}")),
+        ]
+        .into();
+        let outside: Values = [("TOKEN".to_string(), "sk_live_1".to_string())].into();
+        let out = resolve_full(&raw, &outside, "development", &Values::new());
+        let hot = tainted(&out.deps, |k| k == "AWS_REGION" || k == "TOKEN");
+        assert_eq!(out.values["REGION"], "us-east-1");
+        assert_eq!(
+            hot.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["TOKEN_OR"],
+            "the unset key was only looked at; the set one was used"
         );
     }
 
