@@ -12,6 +12,7 @@ pub mod config;
 pub mod env;
 pub mod error;
 pub mod files;
+pub mod gitexposure;
 pub mod manifest;
 pub mod output;
 pub mod preload;

@@ -1020,3 +1020,97 @@ fn bundler_setups_that_ship_every_key_fail_check_and_a_config_naming_one_is_note
     );
     assert!(!check.contains(SECRET));
 }
+
+// --- value files git would commit ------------------------------------------------
+
+fn git(dir: &std::path::Path, args: &[&str]) -> bool {
+    Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+#[test]
+fn a_secret_in_a_file_git_would_commit_fails_check_until_init_ignores_it() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        (".env.production", "PORT=4000\n"),
+    ]);
+    if !git(workspace.path(), &["init", "-q"]) {
+        return;
+    }
+    let check = workspace.penv(&["check"]);
+    assert_eq!(check.status.code(), Some(3));
+    let text = stdout(&check);
+    assert!(
+        text.contains("holds STRIPE_SECRET_KEY and is not in .gitignore"),
+        "{text}"
+    );
+    assert!(
+        !text.contains(".env.production"),
+        "a file with no secret in it may be committed: {text}"
+    );
+    assert!(!text.contains(SECRET));
+
+    let ran = workspace.run(&[], "exit 0");
+    assert!(
+        stderr(&ran).contains("is not in .gitignore"),
+        "{}",
+        stderr(&ran)
+    );
+
+    let init = workspace.penv(&["--format", "text", "init"]);
+    assert_eq!(init.status.code(), Some(0), "{}", stderr(&init));
+    assert!(stdout(&init).contains("kept"), "{}", stdout(&init));
+    let schema = std::fs::read_to_string(workspace.path().join(".env.schema")).unwrap();
+    assert_eq!(schema, local_schema(), "the schema written first is kept");
+    assert_eq!(workspace.penv(&["check"]).status.code(), Some(0));
+
+    assert!(git(workspace.path(), &["add", "-f", ".env"]));
+    let tracked = stdout(&workspace.penv(&["check"]));
+    assert!(
+        tracked.contains("git tracks it") && tracked.contains("git rm --cached .env"),
+        "{tracked}"
+    );
+}
+
+#[test]
+fn setting_a_secret_in_a_fresh_repository_ignores_the_value_files_and_starts_the_schema_cleanly() {
+    let workspace = Workspace::new(&[(".env.schema", "")]);
+    if !git(workspace.path(), &["init", "-q"]) {
+        return;
+    }
+    let mut set = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .current_dir(workspace.path())
+        .env_remove("SSL_CERT_FILE")
+        .args(["set", "STRIPE_SECRET_KEY"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write as _;
+    set.stdin
+        .take()
+        .unwrap()
+        .write_all(SECRET.as_bytes())
+        .unwrap();
+    let output = set.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let schema = std::fs::read_to_string(workspace.path().join(".env.schema")).unwrap();
+    assert!(
+        schema.starts_with("# @type="),
+        "no blank lines before the first block: {schema:?}"
+    );
+    let ignore = std::fs::read_to_string(workspace.path().join(".gitignore")).unwrap();
+    assert!(
+        ignore.contains(".env\n") && ignore.contains("!.env.schema"),
+        "{ignore}"
+    );
+}

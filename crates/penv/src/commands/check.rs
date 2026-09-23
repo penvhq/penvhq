@@ -119,6 +119,15 @@ pub fn run(
             ));
         }
     }
+    if only.is_none() {
+        for (file, how, keys) in source::exposed_secrets(&schema, &resolved) {
+            violations.push(Violation::new(
+                &show(&file),
+                "git",
+                source::exposure_message(&file, how, &keys),
+            ));
+        }
+    }
     for key in source::too_short_to_mask(&schema, &resolved.tainted, values) {
         notes.push(format!(
             "{key} is sensitive and shorter than {} characters, so penv cannot mask it",

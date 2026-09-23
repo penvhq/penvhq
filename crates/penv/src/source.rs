@@ -832,6 +832,58 @@ pub fn public_leaks(
         .collect()
 }
 
+/// Value files git would commit while they hold a sensitive value: the file, how
+/// it is exposed, and the keys whose values it holds. Names only.
+pub fn exposed_secrets(
+    schema: &Schema,
+    resolved: &Resolved,
+) -> Vec<(PathBuf, crate::gitexposure::Exposure, Vec<String>)> {
+    let mut out = Vec::new();
+    for file in &resolved.layers.read {
+        let keys: Vec<String> = resolved
+            .layers
+            .origin
+            .iter()
+            .filter(|(_, from)| *from == file)
+            .filter(|(name, _)| is_sensitive(schema, &resolved.tainted, name))
+            .filter(|(name, _)| {
+                resolved
+                    .layers
+                    .raw
+                    .get(*name)
+                    .is_some_and(|r| !r.text.is_empty())
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if keys.is_empty() {
+            continue;
+        }
+        if let Some(how) = crate::gitexposure::exposure(file) {
+            out.push((file.clone(), how, keys));
+        }
+    }
+    out
+}
+
+/// One sentence per exposed file, for `check` to fail on and `run` to warn with.
+pub fn exposure_message(file: &Path, how: crate::gitexposure::Exposure, keys: &[String]) -> String {
+    match how {
+        crate::gitexposure::Exposure::Tracked => format!(
+            "{} holds {} and git tracks it. Run git rm --cached {}, commit, and rotate those values.",
+            show(file),
+            keys.join(", "),
+            file.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+        ),
+        crate::gitexposure::Exposure::Unignored => format!(
+            "{} holds {} and is not in .gitignore, so the next git add takes it. Run penv init to add the ignore lines.",
+            show(file),
+            keys.join(", ")
+        ),
+    }
+}
+
 /// Sensitive keys whose value is too short for the masker to replace: shown as
 /// written in any output, so they are named rather than silently passed.
 pub fn too_short_to_mask(

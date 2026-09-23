@@ -255,6 +255,8 @@ leak app.js:1 holds the value of STRIPE_SECRET_KEY
 
 Matches raw, base64, hex and URL-encoded forms. Reports file, line and key; never the value.
 
+`penv check` fails when a value file holding a sensitive value is tracked by git or not ignored; `penv run` warns. `penv init` in a folder that already has `.env.schema` keeps the schema and adds the ignore lines. `penv set` adds them when it writes a secret into a file git would pick up.
+
 ## Typed Access
 
 ```bash

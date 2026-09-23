@@ -189,6 +189,25 @@ fn set_local(
         )
     })?;
     crate::files::write_private_file(&file, &written)?;
+    // A secret just written to a file git would pick up: ignore the value files
+    // now, before anyone runs git add. A file git already tracks is only named,
+    // since ignoring it changes nothing.
+    let exposure = crate::gitexposure::exposure(&file);
+    let mut guarded = None;
+    if exposure == Some(crate::gitexposure::Exposure::Unignored) {
+        let root = file.parent().unwrap_or(Path::new("."));
+        let ignore = root.join(crate::files::GITIGNORE_FILE);
+        let existing = if ignore.is_file() {
+            read_file(&ignore)?
+        } else {
+            String::new()
+        };
+        let update = penv_dotenv::ensure_ignored(&existing);
+        if update.changed() {
+            write_file(&ignore, &update.content)?;
+            guarded = Some(ignore);
+        }
+    }
 
     let declared = schema.get(name).cloned();
     let key = declared.clone().unwrap_or_else(|| drafted(name, &value));
@@ -218,6 +237,15 @@ fn set_local(
             key.ty,
             show(schema_path)
         )));
+    }
+    if let Some(ignore) = &guarded {
+        lines.push(style.dim(&format!(
+            "added .env, .env.*, !.env.schema to {} so git leaves the value out",
+            show(ignore)
+        )));
+    }
+    if exposure == Some(crate::gitexposure::Exposure::Tracked) {
+        crate::ui::warn(&source_message_tracked(&file, name));
     }
     if let Some((path, _)) = &recorded {
         lines.push(style.dim(&format!(
@@ -289,9 +317,19 @@ fn drafted(name: &str, value: &str) -> Key {
 /// Append one block, leaving every line already in the file alone.
 fn append(source: &str, key: &Key) -> String {
     let mut out = source.trim_end().to_string();
-    out.push_str("\n\n");
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
     out.push_str(&penv_schema::render_key(key));
     out
+}
+
+fn source_message_tracked(file: &Path, name: &str) -> String {
+    crate::source::exposure_message(
+        file,
+        crate::gitexposure::Exposure::Tracked,
+        &[name.to_string()],
+    )
 }
 
 #[cfg(test)]

@@ -80,6 +80,9 @@ pub fn run(
         source::Generate::Yes,
     )?;
     source::report(&resolved, dir);
+    for (file, how, keys) in source::exposed_secrets(&schema, &resolved) {
+        ui::warn(&source::exposure_message(&file, how, &keys));
+    }
     if source::failed(&resolved.errors) {
         return Err(source::unresolved(&resolved.errors));
     }
