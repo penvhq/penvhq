@@ -20,7 +20,7 @@ pub fn exposure(file: &Path) -> Option<Exposure> {
     let dir = file.parent()?;
     let name = file.file_name()?;
     let git = |args: &[&std::ffi::OsStr]| {
-                // A repository's own config could name a program for git to run on
+        // A repository's own config could name a program for git to run on
         // index reads (core.fsmonitor); these two queries never need one.
         Command::new("git")
             .args(["-c", "core.fsmonitor=false"])
