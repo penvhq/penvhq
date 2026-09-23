@@ -192,11 +192,14 @@ pub struct Key {
     pub rotate: Option<String>,
     /// The spec's `@dynamic` / `@static` pair: preserved, never acted on.
     pub dynamic: Option<bool>,
+    /// `@hosts`: the only hosts this value may be sent to. When set, an agent's
+    /// process holds a placeholder and penv puts the value in on the way out.
+    pub hosts: Vec<String>,
 }
 
 impl Key {
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut out = json!({
             "name": self.name,
             "description": self.description,
             "type": self.ty.to_json(),
@@ -209,8 +212,14 @@ impl Key {
             "docs": self.docs,
             "deprecated": self.deprecated,
             "rotate": self.rotate,
-            "dynamic": self.dynamic,
-        })
+                                    "dynamic": self.dynamic,
+        });
+        // Written only when set: penv.cloud stores this object per key and
+        // refuses fields it does not know.
+        if !self.hosts.is_empty() {
+            out["hosts"] = json!(self.hosts);
+        }
+        out
     }
 }
 

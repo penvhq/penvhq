@@ -88,6 +88,21 @@ pub fn render_key(key: &Key) -> String {
             decorators.push(format!("@deprecated={}", quote(v)));
         }
     }
+    match key.hosts.as_slice() {
+        [] => {}
+        [one] => decorators.push(format!("@hosts={one}")),
+        many => decorators.push(format!(
+            "@hosts({})",
+            many.iter()
+                .map(|h| if h.starts_with('*') {
+                    format!("\"{h}\"")
+                } else {
+                    h.clone()
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
     if let Some(v) = &key.rotate {
         decorators.push(format!("@rotate={v}"));
     }

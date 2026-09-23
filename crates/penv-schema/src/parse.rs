@@ -575,6 +575,36 @@ impl Parser {
                 "example" => key.example = self.require_value(d),
                 "docs" => key.docs = self.require_value(d),
                 "deprecated" => key.deprecated = Some(d.value.clone().unwrap_or_default()),
+                "hosts" => {
+                    let written = d.value.clone().unwrap_or_default();
+                    let hosts: Vec<String> = if d.call {
+                        split_args(&written)
+                            .iter()
+                            .map(|a| unquote(a.trim()))
+                            .filter(|a| !a.is_empty())
+                            .collect()
+                    } else {
+                        vec![unquote(written.trim())]
+                    };
+                    match hosts.iter().find(|h| !crate::placeholder::is_host_pattern(h)) {
+                        _ if hosts.is_empty() || hosts.iter().all(String::is_empty) => self.error(
+                            d.line,
+                            d.column,
+                            "invalid_decorator_value",
+                            format!("line {}: @hosts takes one host, or @hosts(a.com, \"*.b.com\")", d.line),
+                        ),
+                        Some(bad) => self.error(
+                            d.line,
+                            d.column,
+                            "invalid_decorator_value",
+                            format!(
+                                "line {}: @hosts {bad} is not a host: write api.example.com or *.example.com, with no scheme, port, path or bare *",
+                                d.line
+                            ),
+                        ),
+                        None => key.hosts = hosts,
+                    }
+                }
                 "rotate" => {
                     if let Some(v) = self.require_value(d) {
                         if Span::parse(&v).is_some() {
