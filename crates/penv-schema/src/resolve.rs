@@ -151,12 +151,12 @@ pub fn tainted(
 /// before `resolve` runs.
 pub fn penv_addresses(raw: &BTreeMap<String, Raw>) -> Vec<String> {
     let mut out = Vec::new();
-    for value in raw
-        .values()
-        .filter(|r| r.computed && is_expression(&r.text))
+    for (name, value) in raw
+        .iter()
+        .filter(|(_, r)| r.computed && is_expression(&r.text))
     {
         if let Ok(expr) = parse(&value.text) {
-            collect(&expr, &mut out);
+            collect(&expr, name, &mut out);
         }
     }
     out.sort();
@@ -164,17 +164,21 @@ pub fn penv_addresses(raw: &BTreeMap<String, Raw>) -> Vec<String> {
     out
 }
 
-fn collect(expr: &Expr, out: &mut Vec<String>) {
+/// `key` is the key the expression belongs to: `penv()` with no argument reads
+/// that same key, the form varlock's penv plugin writes.
+fn collect(expr: &Expr, key: &str, out: &mut Vec<String>) {
     match expr {
         Expr::Call(name, args) => {
-            if let (true, [Expr::Text(address)]) = (name == "penv", args.as_slice()) {
-                out.push(address.trim().to_string());
+            match (name == "penv", args.as_slice()) {
+                (true, [Expr::Text(address)]) => out.push(address.trim().to_string()),
+                (true, []) => out.push(key.to_string()),
+                _ => {}
             }
-            args.iter().for_each(|a| collect(a, out));
+            args.iter().for_each(|a| collect(a, key, out));
         }
-        Expr::Template(parts) => parts.iter().for_each(|p| collect(p, out)),
-        Expr::Default { or, .. } => collect(or, out),
-        Expr::Filter { inner, .. } => collect(inner, out),
+        Expr::Template(parts) => parts.iter().for_each(|p| collect(p, key, out)),
+        Expr::Default { or, .. } => collect(or, key, out),
+        Expr::Filter { inner, .. } => collect(inner, key, out),
         Expr::Text(_) | Expr::Ref(_) => {}
     }
 }
@@ -446,8 +450,11 @@ impl Run<'_> {
                 Ok(flag(self.quietly(&args[0])?.is_empty()))
             }
             "penv" => {
-                arity(1, 1)?;
-                let address = self.eval(&args[0])?;
+                arity(0, 1)?;
+                let address = match args.first() {
+                    Some(arg) => self.eval(arg)?,
+                    None => self.stack.last().cloned().unwrap_or_default(),
+                };
                 let address = address.trim();
                 self.depend(&format!("penv:{address}"));
                 self.fetched.get(address).cloned().ok_or_else(|| {
@@ -1078,6 +1085,24 @@ mod tests {
             !e.iter().any(|e| e.message.contains("staging")),
             "the value is never named"
         );
+    }
+
+    #[test]
+    fn penv_with_no_argument_reads_the_key_it_sits_on() {
+        let raw: BTreeMap<String, Raw> = [
+            ("DATABASE_URL".to_string(), Raw::computed("penv()")),
+            ("OTHER".to_string(), Raw::computed("penv(production/OTHER)")),
+        ]
+        .into();
+        assert_eq!(penv_addresses(&raw), ["DATABASE_URL", "production/OTHER"]);
+        let fetched: Values = [
+            ("DATABASE_URL".to_string(), "postgres://x".to_string()),
+            ("production/OTHER".to_string(), "y".to_string()),
+        ]
+        .into();
+        let out = resolve_full(&raw, &Values::new(), "development", &fetched);
+        assert_eq!(out.values["DATABASE_URL"], "postgres://x");
+        assert_eq!(out.values["OTHER"], "y");
     }
 
     #[test]
