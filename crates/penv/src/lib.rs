@@ -22,3 +22,4 @@ pub mod sealed;
 pub mod source;
 pub mod ui;
 pub mod upgrade;
+pub mod usage;

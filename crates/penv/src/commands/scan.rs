@@ -263,7 +263,11 @@ fn leaks(value: &str, text: &str) -> bool {
 
 /// The paths named, else what git would commit: the staged set with
 /// `--staged`, otherwise tracked and untracked-but-not-ignored files.
-fn candidates(cwd: &Path, paths: &[PathBuf], staged: bool) -> Result<Vec<PathBuf>, CliError> {
+pub(crate) fn candidates(
+    cwd: &Path,
+    paths: &[PathBuf],
+    staged: bool,
+) -> Result<Vec<PathBuf>, CliError> {
     let listed: Vec<PathBuf> = if !paths.is_empty() {
         let mut out = Vec::new();
         for path in paths {
@@ -308,7 +312,7 @@ fn candidates(cwd: &Path, paths: &[PathBuf], staged: bool) -> Result<Vec<PathBuf
 /// followed: a link back up the tree would otherwise loop until the path is too
 /// long, and a link out of the folder is not part of it. Value files are where
 /// values belong, so they are left out.
-fn walk(path: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn walk(path: &Path, out: &mut Vec<PathBuf>) {
     walk_at(path, out, 0);
 }
 

@@ -18,6 +18,7 @@ mod scan;
 mod set;
 mod state;
 mod upgrade;
+mod why;
 
 use std::path::Path;
 
@@ -119,8 +120,17 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
         Some(Command::Check {
             key,
             env: environment,
-        }) => check::run(out, cwd, key.as_deref(), environment.as_deref(), env),
+            strict,
+        }) => check::run(
+            out,
+            cwd,
+            key.as_deref(),
+            environment.as_deref(),
+            *strict,
+            env,
+        ),
         Some(Command::Ls { env: name }) => ls::run(out, cwd, name.as_deref(), env),
+        Some(Command::Why { key, env: name }) => why::run(out, cwd, key, name.as_deref(), env),
         Some(Command::Project { command }) => project::run(out, cwd, command, env, cli.agent),
         Some(Command::Env { project, command }) => {
             environment::run(out, cwd, project.as_deref(), command, env, cli.agent)

@@ -22,6 +22,8 @@ The project declares its environment in `.env.schema`. Values live in `.env*` fi
 | Run, test, build | `penv run -- npm run dev` (or `--env staging` / `--env production`) |
 | Find what is wrong | `penv check` (add `--env E` for another environment) |
 | List keys and whether each has a value | `penv ls` |
+| Where a key's value comes from, what it is built on, how penv treats it | `penv why KEY` |
+| Variables the code reads that `.env.schema` lacks | `penv check` (notes), `penv check --strict` (fails) |
 | Read the schema as JSON | `penv schema` |
 | Current state and next step | `penv` |
 | Every command, flag and exit code | `penv help --json` |

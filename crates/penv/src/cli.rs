@@ -17,6 +17,7 @@ pub const HELP: &str = "{about}
 Everyday
   run        Run a command with your secrets loaded into it
   ls         List your keys and show which ones have a value
+  why        Say where a key's value comes from, never the value
   set        Save one value (typed hidden, never shown)
   unset      Delete one value
   reveal     Show one value; an AI agent needs your approval first
@@ -197,6 +198,15 @@ pub enum Command {
         env: Option<String>,
     },
 
+    /// Say where a key's value comes from and how penv treats it, never the value
+    Why {
+        /// The key
+        key: String,
+        /// The environment to read
+        #[arg(long)]
+        env: Option<String>,
+    },
+
     /// Report schema problems and missing values
     Check {
         /// Check one key instead of all of them
@@ -204,6 +214,9 @@ pub enum Command {
         /// The environment to check
         #[arg(long)]
         env: Option<String>,
+        /// Fail when code reads a variable .env.schema does not declare
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Write the typed file for your language (ts, py)

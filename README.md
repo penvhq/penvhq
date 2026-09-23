@@ -122,7 +122,13 @@ The vocabulary is [@env-spec](https://varlock.dev). Full reference: [Design, sec
 $ penv check
 ok 7 key(s) in .env.schema for development
 rotate STRIPE_SECRET_KEY has @rotate=90d and no recorded write; penv set STRIPE_SECRET_KEY records one
+note REDIS_URL is read in src/cache.ts:4 and not declared in .env.schema
+note declared in .env.schema and not mentioned in any source file: OLD_FLAG
 ```
+
+It reads the repository's source for `process.env`, `import.meta.env`, `Deno.env.get`, `os.environ`, `os.getenv`, `env::var`, `os.Getenv`, `System.getenv`, `Environment.GetEnvironmentVariable`, `ENV[]`, `getenv` and Prisma's `env()`. Platform variables (`NODE_ENV`, `VERCEL_*`, `CI`, ...) and files `penv gen` writes are left out. `penv check --strict` fails on an undeclared read.
+
+`penv why KEY` says which file, cloud environment or default a value came from, which files it overrides, which keys it is built on, and whether it is masked, public or sealed. It never prints the value.
 
 ## Environments
 
@@ -218,6 +224,8 @@ A preload masks values inside the process, which the output stream does not reac
 | Python | `logging` records; bytes sent on accepted connections |
 
 Masked response bodies keep their byte length, so `Content-Length` stays valid. Outbound requests are not modified. [Design, inside the process](./docs/Design.md#inside-the-process).
+
+Deployed code runs without `penv run`. The file `penv gen ts` writes masks the app's secret values in `console` and in `Response` bodies wherever it is imported: Node, Bun, Deno, Vercel and Next.js edge, Cloudflare Workers. Off with `mask = false` in `[targets.ts.options]`.
 
 ### Client Bundle Checks
 

@@ -32,6 +32,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand 'set' 'Save one value (typed hidden, never shown)'
             cand 'unset' 'Delete one value'
             cand 'ls' 'List your keys and show which ones have a value'
+            cand 'why' 'Say where a key''s value comes from and how penv treats it, never the value'
             cand 'check' 'Report schema problems and missing values'
             cand 'gen' 'Write the typed file for your language (ts, py)'
             cand 'scan' 'Find secret values committed to files'
@@ -121,8 +122,16 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
             cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
+        if (eq $command 'penv;why') {
+            cand '--env' 'The environment to read'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
         if (eq $command 'penv;check') {
             cand '--env' 'The environment to check'
+            cand '--strict' 'Fail when code reads a variable .env.schema does not declare'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'

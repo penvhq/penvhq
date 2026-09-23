@@ -7,12 +7,19 @@ paths_from = "tsconfig.json"
 [options]
 key_case = "upper"
 runtime = "node"
+mask = true
 
 [[option]]
 name = "key_case"
 default = "upper"
 values = ["upper", "camel"]
 about = "Property names in the exported object: the environment key, or its camel form."
+
+[[option]]
+name = "mask"
+default = true
+values = [true, false]
+about = "Mask the app's secret values in its logs and responses wherever it runs, deployed code included."
 
 [[option]]
 name = "runtime"
