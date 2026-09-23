@@ -603,7 +603,7 @@ fn code_usage(dir: &Path, schema: &penv_schema::Schema) -> (Vec<(String, String)
         } else {
             dir.join(&file)
         };
-        if generated.iter().any(|g| *g == path) {
+        if generated.contains(&path) {
             continue;
         }
         if path.metadata().map(|m| m.len() > MAX_BYTES).unwrap_or(true) {
