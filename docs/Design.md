@@ -287,6 +287,32 @@ Cloud-side: the schema is stored per key next to values; the console renders and
 1. `updatedAt` (RFC 3339) on every key in `GET /envs`. `@rotate` counts from it; until it arrives, `check` reports cloud keys as having no recorded write.
 2. A verified override round trip. A local value file wins over the cloud on its machine, but today `run` cannot tell a deliberate override from a stale pulled copy, so every override warns the same way. The fix: `pull` records each key's `version` beside the file it writes, and `run` compares it with the cloud's, so it can say "stale: the cloud is at v7, `.env.production` holds v5" instead of "replaced". That needs `version` on every key in `GET /envs` (present) and `updatedAt` (above).
 
+### Deploying
+
+Credentials are tried in this order: `PENV_TOKEN`, a person's login, an enrolled keypair, the platform's OIDC token (GitHub Actions, GitLab `ID_TOKEN`, or `PENV_OIDC_TOKEN`), then AWS: keys in the environment, web identity (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`, which EKS IRSA sets; exchanged with STS `AssumeRoleWithWebIdentity`, honouring `AWS_ENDPOINT_URL_STS`), then the container endpoint (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` for ECS task roles, `..._FULL_URI` with `..._AUTHORIZATION_TOKEN[_FILE]` for EKS Pod Identity). A full URI is called only over https or to loopback and the ECS and EKS link-local hosts, never with user info in it, and no request follows a redirect. Whatever the kind, the server receives a signed `GetCallerIdentity`, never a secret key.
+
+An enrolled keypair lives in the OS keychain. A container has none, so `penv machine enroll` does not apply there; a container proves itself with `PENV_TOKEN`, OIDC or its AWS role. With no keychain there is also no value cache: every start reads penv.cloud.
+
+```yaml
+# GitHub Actions
+permissions: { id-token: write, contents: read }
+steps:
+  - uses: actions/checkout@v4
+  - run: curl -fsSL https://penv.cloud/install | sh
+  - run: penv check --env staging
+  - run: penv run --env staging -- npm run build      # exit 3 when a secret lands in browser output
+```
+
+```dockerfile
+# Docker, ECS, EKS, Cloud Run, Fly: values at start, never in a layer
+RUN curl -fsSL https://penv.cloud/install | sh
+RUN --mount=type=secret,id=penv_token PENV_TOKEN=$(cat /run/secrets/penv_token) penv run --env production -- npm run build
+ENTRYPOINT ["penv", "run", "--env", "production", "--"]
+CMD ["node", "server.js"]
+```
+
+AWS Lambda managed runtimes (Node.js, Python, Java, .NET, Ruby) take `packaging/lambda/`: a layer with `bin/penv` and `penv-wrapper`, enabled by `AWS_LAMBDA_EXEC_WRAPPER=/opt/penv-wrapper` and `PENV_ENV`. The wrapper runs from `LAMBDA_TASK_ROOT`, keeps the preload under `/tmp/.cache`, and refuses to start without an `.env.schema` rather than let `run` write one. `build-layer.sh` fetches the release through `install.sh`, so the layer gets the same signature and digest checks as an install. Vercel and Netlify functions, Cloudflare Workers and Vercel Edge do not run penv at runtime: their values come from penv.cloud.
+
 ## 9. Claim
 
 ```text

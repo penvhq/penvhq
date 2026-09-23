@@ -2,6 +2,8 @@
 //! adds a file and a line and touches nothing else.
 
 mod aws;
+mod aws_container;
+mod aws_web_identity;
 mod keypair;
 mod oidc;
 mod token;
@@ -9,6 +11,8 @@ mod token;
 use std::collections::BTreeMap;
 
 pub use aws::AwsIam;
+pub use aws_container::AwsContainer;
+pub use aws_web_identity::AwsWebIdentity;
 pub use keypair::{BoundKeypair, Enrolled, MESSAGE_PREFIX, enroll, public_key_der, sign_message};
 pub use oidc::Oidc;
 pub use token::{TOKEN_VAR, Token};
@@ -23,7 +27,7 @@ pub trait Obtain {
 }
 
 /// The order the design fixes: the variable, the person's login, the enrolled
-/// keypair, the platform's OIDC token, then AWS. `org` is the OIDC audience.
+/// keypair, the platform's OIDC token, then AWS (keys, web identity, container). `org` is the OIDC audience.
 pub fn resolve<'a>(
     env: &BTreeMap<String, String>,
     store: &'a dyn Keychain,
@@ -41,7 +45,15 @@ pub fn resolve<'a>(
     if let Some(oidc) = Oidc::from_env(env, org) {
         return Ok(Box::new(oidc));
     }
+    // The AWS SDKs' own order: keys in the environment, web identity (EKS
+    // IRSA), then the container endpoint (ECS task roles, EKS Pod Identity).
     if let Some(aws) = AwsIam::from_env(env) {
+        return Ok(Box::new(aws));
+    }
+    if let Some(aws) = AwsWebIdentity::from_env(env) {
+        return Ok(Box::new(aws));
+    }
+    if let Some(aws) = AwsContainer::from_env(env) {
         return Ok(Box::new(aws));
     }
     Err(CloudError::NoCredential)

@@ -1439,3 +1439,165 @@ fn a_computed_default_fetches_its_address_once_for_every_key_that_names_it() {
         "one read per address"
     );
 }
+
+// --- AWS credentials for containers -------------------------------------------
+
+fn aws_ready(mock: &Mock) {
+    mock.on("GET", ENVS, 200, &values_body());
+    mock.on(
+        "POST",
+        "/api/v1/auth/aws",
+        200,
+        &json!({ "credential": "pcm_FAKE", "expiresIn": 900 }).to_string(),
+    );
+}
+
+fn without_token(workspace: &Workspace, mock: &Mock) -> Command {
+    let mut command = workspace.command(mock);
+    command.env_remove("PENV_TOKEN");
+    for name in [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_ROLE_ARN",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "CI_JOB_JWT_V2",
+        "ID_TOKEN",
+        "PENV_OIDC_TOKEN",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
+#[test]
+fn an_ecs_or_eks_pod_identity_container_proves_itself_with_its_endpoint_credentials() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "GET",
+        "/creds",
+        200,
+        &json!({ "AccessKeyId": "ASIACONTAINER", "SecretAccessKey": "s3cr3t", "Token": "t0k" })
+            .to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    std::fs::write(workspace.path().join("pod-token"), "pod-auth\n").unwrap();
+    let output = without_token(&workspace, &mock)
+        .env(
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            format!("{}/creds", mock.url()),
+        )
+        .env(
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+            workspace.path().join("pod-token"),
+        )
+        .args(["--agent", "run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        mock.last("GET", "/creds").header("authorization"),
+        Some("pod-auth")
+    );
+    let proof = mock.last("POST", "/api/v1/auth/aws").body;
+    assert!(proof.contains("ASIACONTAINER"), "{proof}");
+    assert!(
+        !proof.contains("s3cr3t"),
+        "the secret key signs, it is never sent"
+    );
+}
+
+#[test]
+fn a_container_uri_to_an_arbitrary_host_is_never_called() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let output = without_token(&workspace, &mock)
+        .env(
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "http://evil.invalid/creds",
+        )
+        .env("AWS_CONTAINER_AUTHORIZATION_TOKEN", "pod-auth")
+        .args(["--agent", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "no credential: {}",
+        stderr(&output)
+    );
+    assert!(mock.hits("POST", "/api/v1/auth/aws").is_empty());
+}
+
+#[test]
+fn an_eks_irsa_pod_trades_its_token_file_for_keys_then_proves_itself() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "POST",
+        "/",
+        200,
+        "<AssumeRoleWithWebIdentityResponse><AssumeRoleWithWebIdentityResult><Credentials><AccessKeyId>ASIAWEBID</AccessKeyId><SecretAccessKey>w3bs3cr3t</SecretAccessKey><SessionToken>st</SessionToken></Credentials></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>",
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    std::fs::write(workspace.path().join("sa-token"), "eyJ.pod.jwt\n").unwrap();
+    let output = without_token(&workspace, &mock)
+        .env(
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            workspace.path().join("sa-token"),
+        )
+        .env("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/app")
+        .env("AWS_ENDPOINT_URL_STS", mock.url())
+        .args(["--agent", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let sts = mock.last("POST", "/").body;
+    assert!(sts.contains("Action=AssumeRoleWithWebIdentity"), "{sts}");
+    assert!(
+        sts.contains("RoleArn=arn%3Aaws%3Aiam%3A%3A123456789012%3Arole%2Fapp"),
+        "{sts}"
+    );
+    assert!(sts.contains("WebIdentityToken=eyJ.pod.jwt"), "{sts}");
+    let proof = mock.last("POST", "/api/v1/auth/aws").body;
+    assert!(
+        proof.contains("ASIAWEBID") && !proof.contains("w3bs3cr3t"),
+        "{proof}"
+    );
+}
+
+#[test]
+fn a_refused_web_identity_says_why_without_echoing_the_token() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "POST",
+        "/",
+        403,
+        "<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>",
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    std::fs::write(workspace.path().join("sa-token"), "eyJ.secret.jwt").unwrap();
+    let output = without_token(&workspace, &mock)
+        .env(
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            workspace.path().join("sa-token"),
+        )
+        .env("AWS_ROLE_ARN", "arn:aws:iam::1:role/app")
+        .env("AWS_ENDPOINT_URL_STS", mock.url())
+        .args(["--agent", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_ne!(output.status.code(), Some(0));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("AccessDenied"), "{text}");
+    assert!(!text.contains("eyJ.secret.jwt"));
+}

@@ -135,6 +135,10 @@ SESSION_SECRET=random(32)                                 # generated on first r
 
 Functions, `${KEY}` expansion and `penv()` addresses: [Design, section 2](./docs/Design.md#values). Under an `@penv=` header, a local file still wins over the cloud on the machine that holds it, and `run` names every key it replaced.
 
+## CI, containers, Lambda
+
+GitHub Actions and GitLab prove themselves with OIDC; ECS, EKS (IRSA and Pod Identity) and Lambda with their AWS role; anything else with `PENV_TOKEN`. Recipes, and the Lambda layer in [`packaging/lambda`](./packaging/lambda/README.md): [Design, deploying](./docs/Design.md#deploying).
+
 ## Coding agents
 
 An agent runs as you, so it can read what you can read. penv narrows that:
