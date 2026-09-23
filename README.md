@@ -219,6 +219,8 @@ A preload masks values inside the process, which the output stream does not reac
 
 Masked response bodies keep their byte length, so `Content-Length` stays valid. Outbound requests are not modified. [Design, inside the process](./docs/Design.md#inside-the-process).
 
+Deployed code runs without `penv run`. The file `penv gen ts` writes masks the app's secret values in `console` and in `Response` bodies wherever it is imported: Node, Bun, Deno, Vercel and Next.js edge, Cloudflare Workers. Off with `mask = false` in `[targets.ts.options]`.
+
 ### Client Bundle Checks
 
 Public prefixes: `NEXT_PUBLIC_`, `VITE_`, `PUBLIC_`, `EXPO_PUBLIC_`, `NUXT_PUBLIC_`, `REACT_APP_`, `GATSBY_`, `VUE_APP_`, `STORYBOOK_`. A public key built from a sensitive value fails:
