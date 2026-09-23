@@ -130,7 +130,6 @@ It reads the repository's source for `process.env`, `import.meta.env`, `Deno.env
 
 `penv why KEY` says which file, cloud environment or default a value came from, which files it overrides, which keys it is built on, and whether it is masked, public or sealed. It never prints the value.
 
-
 ## Environments
 
 File order matches [dotenv-flow](https://github.com/kerimdzhanov/dotenv-flow), [Next.js](https://nextjs.org/docs/app/guides/environment-variables) and [Vite](https://vite.dev/guide/env-and-mode). A later file overrides an earlier one:
