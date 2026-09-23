@@ -85,6 +85,7 @@ pub fn prepare(
             placeholder,
             value: value.clone(),
             hosts: key.hosts.clone(),
+            sigv4: super::is_aws_secret(&key.name),
         });
     }
     if sealed.is_empty() && databases.is_empty() {
@@ -152,22 +153,39 @@ pub fn prepare(
         ("NODE_EXTRA_CA_CERTS".into(), show(&ca)),
         ("DENO_CERT".into(), show(&ca)),
     ];
-    if let Some(system) = SYSTEM_BUNDLES.iter().find(|p| Path::new(p).is_file()) {
-        let bundle = dir.join("bundle.pem");
-        let mut text = std::fs::read_to_string(system).unwrap_or_default();
-        if !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push_str(&ca_pem);
-        write_private(&bundle, &text)?;
-        for name in ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"] {
-            vars.push((name.into(), show(&bundle)));
-        }
+    // A bundle of every public root plus this run's authority: the system's
+    // own where it has one file, else the Mozilla roots penv carries (Windows,
+    // where Python, curl and the AWS SDKs read a file, not the OS store).
+    let bundle = dir.join("bundle.pem");
+    let mut text = match SYSTEM_BUNDLES.iter().find(|p| Path::new(p).is_file()) {
+        Some(system) => std::fs::read_to_string(system).unwrap_or_default(),
+        None => mozilla_roots_pem(),
+    };
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&ca_pem);
+    write_private(&bundle, &text)?;
+    for name in [
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "AWS_CA_BUNDLE",
+    ] {
+        vars.push((name.into(), show(&bundle)));
     }
     crate::ui::warn(&format!(
         "sealed: {} reach the command as placeholders; penv puts the values into requests to their hosts.",
         summary.join(", ")
     ));
+    if let Some(version) = node_version()
+        && !node_follows_proxy_variables(version)
+    {
+        crate::ui::warn(&format!(
+            "node {}.{} on PATH ignores HTTPS_PROXY, so its fetch sends placeholders straight to the host and fails. Node 22.21 or 24 and later follow it.",
+            version.0, version.1
+        ));
+    }
     Ok(Some(Seal {
         placeholders,
         env: vars,
@@ -374,5 +392,78 @@ fn database(
             ),
             format!("Remove @hosts from {}.", key.name),
         )),
+    }
+}
+
+/// The Mozilla roots compiled into penv, as PEM.
+fn mozilla_roots_pem() -> String {
+    let mut out = String::new();
+    for cert in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+        out.push_str("-----BEGIN CERTIFICATE-----\n");
+        let b64 = penv_cloud::b64::encode(cert.as_ref());
+        for line in b64.as_bytes().chunks(64) {
+            out.push_str(&String::from_utf8_lossy(line));
+            out.push('\n');
+        }
+        out.push_str("-----END CERTIFICATE-----\n");
+    }
+    out
+}
+
+/// `node --version` as (major, minor), when there is a node on PATH.
+fn node_version() -> Option<(u32, u32)> {
+    let out = std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .ok()?;
+    parse_node_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_node_version(text: &str) -> Option<(u32, u32)> {
+    let mut parts = text.trim().trim_start_matches('v').split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// `NODE_USE_ENV_PROXY` arrived in 24.0 and was backported to 22.21.
+fn node_follows_proxy_variables((major, minor): (u32, u32)) -> bool {
+    major >= 24 || (major == 22 && minor >= 21)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_carried_roots_make_a_bundle_python_can_load() {
+        let pem = mozilla_roots_pem();
+        assert!(pem.matches("-----BEGIN CERTIFICATE-----").count() > 100);
+        let path = std::env::temp_dir().join(format!("penv-roots-{}.pem", std::process::id()));
+        std::fs::write(&path, &pem).unwrap();
+        // Where Python is present, its ssl module (OpenSSL) must read every cert.
+        if let Ok(out) = std::process::Command::new("python3")
+            .args(["-c", "import ssl,sys; c=ssl.create_default_context(cafile=sys.argv[1]); print(c.cert_store_stats()['x509_ca'])"])
+            .arg(&path)
+            .output()
+            && out.status.success()
+        {
+            let loaded: usize = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0);
+            assert_eq!(loaded, webpki_root_certs::TLS_SERVER_ROOT_CERTS.len());
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn node_versions_that_follow_the_proxy_variables() {
+        assert_eq!(parse_node_version("v22.22.2\n"), Some((22, 22)));
+        for (v, ok) in [
+            ((22, 21), true),
+            ((22, 20), false),
+            ((23, 11), false),
+            ((24, 0), true),
+            ((20, 19), false),
+            ((26, 1), true),
+        ] {
+            assert_eq!(node_follows_proxy_variables(v), ok, "{v:?}");
+        }
     }
 }

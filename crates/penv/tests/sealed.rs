@@ -249,16 +249,16 @@ fn a_key_whose_type_leaves_no_room_is_refused_before_the_command_starts() {
 }
 
 #[test]
-fn a_signing_secret_with_hosts_fails_check_and_is_never_sealed() {
+fn a_signing_secret_penv_cannot_resign_fails_check_and_is_never_sealed() {
     let dir = scratch("signing");
     std::fs::write(
         dir.join(".env.schema"),
-        "# @type=string(minLength=40) @hosts=sts.amazonaws.com\nAWS_SECRET_ACCESS_KEY=\n",
+        "# @type=string(minLength=40) @hosts=api.stripe.com\nSTRIPE_WEBHOOK_SECRET=\n",
     )
     .unwrap();
     std::fs::write(
         dir.join(".env"),
-        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI_K7MDENG_bPxRfiCYEXAMPLEKEYxx\n",
+        "STRIPE_WEBHOOK_SECRET=whsec_0123456789abcdefghijklmnopqrstuvwxyz\n",
     )
     .unwrap();
     let check = Command::new(env!("CARGO_BIN_EXE_penv"))
@@ -272,7 +272,7 @@ fn a_signing_secret_with_hosts_fails_check_and_is_never_sealed() {
         .unwrap();
     assert_eq!(check.status.code(), Some(3));
     assert!(
-        String::from_utf8_lossy(&check.stdout).contains("SigV4"),
+        String::from_utf8_lossy(&check.stdout).contains("webhook secret"),
         "{}",
         String::from_utf8_lossy(&check.stdout)
     );

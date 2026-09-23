@@ -34,3 +34,4 @@ sha2 = "0.11.0"
 toml.workspace = true
 toml_edit = "0.25"
 webpki-roots.workspace = true
+webpki-root-certs = "1"

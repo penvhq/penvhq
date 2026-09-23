@@ -30,6 +30,8 @@ pub struct Sealed {
     pub placeholder: String,
     pub value: String,
     pub hosts: Vec<String>,
+    /// An AWS secret access key: never sent, used to sign requests again.
+    pub sigv4: bool,
 }
 
 pub struct Proxy {
@@ -91,12 +93,74 @@ impl Proxy {
             .any(|k| penv_schema::placeholder::host_allowed(&k.hosts, host))
     }
 
+    /// One request on its way up: values into the head, and a SigV4 signature
+    /// made again with the real secret access key when one may go to `host`.
+    fn send(
+        &self,
+        reader: &mut impl io::BufRead,
+        writer: &mut impl Write,
+        request: Head,
+        framing: http::Framing,
+        host: &str,
+        swaps: &Swaps,
+    ) -> io::Result<()> {
+        let aws = self
+            .keys
+            .iter()
+            .find(|k| k.sigv4 && penv_schema::placeholder::host_allowed(&k.hosts, host));
+        let (Some(aws), true) = (aws, super::sigv4::is_signed(&request)) else {
+            return http::relay(reader, writer, request, framing, swaps, &Swaps::default());
+        };
+        let mut head = request.swapped(swaps);
+        // A declared payload hash (S3) is signed as it is and the body streams
+        // up untouched; otherwise the body is read and hashed first.
+        if let Some(hash) = super::sigv4::declared_hash(&head).map_err(refused)? {
+            super::sigv4::resign(&mut head, &hash, &aws.value).map_err(refused)?;
+            return http::relay(
+                reader,
+                writer,
+                head,
+                framing,
+                &Swaps::default(),
+                &Swaps::default(),
+            );
+        }
+        let body = match framing {
+            http::Framing::None => Vec::new(),
+            http::Framing::Length(n) if n <= http::MAX_BODY => {
+                let mut body = vec![0u8; n];
+                io::Read::read_exact(reader, &mut body)?;
+                body
+            }
+            _ => {
+                return Err(refused(
+                    "a signed AWS request whose body penv cannot hash (chunked or over 64 MiB)",
+                ));
+            }
+        };
+        let hash = super::sigv4::sha256_hex(&body);
+        super::sigv4::resign(&mut head, &hash, &aws.value).map_err(refused)?;
+        let framing = if body.is_empty() {
+            http::Framing::None
+        } else {
+            http::Framing::Length(body.len())
+        };
+        http::relay(
+            &mut io::Cursor::new(body),
+            writer,
+            head,
+            framing,
+            &Swaps::default(),
+            &Swaps::default(),
+        )
+    }
+
     /// Placeholder → value, for the keys that may go to `host`.
     fn request_swaps(&self, host: &str) -> Swaps {
         Swaps(
             self.keys
                 .iter()
-                .filter(|k| penv_schema::placeholder::host_allowed(&k.hosts, host))
+                .filter(|k| !k.sigv4 && penv_schema::placeholder::host_allowed(&k.hosts, host))
                 .map(|k| {
                     (
                         k.placeholder.clone().into_bytes(),
@@ -198,6 +262,8 @@ impl Proxy {
                 .unwrap_or_default()
                 .to_string();
             basic_auth(&mut request, &request_swaps);
+            // Compressed WebSocket frames cannot be read for values to swap back.
+            request.remove("sec-websocket-extensions");
             // Compressed responses cannot be read for values to swap back.
             request.set("Accept-Encoding", "identity".to_string());
             if request
@@ -216,13 +282,13 @@ impl Proxy {
             // Values go into the request head only: a header or the request
             // line. A body goes up unchanged, so an allowed host's write API
             // (a gist, an issue, a message) cannot be used to publish a value.
-            http::relay(
+            self.send(
                 &mut from_client,
                 from_upstream.get_mut(),
                 request,
                 framing,
+                host,
                 &request_swaps,
-                &Swaps::default(),
             )?;
 
             let mut response = loop {
@@ -238,11 +304,17 @@ impl Proxy {
                 }
             };
             if response.status() == Some(101) {
-                // An upgraded connection (WebSocket) is passed through unread.
+                let websocket = response
+                    .get("upgrade")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+                if !websocket {
+                    return Err(refused("an upgrade to something other than WebSocket"));
+                }
                 from_client
                     .get_mut()
                     .write_all(&response.to_bytes(&response_swaps))?;
-                return Err(refused("an upgrade through a sealed host"));
+                from_client.get_mut().flush()?;
+                return super::websocket::splice(from_client, from_upstream, response_swaps);
             }
             let framing = http::response_framing(&response, &method)?;
             let ends = framing == http::Framing::Close
@@ -302,14 +374,25 @@ impl Proxy {
         head.set("Accept-Encoding", "identity".to_string());
         let mut upstream = connect(&host, port)?;
         let framing = http::request_framing(&head)?;
-        http::relay(
-            &mut reader,
-            &mut upstream,
-            head,
-            framing,
-            &request_swaps,
-            &Swaps::default(),
-        )?;
+        if loopback && self.allowed(&host) {
+            self.send(
+                &mut reader,
+                &mut upstream,
+                head,
+                framing,
+                &host,
+                &request_swaps,
+            )?;
+        } else {
+            http::relay(
+                &mut reader,
+                &mut upstream,
+                head,
+                framing,
+                &Swaps::default(),
+                &Swaps::default(),
+            )?;
+        }
         let mut from_upstream = BufReader::new(upstream);
         let Some(response) = http::read_head(&mut from_upstream)? else {
             return Ok(());

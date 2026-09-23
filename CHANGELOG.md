@@ -6,6 +6,8 @@
 - **Sealed runs.**
   - `@hosts` names where a value may go. Under an AI agent, or with `penv run --sealed`, the command holds a placeholder shaped by the key's type.
   - A proxy inside `penv run` puts the value into request headers and the request line for those hosts only. Bodies keep the placeholder. Echoed values, raw or encoded, come back as the placeholder.
+    - WebSocket through an allowed host: the handshake gets the value, and server messages come back with it swapped for the placeholder.
+    - `AWS_SECRET_ACCESS_KEY` can be sealed: the SDK signs with a placeholder and the proxy signs each request again (SigV4) with the real key, which never goes on the wire.
   - `postgres://` and `redis://` URLs go through local proxies. penv logs in with SCRAM-SHA-256, MD5 or cleartext; for Redis it uses `AUTH` and `HELLO … AUTH`.
 - **Local-first values.**
   - Value files layer in the order `.env`, `.env.local`, `.env.<env>`, `.env.<env>.local`.
