@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod ancestry;
+pub mod bundle;
 pub mod claim;
 pub mod cli;
 pub mod commands;

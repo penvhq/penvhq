@@ -23,4 +23,9 @@ impl Env {
     pub fn as_map(&self) -> &BTreeMap<String, String> {
         &self.0
     }
+
+    /// Take one variable out, returning it.
+    pub fn remove(&mut self, key: &str) -> Option<String> {
+        self.0.remove(key)
+    }
 }

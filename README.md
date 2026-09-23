@@ -417,8 +417,22 @@ Credential per platform ([Design, deploying](./docs/Design.md#deploying)):
 | GitHub Actions, GitLab | job OIDC token, exchanged for a 15-minute credential |
 | ECS, EKS (IRSA, Pod Identity), Lambda | the AWS role |
 | anything else | `PENV_TOKEN` |
+| no penv.cloud | a bundle and `PENV_BUNDLE_KEY` (below) |
+
+### Bundle
+
+Without penv.cloud, ship one environment's values encrypted with the deploy:
+
+```console
+$ penv bundle --env production
+wrote .penv/production.bundle: 12 value(s) for production
+PENV_BUNDLE_KEY=ea577bf5…
+```
+
+Store `PENV_BUNDLE_KEY` in the platform's secrets and ship `.penv/production.bundle` (commit it, or copy it into the image). There, `penv run --env production -- node server.js` reads the bundle where it would read penv.cloud; the platform's own variables still win, and the command never receives `PENV_BUNDLE_KEY`. The key is shown once; run `penv bundle` with it set to rebuild under the same key. The key set with no bundle for that environment, a wrong key, or a bundle made for another environment stops the run. Refused for an AI agent.
 
 ### CI
+
 
 ```yaml
 permissions:
@@ -549,6 +563,7 @@ penv run -- npm run dev       # native; @plugin and @initPenv are ignored
 | `ls` | keys, types, presence |
 | `why KEY` | where a value comes from, never the value |
 | `encrypt` / `decrypt` | convert the `.env` files' secrets |
+| `bundle [--env E]` | encrypted values for a deploy, opened by `PENV_BUNDLE_KEY` |
 | `gen ts\|py\|go\|rust\|php\|java\|csharp` | typed file |
 | `guard` | agent deny rules |
 | `set KEY` / `unset KEY` | write or remove one value |

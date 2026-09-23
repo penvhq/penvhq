@@ -18,7 +18,9 @@ Everyday
   run        Run a command with your secrets loaded into it
   ls         List your keys and show which ones have a value
     why        Say where a key's value comes from, never the value
-  encrypt    Encrypt the secrets in your .env files
+    encrypt    Encrypt the secrets in your .env files
+  bundle     Write an encrypted file of one environment's values for a deploy
+
   decrypt    Write the .env files' secrets back in plain text
 
   set        Save one value (typed hidden, never shown)
@@ -197,6 +199,13 @@ pub enum Command {
     /// List your keys and show which ones have a value
     Ls {
         /// The environment to read
+        #[arg(long)]
+        env: Option<String>,
+    },
+
+    /// Write one environment's values, encrypted, to .penv/<env>.bundle for a deploy
+    Bundle {
+        /// The environment to bundle
         #[arg(long)]
         env: Option<String>,
     },

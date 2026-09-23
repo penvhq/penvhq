@@ -1,3 +1,4 @@
+mod bundle;
 mod check;
 pub mod cloud;
 mod crypt;
@@ -133,6 +134,9 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
         Some(Command::Ls { env: name }) => ls::run(out, cwd, name.as_deref(), env),
         Some(Command::Why { key, env: name }) => why::run(out, cwd, key, name.as_deref(), env),
         Some(Command::Encrypt) => crypt::run(out, cwd, true, env, cli.agent),
+        Some(Command::Bundle { env: name }) => {
+            bundle::run(out, cwd, name.as_deref(), env, cli.agent)
+        }
         Some(Command::Decrypt) => crypt::run(out, cwd, false, env, cli.agent),
         Some(Command::Project { command }) => project::run(out, cwd, command, env, cli.agent),
         Some(Command::Env { project, command }) => {

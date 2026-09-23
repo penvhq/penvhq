@@ -58,6 +58,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('set', 'set', [CompletionResultType]::ParameterValue, 'Save one value (typed hidden, never shown)')
             [CompletionResult]::new('unset', 'unset', [CompletionResultType]::ParameterValue, 'Delete one value')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List your keys and show which ones have a value')
+            [CompletionResult]::new('bundle', 'bundle', [CompletionResultType]::ParameterValue, 'Write one environment''s values, encrypted, to .penv/<env>.bundle for a deploy')
             [CompletionResult]::new('encrypt', 'encrypt', [CompletionResultType]::ParameterValue, 'Encrypt the sensitive values in the .env files beside .env.schema')
             [CompletionResult]::new('decrypt', 'decrypt', [CompletionResultType]::ParameterValue, 'Write the encrypted values in the .env files back in plain text')
             [CompletionResult]::new('why', 'why', [CompletionResultType]::ParameterValue, 'Say where a key''s value comes from and how penv treats it, never the value')
@@ -154,6 +155,14 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
         }
         'penv;ls' {
             [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to read')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
+            [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
+            break
+        }
+        'penv;bundle' {
+            [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to bundle')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
