@@ -33,10 +33,20 @@ fn walk(
     out: &mut Vec<String>,
 ) {
     let dir = under(repo, relative);
+    let listed = if target.detect.iter().any(|f| f.starts_with("*.")) {
+        tree.files(&dir)
+    } else {
+        Vec::new()
+    };
     if target
         .detect
         .iter()
-        .any(|file| tree.exists(&format!("{dir}/{file}")))
+        .any(|file| match file.strip_prefix('*') {
+            Some(suffix) => listed
+                .iter()
+                .any(|name| name.ends_with(suffix) && name.len() > suffix.len()),
+            None => tree.exists(&format!("{dir}/{file}")),
+        })
     {
         out.push(relative.to_string());
     }
@@ -210,6 +220,15 @@ mod tests {
             out.dedup();
             out
         }
+        fn files(&self, path: &str) -> Vec<String> {
+            let prefix = format!("{path}/");
+            self.0
+                .keys()
+                .filter_map(|p| p.strip_prefix(&prefix))
+                .filter(|rest| !rest.contains('/'))
+                .map(str::to_string)
+                .collect()
+        }
     }
 
     fn target(detect: &[&str]) -> Target {
@@ -244,6 +263,16 @@ mod tests {
             .with("/repo/apps/api/package.json");
         let found = candidates(&tree, &roots(), &target(&["package.json", "tsconfig.json"]));
         assert_eq!(found, ["apps/api", "apps/web"]);
+    }
+
+    #[test]
+    fn a_pattern_matches_any_file_with_that_extension_and_nothing_else() {
+        let tree = Fake::default()
+            .with("/repo/services/api/Api.csproj")
+            .with("/repo/services/web/web.csproj.user")
+            .with("/repo/tools/.csproj");
+        let found = candidates(&tree, &roots(), &target(&["*.csproj"]));
+        assert_eq!(found, ["services/api"]);
     }
 
     #[test]

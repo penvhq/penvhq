@@ -32,8 +32,12 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand 'set' 'Save one value (typed hidden, never shown)'
             cand 'unset' 'Delete one value'
             cand 'ls' 'List your keys and show which ones have a value'
+            cand 'bundle' 'Write one environment''s values, encrypted, to .penv/<env>.bundle for a deploy'
+            cand 'encrypt' 'Encrypt the sensitive values in the .env files beside .env.schema'
+            cand 'decrypt' 'Write the encrypted values in the .env files back in plain text'
+            cand 'why' 'Say where a key''s value comes from and how penv treats it, never the value'
             cand 'check' 'Report schema problems and missing values'
-            cand 'gen' 'Write the typed file for your language (ts, py)'
+            cand 'gen' 'Write the typed file for your language (ts, py, go, rust, php, java, csharp)'
             cand 'scan' 'Find secret values committed to files'
             cand 'guard' 'Write the harness rules that keep agents out of .env'
             cand 'reveal' 'Show one value; an AI agent needs your approval first'
@@ -64,6 +68,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--env' 'The environment to read'
             cand '--no-mask' 'Show secrets in the command''s output instead of hiding them'
             cand '--no-preload' 'Do not load penv''s masking into the command''s runtime (Node, Bun, Deno, Python)'
+            cand '--sealed' 'Give keys with @hosts to the command as placeholders; penv puts the values into requests to those hosts. Always on for an AI agent'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
@@ -120,8 +125,35 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
             cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
+        if (eq $command 'penv;bundle') {
+            cand '--env' 'The environment to bundle'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
+        if (eq $command 'penv;encrypt') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
+        if (eq $command 'penv;decrypt') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
+        if (eq $command 'penv;why') {
+            cand '--env' 'The environment to read'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
         if (eq $command 'penv;check') {
             cand '--env' 'The environment to check'
+            cand '--strict' 'Fail when code reads a variable .env.schema does not declare'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'

@@ -53,19 +53,16 @@ pub fn set(
     let cloud = Cloud::open(env, &detection)?;
     let bearer = cloud.bearer(env, schema.org.as_deref())?;
 
-    let result = cloud
-        .api
-        .key_set(
-            &bearer,
-            &at,
-            &CloudKey {
-                name: name.to_string(),
-                schema: Some(key_schema(&key)),
-                value: Some(value),
-                ..CloudKey::default()
-            },
-        )
-        .map_err(|e| refuse(e, Some(&at)))?;
+    let mut sent = [CloudKey {
+        name: name.to_string(),
+        schema: Some(key_schema(&key)),
+        value: Some(value),
+        ..CloudKey::default()
+    }];
+    let result = super::cloud::with_hosts_fallback(&mut sent, |keys| {
+        cloud.api.key_set(&bearer, &at, &keys[0])
+    })
+    .map_err(|e| refuse(e, Some(&at)))?;
 
     // A key the file never declared gets a block, with the type the value
     // implies and none of the value itself.
@@ -181,7 +178,10 @@ fn set_local(
     } else {
         String::new()
     };
-    let written = penv_dotenv::upsert(&existing, name, &value).map_err(|e| {
+    let sensitive = schema.get(name).map(|k| k.sensitive).unwrap_or(true);
+    let dir = schema_path.parent().unwrap_or(Path::new("."));
+    let stored = crate::localcrypt::stored(dir, name, &value, sensitive)?;
+    let written = penv_dotenv::upsert(&existing, name, &stored).map_err(|e| {
         CliError::new(
             "unwritable_value",
             e.to_string(),

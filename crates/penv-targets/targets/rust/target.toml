@@ -1,0 +1,14 @@
+name = "rust"
+output = "src/env.rs"
+detect = ["Cargo.toml"]
+import = "mod env; use env::Env;"
+
+[types]
+string = "String"
+number = "f64"
+integer = "i64"
+boolean = "bool"
+url = "String"
+email = "String"
+port = "u16"
+enum = "'String'"

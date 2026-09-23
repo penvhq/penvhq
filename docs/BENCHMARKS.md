@@ -8,22 +8,25 @@ bench/runtimes.sh             # generated env in Node, Bun, Deno, workerd
 bench/runtimes.sh --builds    # plus Next.js, Vite and Parcel builds, checked in headless Chromium
 ```
 
-`PENV=<path>` picks the binary (default: `penv` on PATH). `VARLOCK_VERSION` picks varlock (default `1.20.0`, the latest at the time of writing). `RUNS` sets timing iterations (default 30). `run.sh` writes `bench-results.json`.
+`PENV=<path>` picks the binary (default: `penv` on PATH). varlock comes from npm (`VARLOCK_VERSION`, default `1.20.0`), or from the binary `VARLOCK=<path>` names, such as its standalone install (`curl -sSfL https://varlock.dev/install.sh | sh`). `RUNS` sets timing iterations (default 30). `run.sh` writes `bench-results.json`.
 
 ## Results
 
-penv built from this repository at the commit that added `bench/`, varlock 1.20.0, Linux x86_64, Node 22.22, median of 30 runs.
+penv 1.0.0-beta.1 release build, varlock 1.20.0 from npm and as its standalone binary, Linux x86_64, Node 22.22, median of 30 runs.
 
 ### Speed and memory
 
-| | penv | varlock |
-|---|---|---|
-| `run -- true` | 5.7 ms | 374 ms |
-| Validate (`penv check`, `varlock load`) | 5.0 ms | 329 ms |
-| Scan a repository | 3.8 ms | 349 ms |
-| Peak memory, `run -- true` | 11 MB | 95 MB |
+| | penv | varlock standalone | varlock from npm |
+|---|---|---|---|
+| `run -- true` | 5.7 ms | 234 ms | 386 ms |
+| Validate (`penv check`, `varlock load`) | 6.4 ms | 174 ms | 343 ms |
+| Scan a repository | 3.9 ms | 177 ms | 359 ms |
+| Peak memory, `run -- true` | 11 MB | 70 MB | 94 MB |
+| Binary | about 12 MB, static | 105 MB, bundles Node.js | the npm package on Node.js |
 
-penv is one static binary. varlock starts Node.js on every command. Absolute times vary by machine; the ratio is what `run.sh` reproduces.
+`penv check` also reads the repository's source for undeclared variables since 1.0.0-beta.2, which is the extra 2 ms over beta.1's 4.2 ms.
+
+Absolute times vary by machine; the ratio is what `run.sh` reproduces.
 
 ### Behaviour
 
@@ -59,7 +62,7 @@ A bundler configured to inline the whole `process.env` object (`define: { "proce
 
 ## Where varlock is weaker, and why
 
-- **Startup.** Every varlock command starts Node.js and loads its dependency tree. That costs about 60× the time and 8× the memory of penv on each `run`, and it repeats for every script a `package.json` chains.
+- **Startup.** Every varlock command starts a Node.js runtime, bundled into its standalone binary or the one on the machine, and loads its dependency tree. That costs 44× (standalone) to 60× (npm) the time and 6× to 8× the memory of penv on each `run`, and it repeats for every script a `package.json` chains.
 - **Values built from secrets.** varlock warns when a non-sensitive value contains a sensitive one, then loads it. With a public prefix, the build inlines it into client code. penv treats a value built from a secret as a secret and refuses a public key built from one.
 - **No value transforms.** A password holding `@`, `:` or `/` breaks a connection URL, and varlock has no filter to encode it. penv has `urlencode`, `base64`, `lower`, `upper` and `trim`.
 - **Encoded leaks.** `varlock scan` matches the plain value only. `penv scan` also matches base64, hex and URL-encoded forms.

@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod ancestry;
+pub mod bundle;
 pub mod claim;
 pub mod cli;
 pub mod commands;
@@ -13,11 +14,14 @@ pub mod env;
 pub mod error;
 pub mod files;
 pub mod gitexposure;
+pub mod localcrypt;
 pub mod manifest;
 pub mod output;
 pub mod preload;
 pub mod prompt;
 pub mod providers;
+pub mod sealed;
 pub mod source;
 pub mod ui;
 pub mod upgrade;
+pub mod usage;

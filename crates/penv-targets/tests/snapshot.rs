@@ -5,6 +5,11 @@ use penv_targets::{Roots, Source, Target, Tree, load, render};
 const FIXTURE: &str = include_str!("fixture.env.schema");
 const TS: &str = include_str!("snapshots/ts.env.ts");
 const PY: &str = include_str!("snapshots/py.penv_env.py");
+const GO: &str = include_str!("snapshots/go.env.go");
+const RUST: &str = include_str!("snapshots/rust.env.rs");
+const PHP: &str = include_str!("snapshots/php.Env.php");
+const JAVA: &str = include_str!("snapshots/java.Env.java");
+const CSHARP: &str = include_str!("snapshots/csharp.Env.g.cs");
 
 /// Pinned so a version bump is not a snapshot change.
 const VERSION: &str = "1.0.0-test";
@@ -68,6 +73,29 @@ fn the_ts_target_renders_its_snapshot() {
 #[test]
 fn the_py_target_renders_its_snapshot() {
     assert_same("py.penv_env.py", PY, &rendered("py"));
+}
+
+#[test]
+fn the_go_rust_php_java_and_csharp_targets_render_their_snapshots() {
+    for (name, file, snapshot) in [
+        ("go", "go.env.go", GO),
+        ("rust", "rust.env.rs", RUST),
+        ("php", "php.Env.php", PHP),
+        ("java", "java.Env.java", JAVA),
+        ("csharp", "csharp.Env.g.cs", CSHARP),
+    ] {
+        assert_same(file, snapshot, &rendered(name));
+    }
+}
+
+#[test]
+fn every_new_target_hides_secrets_behind_a_redacting_type() {
+    for snapshot in [GO, RUST, PHP, JAVA, CSHARP] {
+        assert!(snapshot.contains("[redacted]"));
+        assert!(snapshot.contains("Secret"));
+        // A problem message names the key and what it should be, never a value.
+        assert!(snapshot.contains("is not set; run penv check"));
+    }
 }
 
 /// The schema JSON as `penv gen` hands it over, with each key marked public or not.
@@ -154,7 +182,7 @@ fn the_py_target_takes_pydantic_types_only_when_its_options_ask_for_them() {
 
 #[test]
 fn a_constraint_never_reaches_the_generated_file() {
-    for snapshot in [TS, PY] {
+    for snapshot in [TS, PY, GO, RUST, PHP, JAVA, CSHARP] {
         assert!(
             !snapshot.contains("sk_"),
             "startsWith=sk_ leaked into the output"

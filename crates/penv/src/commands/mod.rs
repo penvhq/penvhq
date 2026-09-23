@@ -1,5 +1,7 @@
+mod bundle;
 mod check;
 pub mod cloud;
+mod crypt;
 mod environment;
 mod r#gen;
 pub mod guard;
@@ -18,6 +20,7 @@ mod scan;
 mod set;
 mod state;
 mod upgrade;
+mod why;
 
 use std::path::Path;
 
@@ -53,6 +56,7 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             env: environment,
             no_mask,
             no_preload,
+            sealed,
             command,
         }) => run::run(
             out,
@@ -60,6 +64,7 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             environment.as_deref(),
             *no_mask,
             *no_preload,
+            *sealed,
             command,
             env,
             cli.agent,
@@ -117,8 +122,22 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
         Some(Command::Check {
             key,
             env: environment,
-        }) => check::run(out, cwd, key.as_deref(), environment.as_deref(), env),
+            strict,
+        }) => check::run(
+            out,
+            cwd,
+            key.as_deref(),
+            environment.as_deref(),
+            *strict,
+            env,
+        ),
         Some(Command::Ls { env: name }) => ls::run(out, cwd, name.as_deref(), env),
+        Some(Command::Why { key, env: name }) => why::run(out, cwd, key, name.as_deref(), env),
+        Some(Command::Encrypt) => crypt::run(out, cwd, true, env, cli.agent),
+        Some(Command::Bundle { env: name }) => {
+            bundle::run(out, cwd, name.as_deref(), env, cli.agent)
+        }
+        Some(Command::Decrypt) => crypt::run(out, cwd, false, env, cli.agent),
         Some(Command::Project { command }) => project::run(out, cwd, command, env, cli.agent),
         Some(Command::Env { project, command }) => {
             environment::run(out, cwd, project.as_deref(), command, env, cli.agent)

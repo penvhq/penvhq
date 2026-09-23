@@ -15,6 +15,11 @@ pub trait Tree {
     fn exists(&self, path: &str) -> bool {
         self.read(path).is_some()
     }
+    /// Names of the files directly under `path`, for a detect pattern such as
+    /// `*.csproj`. A tree that cannot list them matches no pattern.
+    fn files(&self, _path: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Where folders are looked for. `repo` is the directory holding `.env.schema`.

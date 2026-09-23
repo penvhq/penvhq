@@ -74,6 +74,10 @@ impl Workspace {
     /// `penv <args>`, with no agent flag.
     fn penv(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_penv"))
+            .env(
+                "PENV_LOCAL_KEY",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            )
             .current_dir(&self.0)
             .env_remove("SSL_CERT_FILE")
             .args(args)
@@ -84,6 +88,10 @@ impl Workspace {
     /// `penv --agent run [args] -- <shell> <flag> <script>`.
     fn run(&self, args: &[&str], script: &str) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_penv"));
+        command.env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        );
         command
             .current_dir(&self.0)
             .env_remove("SSL_CERT_FILE")
@@ -302,6 +310,10 @@ fn a_cloud_schema_with_no_local_values_needs_a_credential() {
     let cloud = cloud_schema();
     let workspace = Workspace::new(&[(".env.schema", &cloud)]);
     let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(workspace.path())
         .env("PENV_URL", "http://127.0.0.1:1")
         .env_remove("PENV_TOKEN")
@@ -325,6 +337,10 @@ fn a_cloud_schema_falls_back_to_the_local_dotenv_only_when_offline() {
     ]);
     let run = |token: Option<&str>| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_penv"));
+        command.env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        );
         command
             .current_dir(workspace.path())
             .env("PENV_URL", "http://127.0.0.1:1")
@@ -385,6 +401,10 @@ fn check_reports_drift_without_failing() {
         ),
     ]);
     let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(workspace.path())
         .args(["--agent", "check"])
         .output()
@@ -411,6 +431,10 @@ fn no_mask_is_ignored_when_the_pipes_are_not_a_terminal() {
         (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
     ]);
     let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(workspace.path())
         .args(["run", "--no-mask", "--", SHELL, SHELL_FLAG, ECHO_VALUES])
         .output()
@@ -427,6 +451,10 @@ fn no_mask_is_ignored_when_the_pipes_are_not_a_terminal() {
 fn agent_and_format_text_is_a_parse_error() {
     let workspace = Workspace::new(&[(".env.schema", &local_schema())]);
     let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(workspace.path())
         .args(["--agent", "--format", "text", "ls"])
         .output()
@@ -456,6 +484,10 @@ fn a_bare_name_finds_its_cmd_shim_on_windows() {
         std::env::var("PATH").unwrap_or_default()
     );
     let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(workspace.path())
         .env("PATH", path)
         .args(["--agent", "run", "--", "shim"])
@@ -541,6 +573,10 @@ fn the_current_env_key_follows_the_environment_however_it_was_chosen() {
         stdout(&output)
     );
     let mut command = Command::new(env!("CARGO_BIN_EXE_penv"));
+    command.env(
+        "PENV_LOCAL_KEY",
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    );
     let output = command
         .current_dir(workspace.path())
         .env("APP_ENV", "production")
@@ -914,6 +950,10 @@ s.shutdown()
         ),
     ]);
     let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(workspace.path())
         .env("PYTHONPATH", workspace.path().join("hooks"))
         .args(["run", "--", "python3", "app.py"])
@@ -1089,6 +1129,10 @@ fn setting_a_secret_in_a_fresh_repository_ignores_the_value_files_and_starts_the
         return;
     }
     let mut set = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(workspace.path())
         .env_remove("SSL_CERT_FILE")
         .args(["set", "STRIPE_SECRET_KEY"])

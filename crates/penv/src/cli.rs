@@ -17,6 +17,12 @@ pub const HELP: &str = "{about}
 Everyday
   run        Run a command with your secrets loaded into it
   ls         List your keys and show which ones have a value
+    why        Say where a key's value comes from, never the value
+    encrypt    Encrypt the secrets in your .env files
+  bundle     Write an encrypted file of one environment's values for a deploy
+
+  decrypt    Write the .env files' secrets back in plain text
+
   set        Save one value (typed hidden, never shown)
   unset      Delete one value
   reveal     Show one value; an AI agent needs your approval first
@@ -29,7 +35,7 @@ Move values
 
 Set up a folder
   init       Create .env.schema from your .env and keep .env out of git
-  gen        Write the typed file for your language (ts, py)
+  gen        Write the typed file for your language (ts, py, go, rust, php, java, csharp)
   guard      Write the rules that keep AI tools out of .env
 
 Cloud
@@ -132,6 +138,9 @@ pub enum Command {
         /// Do not load penv's masking into the command's runtime (Node, Bun, Deno, Python)
         #[arg(long)]
         no_preload: bool,
+        /// Give keys with @hosts to the command as placeholders; penv puts the values into requests to those hosts. Always on for an AI agent
+        #[arg(long)]
+        sealed: bool,
         /// The command to run
         #[arg(last = true, num_args = 1..)]
         command: Vec<String>,
@@ -194,6 +203,28 @@ pub enum Command {
         env: Option<String>,
     },
 
+    /// Write one environment's values, encrypted, to .penv/<env>.bundle for a deploy
+    Bundle {
+        /// The environment to bundle
+        #[arg(long)]
+        env: Option<String>,
+    },
+
+    /// Encrypt the sensitive values in the .env files beside .env.schema
+    Encrypt,
+
+    /// Write the encrypted values in the .env files back in plain text
+    Decrypt,
+
+    /// Say where a key's value comes from and how penv treats it, never the value
+    Why {
+        /// The key
+        key: String,
+        /// The environment to read
+        #[arg(long)]
+        env: Option<String>,
+    },
+
     /// Report schema problems and missing values
     Check {
         /// Check one key instead of all of them
@@ -201,11 +232,14 @@ pub enum Command {
         /// The environment to check
         #[arg(long)]
         env: Option<String>,
+        /// Fail when code reads a variable .env.schema does not declare
+        #[arg(long)]
+        strict: bool,
     },
 
-    /// Write the typed file for your language (ts, py)
+    /// Write the typed file for your language (ts, py, go, rust, php, java, csharp)
     Gen {
-        /// The target name, such as ts or py; omit it to list the targets
+        /// The target name: ts, py, go, rust, php, java or csharp; omit it to list them
         target: Option<String>,
         /// Write here instead, relative to the repository root
         #[arg(long, value_name = "PATH")]

@@ -1,0 +1,22 @@
+name = "java"
+output = "src/main/java/config/Env.java"
+detect = ["pom.xml", "build.gradle", "build.gradle.kts"]
+import = "import {package}.Env;"
+
+[options]
+package = "config"
+
+[[option]]
+name = "package"
+default = "config"
+about = "The Java package of the generated record."
+
+[types]
+string = "String"
+number = "double"
+integer = "long"
+boolean = "boolean"
+url = "String"
+email = "String"
+port = "int"
+enum = "'String'"

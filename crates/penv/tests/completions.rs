@@ -97,6 +97,10 @@ fn parses(shell: &str, script: &str) {
 #[test]
 fn a_piped_script_is_the_script_and_not_json() {
     let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .args(["completions", "bash"])
         .stdout(Stdio::piped())
         .output()
@@ -111,6 +115,10 @@ fn a_piped_script_is_the_script_and_not_json() {
 #[test]
 fn json_by_name_carries_the_script_as_a_member() {
     let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .args(["--json", "completions", "zsh"])
         .output()
         .expect("penv runs");

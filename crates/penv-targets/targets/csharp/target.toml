@@ -1,0 +1,22 @@
+name = "csharp"
+output = "Env.g.cs"
+detect = ["*.csproj", "*.sln"]
+import = "using {namespace};"
+
+[options]
+namespace = "App"
+
+[[option]]
+name = "namespace"
+default = "App"
+about = "The C# namespace of the generated record."
+
+[types]
+string = "string"
+number = "double"
+integer = "long"
+boolean = "bool"
+url = "string"
+email = "string"
+port = "int"
+enum = "'string'"

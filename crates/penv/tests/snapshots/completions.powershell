@@ -58,8 +58,12 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('set', 'set', [CompletionResultType]::ParameterValue, 'Save one value (typed hidden, never shown)')
             [CompletionResult]::new('unset', 'unset', [CompletionResultType]::ParameterValue, 'Delete one value')
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List your keys and show which ones have a value')
+            [CompletionResult]::new('bundle', 'bundle', [CompletionResultType]::ParameterValue, 'Write one environment''s values, encrypted, to .penv/<env>.bundle for a deploy')
+            [CompletionResult]::new('encrypt', 'encrypt', [CompletionResultType]::ParameterValue, 'Encrypt the sensitive values in the .env files beside .env.schema')
+            [CompletionResult]::new('decrypt', 'decrypt', [CompletionResultType]::ParameterValue, 'Write the encrypted values in the .env files back in plain text')
+            [CompletionResult]::new('why', 'why', [CompletionResultType]::ParameterValue, 'Say where a key''s value comes from and how penv treats it, never the value')
             [CompletionResult]::new('check', 'check', [CompletionResultType]::ParameterValue, 'Report schema problems and missing values')
-            [CompletionResult]::new('gen', 'gen', [CompletionResultType]::ParameterValue, 'Write the typed file for your language (ts, py)')
+            [CompletionResult]::new('gen', 'gen', [CompletionResultType]::ParameterValue, 'Write the typed file for your language (ts, py, go, rust, php, java, csharp)')
             [CompletionResult]::new('scan', 'scan', [CompletionResultType]::ParameterValue, 'Find secret values committed to files')
             [CompletionResult]::new('guard', 'guard', [CompletionResultType]::ParameterValue, 'Write the harness rules that keep agents out of .env')
             [CompletionResult]::new('reveal', 'reveal', [CompletionResultType]::ParameterValue, 'Show one value; an AI agent needs your approval first')
@@ -92,6 +96,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to read')
             [CompletionResult]::new('--no-mask', '--no-mask', [CompletionResultType]::ParameterValue, 'Show secrets in the command''s output instead of hiding them')
             [CompletionResult]::new('--no-preload', '--no-preload', [CompletionResultType]::ParameterValue, 'Do not load penv''s masking into the command''s runtime (Node, Bun, Deno, Python)')
+            [CompletionResult]::new('--sealed', '--sealed', [CompletionResultType]::ParameterValue, 'Give keys with @hosts to the command as placeholders; penv puts the values into requests to those hosts. Always on for an AI agent')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
@@ -156,8 +161,39 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
             break
         }
+        'penv;bundle' {
+            [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to bundle')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
+            [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
+            break
+        }
+        'penv;encrypt' {
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
+            [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
+            break
+        }
+        'penv;decrypt' {
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
+            [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
+            break
+        }
+        'penv;why' {
+            [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to read')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
+            [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            [CompletionResult]::new('--provider', '--provider', [CompletionResultType]::ParameterValue, 'Read values from this provider instead of the one @penv= names')
+            break
+        }
         'penv;check' {
             [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to check')
+            [CompletionResult]::new('--strict', '--strict', [CompletionResultType]::ParameterValue, 'Fail when code reads a variable .env.schema does not declare')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')

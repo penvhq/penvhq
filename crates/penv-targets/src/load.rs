@@ -22,7 +22,15 @@ macro_rules! built_in {
 
 /// The folders shipped inside the binary. The layout on disk is the same one a
 /// user target uses.
-pub const BUILT_IN: &[BuiltIn] = &[built_in!("ts"), built_in!("py")];
+pub const BUILT_IN: &[BuiltIn] = &[
+    built_in!("ts"),
+    built_in!("py"),
+    built_in!("go"),
+    built_in!("rust"),
+    built_in!("php"),
+    built_in!("java"),
+    built_in!("csharp"),
+];
 
 /// Repo folder, then home folder, then built in. A file the winning folder does
 /// not hold comes from the next place, so an override inherits the rest.
@@ -191,10 +199,10 @@ enum = "values | join('|')"
 
     #[test]
     fn an_unknown_name_says_where_it_looked() {
-        let error = load(&Fake::default(), &roots(), "go").unwrap_err();
+        let error = load(&Fake::default(), &roots(), "zig").unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("/repo/.penv/targets/go"), "{message}");
-        assert!(message.contains("/home/.penv/targets/go"), "{message}");
+        assert!(message.contains("/repo/.penv/targets/zig"), "{message}");
+        assert!(message.contains("/home/.penv/targets/zig"), "{message}");
         assert!(message.contains("built in"), "{message}");
     }
 
@@ -235,34 +243,37 @@ enum = "values | join('|')"
 
     #[test]
     fn a_target_toml_no_place_has_a_template_for_is_a_broken_folder() {
-        let tree = Fake::default().with("/repo/.penv/targets/go/target.toml", &custom("go"));
-        let error = load(&tree, &roots(), "go").unwrap_err();
+        let tree = Fake::default().with("/repo/.penv/targets/zig/target.toml", &custom("zig"));
+        let error = load(&tree, &roots(), "zig").unwrap_err();
         assert!(error.to_string().contains("no env.tmpl"), "{error}");
     }
 
     #[test]
-    fn available_lists_the_built_in_pair_plus_whatever_the_folders_add() {
+    fn available_lists_the_built_ins_plus_whatever_the_folders_add() {
         let tree = Fake::default()
-            .with("/repo/.penv/targets/go/target.toml", &custom("go"))
-            .with("/repo/.penv/targets/go/env.tmpl", "x");
+            .with("/repo/.penv/targets/zig/target.toml", &custom("zig"))
+            .with("/repo/.penv/targets/zig/env.tmpl", "x");
         let found = available(&tree, &roots());
         let names: Vec<String> = found
             .iter()
             .map(|t| t.as_ref().unwrap().name.clone())
             .collect();
-        assert_eq!(names, ["go", "py", "ts"]);
+        assert_eq!(
+            names,
+            ["csharp", "go", "java", "php", "py", "rust", "ts", "zig"]
+        );
     }
 
     #[test]
     fn a_folder_nobody_can_read_is_listed_as_the_error_it_is() {
-        let tree = Fake::default().with("/repo/.penv/targets/go/target.toml", "name = \"go\"\n");
+        let tree = Fake::default().with("/repo/.penv/targets/zig/target.toml", "name = \"zig\"\n");
         let broken = available(&tree, &roots())
             .into_iter()
             .find(Result::is_err)
             .expect("the malformed folder was dropped instead of named")
             .unwrap_err();
         assert!(
-            broken.to_string().contains("/repo/.penv/targets/go"),
+            broken.to_string().contains("/repo/.penv/targets/zig"),
             "{broken}"
         );
     }

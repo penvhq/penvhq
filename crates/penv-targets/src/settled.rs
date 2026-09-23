@@ -70,6 +70,10 @@ fn named(name: &str) -> bool {
 }
 
 impl Tree for Settled<'_> {
+    fn files(&self, path: &str) -> Vec<String> {
+        self.inner.files(path)
+    }
+
     fn read(&self, path: &str) -> Option<String> {
         match self.mapped(path) {
             Some((name, "target.toml")) => self.section(name).or_else(|| self.inner.read(path)),

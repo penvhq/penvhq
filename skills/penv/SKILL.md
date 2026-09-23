@@ -22,6 +22,8 @@ The project declares its environment in `.env.schema`. Values live in `.env*` fi
 | Run, test, build | `penv run -- npm run dev` (or `--env staging` / `--env production`) |
 | Find what is wrong | `penv check` (add `--env E` for another environment) |
 | List keys and whether each has a value | `penv ls` |
+| Where a key's value comes from, what it is built on, how penv treats it | `penv why KEY` |
+| Variables the code reads that `.env.schema` lacks | `penv check` (notes), `penv check --strict` (fails) |
 | Read the schema as JSON | `penv schema` |
 | Current state and next step | `penv` |
 | Every command, flag and exit code | `penv help --json` |
@@ -79,4 +81,6 @@ Use the generated file instead of raw `process.env`:
 import { env } from "@/env"; // the path `penv gen ts` prints
 ```
 
-The same `env` works in server and client code. Reading a secret in the browser throws `… is server-only`: move that code to the server. After changing `.env.schema`, run `penv gen ts` (or `penv gen py`).
+The same `env` works in server and client code. Reading a secret in the browser throws `… is server-only`: move that code to the server. After changing `.env.schema`, run `penv gen ts`, or the target the repository uses: `py`, `go`, `rust`, `php`, `java`, `csharp` (`penv gen` with no name lists them). In Go, Rust, PHP, Java and C#, a secret field prints `[redacted]`; read it with `.Value()`, `.expose()`, `->expose()` or `.Expose()` only where the code needs the value.
+
+A key with `@hosts` holds a placeholder in your commands, not the value. Do not try to recover the value: send requests to the named host and penv puts it in. If a request to another host needs the key, the schema's `@hosts` is what to change, and a person should approve that.

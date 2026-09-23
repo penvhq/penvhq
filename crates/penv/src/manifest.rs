@@ -110,6 +110,32 @@ const META: &[Meta] = &[
         ..DEFAULT_META
     },
     Meta {
+        path: "bundle",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 3, 5, 6],
+        env_flags: &[("env", "PENV_ENV")],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "encrypt",
+        implemented: true,
+        exit_codes: &[0, 1, 3],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "decrypt",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 3],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "why",
+        implemented: true,
+        exit_codes: &[0, 1, 3, 5, 6],
+        env_flags: &[("env", "PENV_ENV")],
+        ..DEFAULT_META
+    },
+    Meta {
         path: "check",
         implemented: true,
         exit_codes: &[0, 1, 3],

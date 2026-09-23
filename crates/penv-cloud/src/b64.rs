@@ -1,5 +1,5 @@
 //! Standard base64 with padding. The wire carries keys and signatures this way
-//! and nothing in the allowed dependency set encodes them.
+//! and this crate carries no base64 dependency for it.
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

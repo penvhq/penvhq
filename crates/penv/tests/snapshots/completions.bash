@@ -13,7 +13,7 @@ _penv() {
             -*) continue ;;
         esac
         case "${cmd:+$cmd }$word" in
-            init|run|push|pull|login|logout|set|unset|ls|check|gen|scan|guard|reveal|project|"project ls"|"project new"|"project rename"|"project rm"|env|"env ls"|"env new"|"env rename"|"env copy"|"env rm"|machine|"machine enroll"|upgrade|completions|hook|schema|help) cmd="${cmd:+$cmd }$word" ;;
+            init|run|push|pull|login|logout|set|unset|ls|bundle|encrypt|decrypt|why|check|gen|scan|guard|reveal|project|"project ls"|"project new"|"project rename"|"project rm"|env|"env ls"|"env new"|"env rename"|"env copy"|"env rm"|machine|"machine enroll"|upgrade|completions|hook|schema|help) cmd="${cmd:+$cmd }$word" ;;
             *) break ;;
         esac
     done
@@ -33,9 +33,9 @@ _penv() {
     words=""
     system=""
     case "$cmd" in
-        "") words="init run push pull login logout set unset ls check gen scan guard reveal project env machine upgrade completions hook schema help --json --format --agent --provider" ;;
+        "") words="init run push pull login logout set unset ls bundle encrypt decrypt why check gen scan guard reveal project env machine upgrade completions hook schema help --json --format --agent --provider" ;;
         init) words="--force --guards --no-guards --output --json --format --agent --provider" ;;
-        run) words="--env --no-mask --no-preload --json --format --agent --provider"; system=-c ;;
+        run) words="--env --no-mask --no-preload --sealed --json --format --agent --provider"; system=-c ;;
         push) words="--env --org --prune --json --format --agent --provider" ;;
         pull) words="--env --i-am-human --json --format --agent --provider" ;;
         login) words="--json --format --agent --provider" ;;
@@ -43,7 +43,11 @@ _penv() {
         set) words="--env --value --json --format --agent --provider" ;;
         unset) words="--env --json --format --agent --provider" ;;
         ls) words="--env --json --format --agent --provider" ;;
-        check) words="--env --json --format --agent --provider" ;;
+        bundle) words="--env --json --format --agent --provider" ;;
+        encrypt) words="--json --format --agent --provider" ;;
+        decrypt) words="--json --format --agent --provider" ;;
+        why) words="--env --json --format --agent --provider" ;;
+        check) words="--env --strict --json --format --agent --provider" ;;
         gen) words="--out --check --options --json --format --agent --provider" ;;
         scan) words="--staged --install-hook --env --json --format --agent --provider" ;;
         guard) words="--all --check --json --format --agent --provider" ;;
