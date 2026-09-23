@@ -1086,7 +1086,11 @@ mod tests {
             .iter()
             .map(word)
             .collect();
-        assert_eq!(words, ["node", "vite", "deno"], "the default reads first");
+        assert_eq!(
+            words,
+            ["node", "vite", "workers", "deno"],
+            "the default reads first"
+        );
         assert_eq!(
             ts.options["runtime"].as_str(),
             Some("node"),

@@ -787,7 +787,7 @@ fn a_secret_written_into_browser_output_fails_the_run_that_built_it() {
 }
 
 #[test]
-fn gen_never_writes_a_computed_default_as_a_literal_and_splits_public_keys() {
+fn gen_never_writes_a_computed_default_as_a_literal_and_never_writes_a_secret_as_a_literal() {
     let schema = "# @type=string\nDB_PASS=\n\n# @type=url @sensitive=false\nDATABASE_URL=postgres://app:${DB_PASS}@db/app\n\n# @type=number(isInt=true) @sensitive=false\nWORKERS=if(forEnv(production), 16, 2)\n\n# @type=string\nSESSION=random(32)\n\n# @type=url\nNEXT_PUBLIC_API=https://api.test\n";
     let workspace = Workspace::new(&[
         (".env.schema", schema),
@@ -803,11 +803,13 @@ fn gen_never_writes_a_computed_default_as_a_literal_and_splits_public_keys() {
             "{literal} leaked into generated code:\n{ts}"
         );
     }
-    let public = &ts[ts.find("export const publicEnv").expect("publicEnv")..];
-    let public = &public[..public.find("} as const;").unwrap()];
+    // One env: a public key read by its literal name, so a bundler inlines it;
+    // a secret read by computed name, so no bundler ever can.
+    assert!(!ts.contains("publicEnv"), "{ts}");
+    assert!(ts.contains("process.env.NEXT_PUBLIC_API"), "{ts}");
     assert!(
-        public.contains("NEXT_PUBLIC_API: ") && !public.contains("DB_PASS"),
-        "{public}"
+        ts.contains("read(\"DB_PASS\")") && !ts.contains("process.env.DB_PASS"),
+        "{ts}"
     );
 }
 

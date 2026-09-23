@@ -264,7 +264,7 @@ fn a_repository_of_two_packages_is_told_where_to_write_and_remembers_it() {
         "name = \"ts\"\noutput = \"apps/web/src/env.ts\"\n\n[options]\n\
          # penv: Property names in the exported object: the environment key, or its camel form. (upper|camel)\n\
          key_case = \"upper\"\n\
-         # penv: The accessor every key is read through: process.env, import.meta.env or Deno.env.get. (node|vite|deno)\n\
+         # penv: Where values are read: node (process.env, then Deno.env or Netlify.env), vite (import.meta.env for public keys), deno (Deno.env.get), workers (cloudflare:workers bindings). (node|vite|deno|workers)\n\
          runtime = \"node\"\n"
     );
 
@@ -361,7 +361,7 @@ fn a_python_package_needs_nothing_but_a_requirements_file_to_be_offered() {
 #[test]
 fn a_vite_package_reads_import_meta_and_the_choice_is_remembered() {
     let workspace = Workspace::new(&[
-        (".env", "PORT=3000\nAPI_URL=https://example.test\n"),
+        (".env", "PORT=3000\nVITE_API_URL=https://example.test\n"),
         ("apps/web/package.json", "{}"),
         ("apps/web/tsconfig.json", "{}"),
         ("apps/web/vite.config.ts", "export default {};\n"),
@@ -370,10 +370,15 @@ fn a_vite_package_reads_import_meta_and_the_choice_is_remembered() {
     let written = json(&workspace.penv(&["--json", "gen", "ts", "--out", "apps/web/src/env.ts"]));
     let source = std::fs::read_to_string(workspace.path("apps/web/src/env.ts")).expect("the file");
     assert!(
-        source.contains("import.meta.env.PORT"),
-        "{written}\n{source}"
+        source.contains("import.meta.env.VITE_API_URL"),
+        "a public key is read by its literal name: {written}\n{source}"
     );
-    assert!(!source.contains("process.env"), "{source}");
+    assert!(
+        source.contains("read(\"PORT\")")
+            && !source.contains("import.meta.env.PORT")
+            && !source.contains("process.env.PORT"),
+        "a server key is read by computed name only: {source}"
+    );
     let remembered = std::fs::read_to_string(workspace.path(".penv/targets/ts/target.toml"))
         .expect("remembered");
     assert_eq!(
@@ -381,7 +386,7 @@ fn a_vite_package_reads_import_meta_and_the_choice_is_remembered() {
         "name = \"ts\"\noutput = \"apps/web/src/env.ts\"\n\n[options]\n\
          # penv: Property names in the exported object: the environment key, or its camel form. (upper|camel)\n\
          key_case = \"upper\"\n\
-         # penv: The accessor every key is read through: process.env, import.meta.env or Deno.env.get. (node|vite|deno)\n\
+         # penv: Where values are read: node (process.env, then Deno.env or Netlify.env), vite (import.meta.env for public keys), deno (Deno.env.get), workers (cloudflare:workers bindings). (node|vite|deno|workers)\n\
          runtime = \"vite\"\n"
     );
     let again = stdout(&workspace.penv(&["--format", "text", "gen", "ts"]));

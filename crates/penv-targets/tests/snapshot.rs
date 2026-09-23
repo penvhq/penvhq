@@ -28,7 +28,7 @@ fn built_in(name: &str) -> Target {
 
 fn rendered(name: &str) -> String {
     let schema = penv_schema::parse(FIXTURE).expect("the fixture parses");
-    render(&built_in(name), &schema.to_json(), VERSION).expect("the fixture renders")
+    render(&built_in(name), &view(&schema), VERSION).expect("the fixture renders")
 }
 
 /// Point at the first line that differs; the whole file is too long to read in a
@@ -70,6 +70,16 @@ fn the_py_target_renders_its_snapshot() {
     assert_same("py.penv_env.py", PY, &rendered("py"));
 }
 
+/// The schema JSON as `penv gen` hands it over, with each key marked public or not.
+fn view(schema: &penv_schema::Schema) -> serde_json::Value {
+    let mut json = schema.to_json();
+    for key in json["keys"].as_array_mut().expect("keys") {
+        let public = schema.is_public(key["name"].as_str().unwrap_or_default());
+        key["public"] = serde_json::Value::Bool(public);
+    }
+    json
+}
+
 /// `key_case` is the folder's own option, so a repo-local ts target can flip it.
 #[test]
 fn the_ts_target_renames_its_properties_when_key_case_is_camel() {
@@ -78,10 +88,9 @@ fn the_ts_target_renames_its_properties_when_key_case_is_camel() {
         .options
         .insert("key_case".into(), toml::Value::String("camel".into()));
     let schema = penv_schema::parse(FIXTURE).expect("the fixture parses");
-    let out = render(&target, &schema.to_json(), VERSION).expect("the fixture renders");
-    assert!(out.contains(
-        "  nextPublicAppUrl: (process.env.NEXT_PUBLIC_APP_URL ?? \"http://localhost:3000\") as string,"
-    ));
+    let out = render(&target, &view(&schema), VERSION).expect("the fixture renders");
+    assert!(out.contains("  get nextPublicAppUrl() {"), "{out}");
+    assert!(out.contains("  get databaseUrl() {"), "{out}");
     assert!(
         out.contains("seen[\"DATABASE_URL\"]"),
         "the schema reads the environment, whatever the properties are called"
@@ -100,17 +109,24 @@ fn the_ts_target_reads_through_the_runtime_the_options_name() {
             .options
             .insert("runtime".into(), toml::Value::String(runtime.into()));
         let schema = penv_schema::parse(FIXTURE).expect("the fixture parses");
-        render(&target, &schema.to_json(), VERSION).expect("the fixture renders")
+        render(&target, &view(&schema), VERSION).expect("the fixture renders")
     };
-    // A bundler only inlines a key it can see spelled out.
-    assert!(reads("vite").contains("import.meta.env.DATABASE_URL"));
-    assert!(reads("deno").contains("Deno.env.get(\"DATABASE_URL\")"));
-    assert!(reads("node").contains("process.env.DATABASE_URL"));
-    for runtime in ["vite", "deno"] {
-        assert!(
-            !reads(runtime).contains("process.env"),
-            "{runtime} still read process.env"
-        );
+    // A public key is spelled out, the only form a bundler inlines.
+    assert!(reads("vite").contains("import.meta.env.NEXT_PUBLIC_APP_URL"));
+    assert!(reads("node").contains("process.env.NEXT_PUBLIC_APP_URL"));
+    assert!(reads("deno").contains("Deno.env.get(\"NEXT_PUBLIC_APP_URL\")"));
+    assert!(reads("workers").contains("from \"cloudflare:workers\""));
+    // A secret never is, in any runtime, so no bundler can inline it.
+    for runtime in ["node", "vite", "deno", "workers"] {
+        let out = reads(runtime);
+        assert!(out.contains("read(\"DATABASE_URL\")"), "{runtime}: {out}");
+        for literal in [
+            "process.env.DATABASE_URL",
+            "import.meta.env.DATABASE_URL",
+            "Deno.env.get(\"DATABASE_URL\")",
+        ] {
+            assert!(!out.contains(literal), "{runtime} wrote {literal}");
+        }
     }
 }
 

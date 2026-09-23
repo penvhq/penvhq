@@ -76,7 +76,7 @@ A value you generate yourself, such as a random local secret, can use the schema
 Use the generated file instead of raw `process.env`:
 
 ```ts
-import { env, publicEnv } from "./env"; // from `penv gen ts`
+import { env } from "@/env"; // the path `penv gen ts` prints
 ```
 
-Client code imports only `publicEnv`. After changing `.env.schema`, run `penv gen ts` (or `penv gen py`).
+The same `env` works in server and client code. Reading a secret in the browser throws `… is server-only`: move that code to the server. After changing `.env.schema`, run `penv gen ts` (or `penv gen py`).
