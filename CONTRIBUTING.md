@@ -11,7 +11,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-CI runs `fmt`, `clippy` and `test` on Linux, macOS and Windows. `--all-targets` also lints the tests, which CI does not; run it anyway. Release builds run only in CI; `.cargo/config.toml` pins two build jobs.
+CI runs `fmt`, `clippy` and `test` on Linux, macOS and Windows. A change under `crates/penv-targets/` also runs `crates/penv-targets/tests/compile.sh`, which compiles and runs every language snapshot with Go, Rust, PHP, Java and .NET; locally it skips a toolchain you do not have. A change to the varlock plugin runs `npm test` in `packages/varlock-plugin`. `--all-targets` also lints the tests, which CI does not; run it anyway. Release builds run only in CI; `.cargo/config.toml` pins two build jobs.
 
 ## Where things go
 
@@ -23,7 +23,10 @@ CI runs `fmt`, `clippy` and `test` on Linux, macOS and Windows. `--all-targets` 
 | Agent detection | `crates/penv-agent` |
 | Commands, files, processes, the preload | `crates/penv` |
 | penv.cloud API, credentials, TLS | `crates/penv-cloud` |
-| A language shipped with penv | a folder in `crates/penv-targets/targets/<name>/`: `target.toml` and `env.tmpl` |
+| A language shipped with penv | a folder in `crates/penv-targets/targets/<name>/`: `target.toml` and `env.tmpl`, one line in `BUILT_IN` (`load.rs`), a snapshot in `tests/snapshots/`, and a block in `tests/compile.sh` that builds and runs it |
+| Sealed runs: the HTTPS, Postgres and Redis proxies | `crates/penv/src/sealed/` |
+| Encryption at rest | `crates/penv/src/localcrypt.rs` |
+| The varlock plugin | `packages/varlock-plugin/` (TypeScript, published as `@penvhq/varlock-plugin`) |
 | A language for one repository | `[targets.<name>]` in `.penv/config.toml` and `.penv/<name>.tmpl`; no Rust |
 | A coding tool for `penv guard` | a folder in `crates/penv-guards/guards/<name>/` |
 | A cloud credential kind | one file in `crates/penv-cloud/src/credential/` and one line in `mod.rs` |
@@ -35,7 +38,7 @@ Adding a target, guard or credential kind adds files and edits nothing beside th
 - **Never print a value.** Outside `reveal` and `pull`, no code path writes a sensitive value to stdout, stderr, a log or a fixture. Error messages name keys, never values.
 - **Fake values in tests.** Use `sk_test_FAKE…`-style strings. A test that could leak asserts the value is absent from every output.
 - **Pure cores.** Parsing, validation, masking and resolution take values and return values. Filesystem, network and clock stay in `crates/penv` and `crates/penv-cloud`.
-- **No new crates without the maintainer.** The allowed dependency set is in the design.
+
 - **One name per concept.** No aliases for decorators, flags or commands.
 - **Portable tests.** Integration tests run under `cmd` on Windows. Shell snippets branch on `cfg!(windows)` (`echo %KEY%` / `echo $KEY`); use `exit 0`, not `true`.
 - **Comments** give the reason in one line when the code does not show it.

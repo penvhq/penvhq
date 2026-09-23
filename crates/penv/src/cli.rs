@@ -230,7 +230,7 @@ pub enum Command {
 
     /// Write the typed file for your language (ts, py, go, rust, php, java, csharp)
     Gen {
-        /// The target name, such as ts or py; omit it to list the targets
+        /// The target name: ts, py, go, rust, php, java or csharp; omit it to list them
         target: Option<String>,
         /// Write here instead, relative to the repository root
         #[arg(long, value_name = "PATH")]

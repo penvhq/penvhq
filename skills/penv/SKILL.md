@@ -81,4 +81,6 @@ Use the generated file instead of raw `process.env`:
 import { env } from "@/env"; // the path `penv gen ts` prints
 ```
 
-The same `env` works in server and client code. Reading a secret in the browser throws `… is server-only`: move that code to the server. After changing `.env.schema`, run `penv gen ts` (or `penv gen py`).
+The same `env` works in server and client code. Reading a secret in the browser throws `… is server-only`: move that code to the server. After changing `.env.schema`, run `penv gen ts`, or the target the repository uses: `py`, `go`, `rust`, `php`, `java`, `csharp` (`penv gen` with no name lists them). In Go, Rust, PHP, Java and C#, a secret field prints `[redacted]`; read it with `.Value()`, `.expose()`, `->expose()` or `.Expose()` only where the code needs the value.
+
+A key with `@hosts` holds a placeholder in your commands, not the value. Do not try to recover the value: send requests to the named host and penv puts it in. If a request to another host needs the key, the schema's `@hosts` is what to change, and a person should approve that.

@@ -328,7 +328,7 @@ which runtime reads the env? [vite] (node, vite, deno):
 use pydantic types? [true] (false, true):
 ```
 
-`ts` takes `key_case = "upper" | "camel"` for the property names it exports, and `runtime = "node" | "vite" | "deno"` for the one accessor the whole file reads through (`process.env[key]`, `import.meta.env[key]`, `Deno.env.get(key)`); a `vite.config.*` or a `deno.json` in the chosen package suggests the runtime. A key with a default in the schema reads through the accessor (`read("PORT") ?? "3000"`) instead of widening to `| undefined`, and the Standard Schema validator returns the typed `env`. `py` renders on the standard library alone, and `pydantic = true` swaps `HttpUrl` and `SecretStr` back in; a `pyproject.toml` listing pydantic suggests it.
+`ts` takes `key_case = "upper" | "camel"` for the property names it exports, `runtime = "node" | "vite" | "deno" | "workers"` for the one accessor the whole file reads through (`process.env[key]`, `import.meta.env[key]`, `Deno.env.get(key)`, `cloudflare:workers` bindings), and `mask = true | false`; a `vite.config.*` or a `deno.json` in the chosen package suggests the runtime. `go` and `java` take `package`, `php` and `csharp` take `namespace`. A `detect` entry may be a `*.ext` pattern (`*.csproj`). A key with a default in the schema reads through the accessor (`read("PORT") ?? "3000"`) instead of widening to `| undefined`, and the Standard Schema validator returns the typed `env`. `py` renders on the standard library alone, and `pydantic = true` swaps `HttpUrl` and `SecretStr` back in; a `pyproject.toml` listing pydantic suggests it.
 
 One fixture schema is snapshot-rendered through every target in CI. `gen --check` compiles the output when the toolchain is present, and says which tool it looked for when it is not. `[check] command` and `probe` may offer alternatives in their first element as `python3|python|py`, and the first that both resolves and answers the probe wins; `[check] bin` names directories under the chosen package looked in before PATH, which is how `ts` finds a project's own `node_modules/.bin/tsc`. Resolution is PATHEXT-aware, so `tsc` finds `tsc.cmd` on Windows and not the shell script beside it. `[check.files]` carries whatever globals the output needs to compile.
 
@@ -431,11 +431,12 @@ crates/penv-cloud     HTTP client, credential kinds, cache, keychain, release si
 crates/penv-release   the release signing tool: keygen and sign. Never published, never shipped
 ```
 
-Each crate depends only on `penv-schema` and the standard library unless the brief for that crate says otherwise. Keep the dependency set small: clap, serde, serde_json, toml, minijinja, thiserror, and for the cloud crate ureq with rustls, keyring, and a small AEAD. No async runtime.
+Each crate depends only on `penv-schema` and the standard library unless the brief for that crate says otherwise. The dependencies: clap, serde, serde_json, toml and toml_edit (settings that keep their comments), minijinja, thiserror, cliclack and console; for the cloud crate ureq with rustls, keyring, chacha20poly1305, hmac and sha2; for sealed runs rustls, rcgen and webpki-roots. No async runtime.
 
 ## 12. Phases
 
-1. Local mode: schema, dotenv, `init`, `check`, `ls`, `run` with detection and masking, `gen` (ts, py), `guard`, `help --json`, bare `penv`, CI on GitHub Actions.
+1. Local mode: schema, dotenv, `init`, `check`, `ls`, `run` with detection and masking, `gen` (ts, py; go, rust, php, java and csharp in phase 5), `guard`, `help --json`, bare `penv`, CI on GitHub Actions.
 2. Cloud mode: `login`, `push`, `pull`, `set`, `unset`, `reveal`, `machine enroll`, cache, environment refusal, audit stamping. penv-cloud is the first project through it, by hand. 2b is `reveal` under an agent, through console approval.
 3. Distribution: release workflow, installers, npm shim, `upgrade`, `completions`.
-4. Local first: the value-file cascade, `@currentEnv`, `@import`, computed values and `penv()`, varlock schemas parse with warnings, `@rotate` reminders with `.penv/config.toml`, local `set`/`unset`, `scan`. The varlock plugin that makes penv.cloud a varlock backend is a separate package.
+4. Local first: the value-file cascade, `@currentEnv`, `@import`, computed values and `penv()`, varlock schemas parse with warnings, `@rotate` reminders with `.penv/config.toml`, local `set`/`unset`, `scan`. The varlock plugin that makes penv.cloud a varlock backend is `packages/varlock-plugin`, published as `@penvhq/varlock-plugin`.
+5. Parity and past it: sealed runs (`@hosts`, the HTTPS proxy, Postgres and Redis proxies), masking inside deployed code through `gen ts`, `check` reading the code, `why`, the go, rust, php, java and csharp targets, encryption at rest (`penv encrypt`, `[local] encrypt`), and every setting written into `.penv/config.toml`.
