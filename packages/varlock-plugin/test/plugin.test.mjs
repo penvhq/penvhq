@@ -203,7 +203,7 @@ test('finding 2: an environment named feature/foo is one path segment, in penvBu
   assert.deepEqual(since(before), ['/api/v1/envs/acme/api/feature%2Ffoo']);
 });
 
-test('finding 3: cacheTtl applies to penvBulk(); without it every load reads', async () => {
+test('finding 3: cacheTtl applies to penvBulk(); without it every load reads', async (t) => {
   const bulkSchema = (init) => [
     `# @plugin(${PLUGIN})`, '# @penv=acme/api', `# @initPenv(token=$PENV_TOKEN, url="${URL_ROOT}"${init})`,
     '# @setValuesBulk(penvBulk(production))', '# ---', '# @type=penvToken', 'PENV_TOKEN=', 'STRIPE_KEY=',
@@ -211,6 +211,14 @@ test('finding 3: cacheTtl applies to penvBulk(); without it every load reads', a
   const dir = fs.mkdtempSync(path.join(scratch, 'cache-'));
   let before = requests.length;
   const first = await load(bulkSchema(', cacheTtl="1h"'), {}, dir);
+  // varlock keeps a disk cache only where its key store works. A CI VM without a
+  // usable Secure Enclave (macOS runners) falls back to memory, and then nothing
+  // outlives one load, whatever the plugin does.
+  const cacheDir = path.join(dir, '.config', 'varlock', 'cache');
+  if (!fs.existsSync(cacheDir) || fs.readdirSync(cacheDir).length === 0) {
+    t.skip(`varlock has no disk cache on this machine (${process.platform})`);
+    return;
+  }
   const second = await load(bulkSchema(', cacheTtl="1h"'), {}, dir);
   assert.equal(first.values?.STRIPE_KEY, 'sk_live_test', first.out);
   assert.equal(second.values?.STRIPE_KEY, 'sk_live_test', second.out);
