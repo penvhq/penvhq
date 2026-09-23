@@ -122,7 +122,12 @@ The vocabulary is [@env-spec](https://varlock.dev). Full reference: [Design, sec
 $ penv check
 ok 7 key(s) in .env.schema for development
 rotate STRIPE_SECRET_KEY has @rotate=90d and no recorded write; penv set STRIPE_SECRET_KEY records one
+note REDIS_URL is read in src/cache.ts:4 and not declared in .env.schema
+note declared in .env.schema and not mentioned in any source file: OLD_FLAG
 ```
+
+It reads the repository's source for `process.env`, `import.meta.env`, `Deno.env.get`, `os.environ`, `os.getenv`, `env::var`, `os.Getenv`, `System.getenv`, `Environment.GetEnvironmentVariable`, `ENV[]`, `getenv` and Prisma's `env()`. Platform variables (`NODE_ENV`, `VERCEL_*`, `CI`, ...) and files `penv gen` writes are left out. `penv check --strict` fails on an undeclared read.
+
 
 ## Environments
 

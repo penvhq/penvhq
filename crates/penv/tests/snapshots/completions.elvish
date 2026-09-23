@@ -123,6 +123,7 @@ set edit:completion:arg-completer[penv] = {|@words|
         }
         if (eq $command 'penv;check') {
             cand '--env' 'The environment to check'
+            cand '--strict' 'Fail when code reads a variable .env.schema does not declare'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'

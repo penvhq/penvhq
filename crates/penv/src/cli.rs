@@ -204,6 +204,9 @@ pub enum Command {
         /// The environment to check
         #[arg(long)]
         env: Option<String>,
+        /// Fail when code reads a variable .env.schema does not declare
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Write the typed file for your language (ts, py)

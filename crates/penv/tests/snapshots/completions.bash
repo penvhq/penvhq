@@ -43,7 +43,7 @@ _penv() {
         set) words="--env --value --json --format --agent --provider" ;;
         unset) words="--env --json --format --agent --provider" ;;
         ls) words="--env --json --format --agent --provider" ;;
-        check) words="--env --json --format --agent --provider" ;;
+        check) words="--env --strict --json --format --agent --provider" ;;
         gen) words="--out --check --options --json --format --agent --provider" ;;
         scan) words="--staged --install-hook --env --json --format --agent --provider" ;;
         guard) words="--all --check --json --format --agent --provider" ;;
