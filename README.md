@@ -520,7 +520,7 @@ Measured on one project against varlock 1.20.0 ([method and script](./docs/BENCH
 | `.env` with a secret, not gitignored | `check` fails | passes |
 | Placeholders for an agent's command | HTTPS APIs, Postgres, Redis | HTTPS APIs |
 
-Also in penv: a static binary of about 12 MB (varlock's standalone binary is 105 MB and bundles Node.js), and masking inside Python processes.
+Also in penv: a 12.7 MB static binary (varlock's standalone binary is 105 MB and bundles Node.js), and masking inside Python processes.
 
 A schema using `@assert`, `@rotate`, `match`, `random`, filters or `penv()` no longer loads in varlock. `penv check` lists which of these the schema uses.
 

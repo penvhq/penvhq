@@ -2,7 +2,8 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+        # A version tag only: varlock-plugin-v* belongs to the plugin's workflow.
+    tags: ["v[0-9]*"]
 
 permissions:
   contents: write
