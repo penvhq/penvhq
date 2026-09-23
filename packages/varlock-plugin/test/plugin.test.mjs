@@ -92,6 +92,10 @@ function load(schema, env = {}, dir) {
       env: {
         PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT ?? '', HOME: dir, USERPROFILE: dir,
         LOCALAPPDATA: path.join(dir, 'AppData'), XDG_CACHE_HOME: path.join(dir, '.cache'),
+        XDG_CONFIG_HOME: path.join(dir, '.config'),
+        // varlock's disk cache, keyed here rather than by the OS keychain, so the
+        // cache test behaves the same on every runner.
+        _VARLOCK_CACHE_KEY: '11'.repeat(32),
         VARLOCK_TELEMETRY_DISABLED: 'true', PENV_TOKEN: TOKEN, PENV_URL: URL_ROOT, ...env,
       },
     });
