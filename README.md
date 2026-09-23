@@ -283,6 +283,12 @@ penv guard
 
 Writes deny rules for `.env` and `.env.*` for Claude Code, Codex, Cursor, Copilot CLI, Gemini CLI, Cline, Windsurf and Amp. Hooks call the penv binary, so a hook failure denies. [Design, agents](./docs/Design.md#6-agents).
 
+An [Agent Skill](./skills/penv/SKILL.md) tells the agent how to work in a penv project: commands, exit codes, and how to fix each `penv check` failure without touching values. For Claude Code, copy it into the project:
+
+```bash
+mkdir -p .claude/skills && cp -r path/to/penvhq/skills/penv .claude/skills/
+```
+
 In an agent session penv:
 - prints JSON
 - ignores `--no-mask` and `--no-preload`
@@ -430,6 +436,10 @@ JSON output when stdout is not a terminal.
 | 4 | confirmation required |
 | 5 | no credential |
 | 6 | environment refused |
+
+## Contributing
+
+[CONTRIBUTING.md](./CONTRIBUTING.md) · [SECURITY.md](./SECURITY.md) · [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
 
 ## License
 
