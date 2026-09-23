@@ -4,7 +4,12 @@ set -euo pipefail
 PENV=${PENV:?set PENV to the penv binary}
 # Git Bash on Windows rewrites arguments that look like paths (/CN=...).
 export MSYS_NO_PATHCONV=1
-PY=$(command -v python3 || command -v python)
+# The first Python that runs: on Windows `python3` can be the Store's stub.
+PY=""
+for candidate in python3 python; do
+  if "$candidate" -c "" 2>/dev/null; then PY=$candidate; break; fi
+done
+[ -n "$PY" ] || { echo "FAIL: no Python"; exit 1; }
 # A path a native program understands: C:\... under Git Bash, as it is elsewhere.
 native() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 WORK=$(mktemp -d)
@@ -15,7 +20,10 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 2 -su
 openssl req -newkey rsa:2048 -nodes -keyout srv.key -out srv.csr -subj "/CN=localhost" 2>/dev/null
 printf 'subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n' > ext.cnf
 openssl x509 -req -in srv.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out srv.pem -days 2 -extfile ext.cnf 2>/dev/null
-system=$(for f in /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem; do [ -f "$f" ] && echo "$f" && break; done)
+system=""
+for f in /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem; do
+  if [ -f "$f" ]; then system=$f; break; fi
+done
 cat ca.pem ${system:+"$system"} > trust.pem
 fail() { echo "FAIL: $*"; exit 1; }
 wait_port() {
