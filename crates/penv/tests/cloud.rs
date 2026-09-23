@@ -1363,7 +1363,11 @@ fn a_penv_reference_reads_another_environment_once_from_the_cloud() {
         .command(&mock)
         .args(["--agent", "run", "--"])
         .args(SHELL)
-        .arg("echo $PORT; echo $PORT")
+        .arg(if cfg!(windows) {
+            "echo %PORT%"
+        } else {
+            "echo $PORT"
+        })
         .output()
         .expect("penv runs");
     // The development body sets PORT itself, which wins over the default.
@@ -1429,7 +1433,11 @@ fn a_computed_default_fetches_its_address_once_for_every_key_that_names_it() {
         .command(&mock)
         .args(["--agent", "run", "--"])
         .args(SHELL)
-        .arg("echo $PORT $PORT_TOO")
+        .arg(if cfg!(windows) {
+            "echo %PORT% %PORT_TOO%"
+        } else {
+            "echo $PORT $PORT_TOO"
+        })
         .output()
         .expect("penv runs");
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));

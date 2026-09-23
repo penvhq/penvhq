@@ -619,7 +619,7 @@ fn random_is_generated_once_kept_locally_and_never_pushed() {
         "check never writes"
     );
 
-    let first = workspace.run(&[], "true");
+    let first = workspace.run(&[], "exit 0");
     assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
     let kept = std::fs::read_to_string(workspace.path().join(".env.local")).unwrap();
     let value = kept
@@ -634,7 +634,7 @@ fn random_is_generated_once_kept_locally_and_never_pushed() {
         "the generated value is never printed"
     );
 
-    workspace.run(&[], "true");
+    workspace.run(&[], "exit 0");
     let again = std::fs::read_to_string(workspace.path().join(".env.local")).unwrap();
     assert_eq!(again, kept, "a second run reuses the value");
 }
@@ -663,7 +663,7 @@ fn a_sensitive_value_too_short_to_mask_is_named_not_silently_shown() {
         (".env.schema", "# @schema=1\n\n# @type=string\nPIN=\n"),
         (".env", "PIN=123\n"),
     ]);
-    let output = workspace.run(&[], "true");
+    let output = workspace.run(&[], "exit 0");
     assert!(
         stderr(&output).contains("PIN is sensitive and shorter than"),
         "{}",
@@ -759,7 +759,7 @@ fn a_secret_written_into_browser_output_fails_the_run_that_built_it() {
         .unwrap()
         .set_modified(old)
         .unwrap();
-    let clean = workspace.run(&[], "true");
+    let clean = workspace.run(&[], "exit 0");
     assert_eq!(
         clean.status.code(),
         Some(0),
