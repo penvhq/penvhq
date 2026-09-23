@@ -4,15 +4,15 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE = path.join(HERE, '..');
-// The schema names the plugin by path; forward slashes read the same on Windows.
-const PLUGIN = PACKAGE.split(path.sep).join('/');
+// The schema names the plugin by a path relative to the project, which load()
+// fills in; forward slashes read the same on Windows.
+const PLUGIN = '{{plugin}}';
 // The CLI's own entry, run with this node, so the tests need no shell shim (Windows).
 const varlockPackage = JSON.parse(fs.readFileSync(path.join(PACKAGE, 'node_modules', 'varlock', 'package.json'), 'utf8'));
 const VARLOCK_BIN = typeof varlockPackage.bin === 'string' ? varlockPackage.bin : varlockPackage.bin.varlock;
@@ -66,7 +66,10 @@ const server = http.createServer((req, res) => {
 });
 await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve); });
 const URL_ROOT = `http://127.0.0.1:${server.address().port}`;
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'penv-varlock-plugin-'));
+// Projects live under the package: varlock takes a relative @plugin path only on
+// Windows, and a relative path cannot cross drives.
+fs.mkdirSync(path.join(PACKAGE, '.test-projects'), { recursive: true });
+const scratch = fs.mkdtempSync(path.join(PACKAGE, '.test-projects', 'run-'));
 after(() => { server.close(); fs.rmSync(scratch, { recursive: true, force: true }); });
 
 const HEADER = ({ url = URL_ROOT, init = '', penv = 'acme/api' } = {}) => [
@@ -85,7 +88,8 @@ let count = 0;
 /** `varlock load --format json` in a fresh project; the cache lives in the project's own home. */
 function load(schema, env = {}, dir) {
   dir ??= fs.mkdtempSync(path.join(scratch, `p${count++}-`));
-  fs.writeFileSync(path.join(dir, '.env.schema'), schema);
+  const relative = path.relative(dir, PACKAGE).split(path.sep).join('/');
+  fs.writeFileSync(path.join(dir, '.env.schema'), schema.replaceAll('{{plugin}}', relative));
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [VARLOCK, 'load', '--format', 'json'], {
       cwd: dir,
@@ -222,7 +226,10 @@ test('finding 3: cacheTtl applies to penvBulk(); without it every load reads', a
   const second = await load(bulkSchema(', cacheTtl="1h"'), {}, dir);
   assert.equal(first.values?.STRIPE_KEY, 'sk_live_test', first.out);
   assert.equal(second.values?.STRIPE_KEY, 'sk_live_test', second.out);
-  assert.equal(since(before).length, 1, `cached: ${since(before)}`);
+  if (since(before).length !== 1) {
+    const debug = await load(bulkSchema(', cacheTtl="1h"'), { VARLOCK_DEBUG: '1' }, dir);
+    assert.fail(`cached: ${since(before)}\nvarlock debug:\n${debug.out.slice(-3000)}`);
+  }
 
   const dir2 = fs.mkdtempSync(path.join(scratch, 'nocache-'));
   before = requests.length;
