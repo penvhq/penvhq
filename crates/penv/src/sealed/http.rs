@@ -133,6 +133,19 @@ impl Head {
         parts.next()?.parse().ok()
     }
 
+    /// This head with every swap applied, so what is signed is what is sent.
+    pub fn swapped(&self, swaps: &Swaps) -> Head {
+        let text = |t: &str| String::from_utf8_lossy(&swaps.apply(t.as_bytes())).into_owned();
+        Head {
+            start: text(&self.start),
+            headers: self
+                .headers
+                .iter()
+                .map(|(k, v)| (k.clone(), text(v)))
+                .collect(),
+        }
+    }
+
     /// Head bytes with every swap applied to the start line and header values.
     pub fn to_bytes(&self, swaps: &Swaps) -> Vec<u8> {
         let mut out = swaps.apply(self.start.as_bytes());

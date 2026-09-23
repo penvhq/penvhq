@@ -231,7 +231,7 @@ Bundlers that inline any referenced variable (Parcel, a hand-written `define`) h
 
 ### Sealed runs
 
-A key with `@hosts` reaches the command as a placeholder, and the value goes into its requests on the way out. Sealed is always on for an agent; a person asks for it with `run --sealed`.
+A key with `@hosts` reaches the command as a placeholder, and the value goes into its requests on the way out. What this buys: the command can use the key, through the hosts `@hosts` names, and cannot take it. It cannot print, store, or send the value anywhere else, and it holds nothing that works after the run. What it does not buy: a command allowed to call an API can call any endpoint of that API the key permits; `@hosts` and the key's own permissions are that boundary. Sealed is always on for an agent; a person asks for it with `run --sealed`.
 
 ```dotenv
 # @type=string(startsWith=sk_live_, minLength=32) @hosts=api.stripe.com
@@ -252,7 +252,9 @@ STRIPE_SECRET_KEY=
   - **Postgres** (`postgres://`, `postgresql://`): penv answers the command's login itself, as a cleartext password over loopback, and accepts only the placeholder. It then logs in to the real server with SCRAM-SHA-256, MD5 or cleartext, whichever the server asks for, and checks the server's SCRAM signature. TLS to the server follows the URL's `sslmode`: `disable`; `prefer`/`allow` (TLS when offered, certificate unchecked, as libpq does); `require` (TLS, unchecked); `verify-ca`/`verify-full` (checked against the Mozilla roots and penv's `SSL_CERT_FILE` bundle). After login, bytes pass both ways unread.
   - **Redis** (`redis://`, `rediss://`): the placeholder becomes the password in `AUTH` and `HELLO … AUTH` only. Any other command keeps the placeholder, so `SET k <placeholder>` stores the placeholder. `rediss://` is TLS with the certificate checked.
   - Any other scheme, a URL with no password, a multi-host URL, or a URL whose host `@hosts` does not name is refused (`cannot_seal`).
-- **Limits:** a signing secret (AWS SigV4, webhook HMAC, JWT keys) cannot be swapped in flight and should not carry `@hosts`. A client that ignores the proxy variables sends the placeholder directly and fails. On Windows, clients that use the OS certificate store (Python, curl) do not trust the run's authority.
+- **AWS:** `AWS_SECRET_ACCESS_KEY` (or `<PREFIX>_AWS_SECRET_ACCESS_KEY`) with `@hosts` is never sent at all. The SDK signs with the placeholder; the proxy computes the SigV4 signature again over the request as it leaves (canonical URI, query, the signed headers, and the payload hash the request declares, or the body's), with the real key, and replaces it. S3's unsigned streaming uploads (`STREAMING-UNSIGNED-PAYLOAD-TRAILER`) sign the header alone and stream through; an upload whose chunks are signed one by one is refused. Checked against moto, which verifies each signature with botocore, for boto3 (S3 list, 200 KB put and get, IAM, STS) and curl's `--aws-sigv4`, and against AWS's published test vectors.
+- **Trust bundle:** `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and `AWS_CA_BUNDLE` name a bundle of the system's roots plus the run's authority; where the system has no bundle file (Windows), the Mozilla roots penv carries stand in, so Python, curl and the AWS SDKs trust the proxy there too.
+- **Limits:** other signing secrets (webhook HMAC, JWT keys) cannot be swapped in flight and are refused with `@hosts`. A client that ignores the proxy variables sends the placeholder directly and fails. `crates/penv/tests/e2e/` holds the end-to-end scripts (AWS with moto, WebSocket with Node, Python's HTTPS client) that the `sealed` workflow runs on Linux and, for Python, Windows.
 ## 6. Agents
 
 Detection is advisory and ordered, because vendors collide:

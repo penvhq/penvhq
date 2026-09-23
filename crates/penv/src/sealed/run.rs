@@ -85,6 +85,7 @@ pub fn prepare(
             placeholder,
             value: value.clone(),
             hosts: key.hosts.clone(),
+            sigv4: super::is_aws_secret(&key.name),
         });
     }
     if sealed.is_empty() && databases.is_empty() {
@@ -152,17 +153,26 @@ pub fn prepare(
         ("NODE_EXTRA_CA_CERTS".into(), show(&ca)),
         ("DENO_CERT".into(), show(&ca)),
     ];
-    if let Some(system) = SYSTEM_BUNDLES.iter().find(|p| Path::new(p).is_file()) {
-        let bundle = dir.join("bundle.pem");
-        let mut text = std::fs::read_to_string(system).unwrap_or_default();
-        if !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push_str(&ca_pem);
-        write_private(&bundle, &text)?;
-        for name in ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"] {
-            vars.push((name.into(), show(&bundle)));
-        }
+    // A bundle of every public root plus this run's authority: the system's
+    // own where it has one file, else the Mozilla roots penv carries (Windows,
+    // where Python, curl and the AWS SDKs read a file, not the OS store).
+    let bundle = dir.join("bundle.pem");
+    let mut text = match SYSTEM_BUNDLES.iter().find(|p| Path::new(p).is_file()) {
+        Some(system) => std::fs::read_to_string(system).unwrap_or_default(),
+        None => mozilla_roots_pem(),
+    };
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&ca_pem);
+    write_private(&bundle, &text)?;
+    for name in [
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "AWS_CA_BUNDLE",
+    ] {
+        vars.push((name.into(), show(&bundle)));
     }
     crate::ui::warn(&format!(
         "sealed: {} reach the command as placeholders; penv puts the values into requests to their hosts.",
@@ -385,6 +395,21 @@ fn database(
     }
 }
 
+/// The Mozilla roots compiled into penv, as PEM.
+fn mozilla_roots_pem() -> String {
+    let mut out = String::new();
+    for cert in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+        out.push_str("-----BEGIN CERTIFICATE-----\n");
+        let b64 = penv_cloud::b64::encode(cert.as_ref());
+        for line in b64.as_bytes().chunks(64) {
+            out.push_str(&String::from_utf8_lossy(line));
+            out.push('\n');
+        }
+        out.push_str("-----END CERTIFICATE-----\n");
+    }
+    out
+}
+
 /// `node --version` as (major, minor), when there is a node on PATH.
 fn node_version() -> Option<(u32, u32)> {
     let out = std::process::Command::new("node")
@@ -407,6 +432,25 @@ fn node_follows_proxy_variables((major, minor): (u32, u32)) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_carried_roots_make_a_bundle_python_can_load() {
+        let pem = mozilla_roots_pem();
+        assert!(pem.matches("-----BEGIN CERTIFICATE-----").count() > 100);
+        let path = std::env::temp_dir().join(format!("penv-roots-{}.pem", std::process::id()));
+        std::fs::write(&path, &pem).unwrap();
+        // Where Python is present, its ssl module (OpenSSL) must read every cert.
+        if let Ok(out) = std::process::Command::new("python3")
+            .args(["-c", "import ssl,sys; c=ssl.create_default_context(cafile=sys.argv[1]); print(c.cert_store_stats()['x509_ca'])"])
+            .arg(&path)
+            .output()
+            && out.status.success()
+        {
+            let loaded: usize = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0);
+            assert_eq!(loaded, webpki_root_certs::TLS_SERVER_ROOT_CERTS.len());
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn node_versions_that_follow_the_proxy_variables() {

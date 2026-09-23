@@ -1,0 +1,46 @@
+name: sealed
+
+# Sealed runs against real clients and servers: boto3 and curl signing AWS
+# requests that moto verifies, Node's WebSocket, and Python's HTTPS client on
+# Linux and on Windows (where penv writes the trust bundle from its own roots).
+on:
+  pull_request:
+    paths: ["crates/penv/**", "crates/penv-schema/**", ".github/workflows/sealed.yml"]
+  push:
+    branches: [main]
+    paths: ["crates/penv/**", "crates/penv-schema/**", ".github/workflows/sealed.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "moto[server]==5.1.*" boto3
+      - run: cargo build -p penv
+      - run: PENV=$PWD/target/debug/penv crates/penv/tests/e2e/sealed_aws.sh
+      - run: PENV=$PWD/target/debug/penv crates/penv/tests/e2e/sealed_websocket.sh
+      - run: PENV=$PWD/target/debug/penv crates/penv/tests/e2e/sealed_python.sh
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo build -p penv
+      - run: PENV=$PWD/target/debug/penv.exe crates/penv/tests/e2e/sealed_python.sh

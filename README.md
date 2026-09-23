@@ -390,8 +390,9 @@ Under an agent, and with `penv run --sealed`, a key with `@hosts` reaches the co
 | HTTPS API key | a placeholder shaped by the key's type (`sk_live_…`) | into request headers and the request line to the named hosts, WebSocket handshakes included; bodies and outgoing messages keep the placeholder; a value echoed in a response or a server message comes back as the placeholder |
 | `postgres://` URL | `postgres://user:penvph…@127.0.0.1:<port>/db` | penv logs in with the real password (SCRAM-SHA-256, MD5, cleartext); TLS follows `sslmode` |
 | `redis://`, `rediss://` URL | `redis://user:penvph…@127.0.0.1:<port>` | into `AUTH` and `HELLO … AUTH` only |
+| `AWS_SECRET_ACCESS_KEY` | a placeholder | nowhere: penv signs each request again (SigV4) with the real key |
 
-Every other host is an unread tunnel, so a placeholder sent there stays a placeholder. Refused before the command starts: a signing secret (`AWS_SECRET_ACCESS_KEY`, `*_SIGNING_*`, `*_HMAC_*`, `WEBHOOK_SECRET`, `JWT_SECRET`), a wildcard over a shared domain (`*.vercel.app`, `*.co.uk`), and a type with no room for a placeholder. Node needs 22.21 or later to route `fetch` through the proxy. [Design, sealed runs](./docs/Design.md#sealed-runs).
+Every other host is an unread tunnel, so a placeholder sent there stays a placeholder. Refused before the command starts: a signing secret penv cannot sign with itself (`*_SIGNING_*`, `*_HMAC_*`, `WEBHOOK_SECRET`, `JWT_SECRET`), a wildcard over a shared domain (`*.vercel.app`, `*.co.uk`), and a type with no room for a placeholder. Node needs 22.21 or later to route `fetch` through the proxy. [Design, sealed runs](./docs/Design.md#sealed-runs).
 
 
 ## penv.cloud
