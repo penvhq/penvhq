@@ -387,7 +387,7 @@ Under an agent, and with `penv run --sealed`, a key with `@hosts` reaches the co
 
 | Key | The command holds | The value goes |
 |---|---|---|
-| HTTPS API key | a placeholder shaped by the key's type (`sk_live_…`) | into request headers and the request line to the named hosts; bodies keep the placeholder; an echoed value comes back as the placeholder |
+| HTTPS API key | a placeholder shaped by the key's type (`sk_live_…`) | into request headers and the request line to the named hosts, WebSocket handshakes included; bodies and outgoing messages keep the placeholder; a value echoed in a response or a server message comes back as the placeholder |
 | `postgres://` URL | `postgres://user:penvph…@127.0.0.1:<port>/db` | penv logs in with the real password (SCRAM-SHA-256, MD5, cleartext); TLS follows `sslmode` |
 | `redis://`, `rediss://` URL | `redis://user:penvph…@127.0.0.1:<port>` | into `AUTH` and `HELLO … AUTH` only |
 

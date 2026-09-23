@@ -198,6 +198,8 @@ impl Proxy {
                 .unwrap_or_default()
                 .to_string();
             basic_auth(&mut request, &request_swaps);
+            // Compressed WebSocket frames cannot be read for values to swap back.
+            request.remove("sec-websocket-extensions");
             // Compressed responses cannot be read for values to swap back.
             request.set("Accept-Encoding", "identity".to_string());
             if request
@@ -238,11 +240,17 @@ impl Proxy {
                 }
             };
             if response.status() == Some(101) {
-                // An upgraded connection (WebSocket) is passed through unread.
+                let websocket = response
+                    .get("upgrade")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+                if !websocket {
+                    return Err(refused("an upgrade to something other than WebSocket"));
+                }
                 from_client
                     .get_mut()
                     .write_all(&response.to_bytes(&response_swaps))?;
-                return Err(refused("an upgrade through a sealed host"));
+                from_client.get_mut().flush()?;
+                return super::websocket::splice(from_client, from_upstream, response_swaps);
             }
             let framing = http::response_framing(&response, &method)?;
             let ends = framing == http::Framing::Close

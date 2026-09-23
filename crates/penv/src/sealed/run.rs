@@ -168,6 +168,14 @@ pub fn prepare(
         "sealed: {} reach the command as placeholders; penv puts the values into requests to their hosts.",
         summary.join(", ")
     ));
+    if let Some(version) = node_version()
+        && !node_follows_proxy_variables(version)
+    {
+        crate::ui::warn(&format!(
+            "node {}.{} on PATH ignores HTTPS_PROXY, so its fetch sends placeholders straight to the host and fails. Node 22.21 or 24 and later follow it.",
+            version.0, version.1
+        ));
+    }
     Ok(Some(Seal {
         placeholders,
         env: vars,
@@ -374,5 +382,44 @@ fn database(
             ),
             format!("Remove @hosts from {}.", key.name),
         )),
+    }
+}
+
+/// `node --version` as (major, minor), when there is a node on PATH.
+fn node_version() -> Option<(u32, u32)> {
+    let out = std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .ok()?;
+    parse_node_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_node_version(text: &str) -> Option<(u32, u32)> {
+    let mut parts = text.trim().trim_start_matches('v').split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// `NODE_USE_ENV_PROXY` arrived in 24.0 and was backported to 22.21.
+fn node_follows_proxy_variables((major, minor): (u32, u32)) -> bool {
+    major >= 24 || (major == 22 && minor >= 21)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_versions_that_follow_the_proxy_variables() {
+        assert_eq!(parse_node_version("v22.22.2\n"), Some((22, 22)));
+        for (v, ok) in [
+            ((22, 21), true),
+            ((22, 20), false),
+            ((23, 11), false),
+            ((24, 0), true),
+            ((20, 19), false),
+            ((26, 1), true),
+        ] {
+            assert_eq!(node_follows_proxy_variables(v), ok, "{v:?}");
+        }
     }
 }

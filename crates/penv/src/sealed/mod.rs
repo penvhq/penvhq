@@ -10,6 +10,7 @@ pub mod run;
 pub mod scram;
 pub mod upstream;
 pub mod url;
+pub mod websocket;
 
 /// Why a key looks like it signs requests rather than sending itself, from its
 /// name. A placeholder cannot stand in for such a key: the signature is made
