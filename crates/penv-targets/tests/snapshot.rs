@@ -189,3 +189,21 @@ fn a_constraint_never_reaches_the_generated_file() {
         );
     }
 }
+
+#[test]
+fn the_ts_target_declares_inlined_only_when_a_public_key_reads_through_it() {
+    let schema = penv_schema::parse(
+        "# @type=string\nSTRIPE_SECRET_KEY=\n\n# @type=port @sensitive=false\nPORT=3000\n",
+    )
+    .unwrap();
+    let out = render(&built_in("ts"), &view(&schema), VERSION).unwrap();
+    assert!(
+        !out.contains("const inlined"),
+        "unused under noUnusedLocals"
+    );
+    assert!(
+        TS.contains("const inlined"),
+        "the fixture's public keys still read through it"
+    );
+    assert!(TS.contains("static override json"), "noImplicitOverride");
+}

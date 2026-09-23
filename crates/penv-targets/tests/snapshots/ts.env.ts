@@ -14,7 +14,6 @@ const read = (name: string): string | undefined => {
   if (g.Netlify?.env) return g.Netlify.env.get(name);
   throw new Error(`${name} is server-only, and this runtime has no server environment.`);
 };
-
 // Public keys are written as a literal the bundler replaces. Where nothing
 // replaced it and the runtime has no process global (an edge runtime, a Worker), the
 // literal would throw, so the key is read the computed way, or is undefined.
@@ -113,7 +112,7 @@ const inlined = (literal: () => string | undefined, name: string): string | unde
       constructor(body?: Body, init?: Init) {
         super(typeof body === "string" ? mask(body) : body, init);
       }
-      static json(data: unknown, init?: Init) {
+            static override json(data: unknown, init?: Init) {
         const headers = new Headers(init?.headers);
         if (!headers.has("content-type")) headers.set("content-type", "application/json");
         return new Masked(JSON.stringify(data), { ...init, headers });
