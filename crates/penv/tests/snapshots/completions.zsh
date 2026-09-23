@@ -13,6 +13,7 @@ _penv() {
         'set:Save one value (typed hidden, never shown)'
         'unset:Delete one value'
         'ls:List your keys and show which ones have a value'
+        'bundle:Write one environment'\''s values, encrypted, to .penv/<env>.bundle for a deploy'
         'encrypt:Encrypt the sensitive values in the .env files beside .env.schema'
         'decrypt:Write the encrypted values in the .env files back in plain text'
         'why:Say where a key'\''s value comes from and how penv treats it, never the value'
@@ -52,6 +53,7 @@ _penv() {
                 set) _arguments '--env[The environment to write to]:value:' '--value[Refused: a value passed here lands in the shell history]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 unset) _arguments '--env[The environment to write to]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 ls) _arguments '--env[The environment to read]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                bundle) _arguments '--env[The environment to bundle]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 encrypt) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 decrypt) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 why) _arguments '--env[The environment to read]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;

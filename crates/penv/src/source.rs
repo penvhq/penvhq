@@ -425,6 +425,8 @@ pub struct Resolved {
     pub generated: Vec<(String, PathBuf)>,
     /// `random()` keys left for the first `penv run` to generate.
     pub pending: Vec<String>,
+    /// The deploy bundle read in place of the cloud, when `PENV_BUNDLE_KEY` opened one.
+    pub bundle: Option<PathBuf>,
 }
 
 /// Whether `random()` values are generated and kept, or only noted. `run`
@@ -473,8 +475,26 @@ pub fn values_with(
         ..Resolved::default()
     };
     let local = layers(dir, &penv_dotenv::cascade(environment))?;
-    out.layers = match own(schema) {
-        Some((org, project)) => {
+    // A deploy bundle, when PENV_BUNDLE_KEY opens one, stands where the cloud
+    // would: the deploy's values, with any value file and the process over it.
+    let bundle = crate::bundle::read(dir, environment, env)?;
+    out.layers = match (bundle, own(schema)) {
+        (Some((file, values)), _) => {
+            let mut layered = overlay(&values, local);
+            // Named as the origin for why and ls, and kept out of `read`: that
+            // list is value files, which check holds to git rules a committed,
+            // encrypted bundle is meant to break.
+            for name in values.keys() {
+                layered
+                    .origin
+                    .entry(name.clone())
+                    .or_insert_with(|| file.clone());
+            }
+            out.bundle = Some(file);
+            layered
+        }
+        (None, None) => local,
+        (None, Some((org, project))) => {
             let at = Address::new(&org, &project, environment);
             match fetcher.values(&at) {
                 Ok(cloud) => {
@@ -488,7 +508,6 @@ pub fn values_with(
                 Err(error) => return Err(error),
             }
         }
-        None => local,
     };
 
     process_wins(&mut out.layers, schema, env, out.cloud.is_some());
@@ -561,6 +580,7 @@ pub fn report(resolved: &Resolved, dir: &Path) {
         ));
     }
     if resolved.cloud.is_none()
+        && resolved.bundle.is_none()
         && env != DEFAULT_ENVIRONMENT
         && !dir.join(format!(".env.{env}")).is_file()
     {

@@ -316,7 +316,19 @@ Public keys are read by their literal name (`process.env.NEXT_PUBLIC_API_URL`), 
 
 A bundler configured to inline the whole environment (`define: { "process.env": … }`) copies every value into the bundle whatever penv generates; the build scan fails that build.
 
-`gen py` writes `penv_env.py`, on the standard library or with pydantic types. The output path is asked once and kept in `.penv/config.toml`, with the target's options (commit it). `--out PATH` skips the prompt.
+| Target | Writes | Load | A secret field |
+|---|---|---|---|
+| `ts` | `src/env.ts` | `import { env } from "@/env"` | read at runtime, masked in logs and responses |
+| `py` | `penv_env.py` | `from penv_env import env` | `str`, or `SecretStr` with `pydantic = true` |
+| `go` | `env/env.go` | `env.Load()` / `env.MustLoad()` | `env.Secret`, prints `[redacted]`; `.Value()` |
+| `rust` | `src/env.rs` | `Env::load()` | `Secret`, prints `[redacted]`; `.expose()` |
+| `php` | `src/Env.php` | `Env::load()` (PHP 8.1+) | `Secret`, prints `[redacted]`; `->expose()` |
+| `java` | `src/main/java/config/Env.java` | `Env.load()` (Java 17+) | `Env.Secret`, prints `[redacted]`; `.expose()` |
+| `csharp` | `Env.g.cs` | `Env.Load()` (.NET 6+) | `Secret`, prints `[redacted]`; `.Expose()` |
+
+Every loader parses ports, integers, numbers, booleans and enum members, applies the schema's defaults, and fails with every problem named and no value (`PORT is not a port; PLAN_TIER is not one of free, pro, enterprise`). CI compiles and runs each one with its real toolchain.
+
+The output path is asked once and kept in `.penv/config.toml`, with the target's options (commit it). `--out PATH` skips the prompt.
 
 ```toml
 # .penv/config.toml
@@ -325,8 +337,16 @@ output = "src/env.ts"
 
 [targets.ts.options]
 key_case = "upper"
+mask = true
 runtime = "node"
 ```
+
+| Target | Options |
+|---|---|
+| `ts` | `key_case` (`upper`, `camel`), `runtime` (above), `mask` (`true`, `false`) |
+| `py` | `pydantic` (`false`, `true`) |
+| `go`, `java` | `package` (`env`, `config`) |
+| `php`, `csharp` | `namespace` (`App`) |
 
 `.penv/<name>.tmpl` overrides a target's template. A language penv does not ship is a `[targets.<name>]` section with `output`, `detect` and `types`, plus `.penv/<name>.tmpl`. [Design, language targets](./docs/Design.md#7-language-targets).
 
@@ -346,10 +366,33 @@ mkdir -p .claude/skills && cp -r path/to/penvhq/skills/penv .claude/skills/
 
 In an agent session penv:
 - prints JSON
+- gives keys with `@hosts` to the command as placeholders ([sealed runs](#sealed-runs))
 - ignores `--no-mask` and `--no-preload`
 - routes `penv reveal KEY` to a person for approval in the penv.cloud console
 - refuses `penv pull`
 - refuses a CA bundle the current user can write
+- refuses `penv decrypt`
+
+### Sealed Runs
+
+```dotenv
+# @type=string(startsWith=sk_live_, minLength=32) @hosts=api.stripe.com
+STRIPE_SECRET_KEY=
+
+# @type=url @hosts=db.acme.com
+DATABASE_URL=
+```
+
+Under an agent, and with `penv run --sealed`, a key with `@hosts` reaches the command as a placeholder. A proxy inside `penv run` puts the value in on the way out, to those hosts only:
+
+| Key | The command holds | The value goes |
+|---|---|---|
+| HTTPS API key | a placeholder shaped by the key's type (`sk_live_…`) | into request headers and the request line to the named hosts; bodies keep the placeholder; an echoed value comes back as the placeholder |
+| `postgres://` URL | `postgres://user:penvph…@127.0.0.1:<port>/db` | penv logs in with the real password (SCRAM-SHA-256, MD5, cleartext); TLS follows `sslmode` |
+| `redis://`, `rediss://` URL | `redis://user:penvph…@127.0.0.1:<port>` | into `AUTH` and `HELLO … AUTH` only |
+
+Every other host is an unread tunnel, so a placeholder sent there stays a placeholder. Refused before the command starts: a signing secret (`AWS_SECRET_ACCESS_KEY`, `*_SIGNING_*`, `*_HMAC_*`, `WEBHOOK_SECRET`, `JWT_SECRET`), a wildcard over a shared domain (`*.vercel.app`, `*.co.uk`), and a type with no room for a placeholder. Node needs 22.21 or later to route `fetch` through the proxy. [Design, sealed runs](./docs/Design.md#sealed-runs).
+
 
 ## penv.cloud
 
@@ -374,8 +417,22 @@ Credential per platform ([Design, deploying](./docs/Design.md#deploying)):
 | GitHub Actions, GitLab | job OIDC token, exchanged for a 15-minute credential |
 | ECS, EKS (IRSA, Pod Identity), Lambda | the AWS role |
 | anything else | `PENV_TOKEN` |
+| no penv.cloud | a bundle and `PENV_BUNDLE_KEY` (below) |
+
+### Bundle
+
+Without penv.cloud, ship one environment's values encrypted with the deploy:
+
+```console
+$ penv bundle --env production
+wrote .penv/production.bundle: 12 value(s) for production
+PENV_BUNDLE_KEY=ea577bf5…
+```
+
+Store `PENV_BUNDLE_KEY` in the platform's secrets and ship `.penv/production.bundle` (commit it, or copy it into the image). There, `penv run --env production -- node server.js` reads the bundle where it would read penv.cloud; the platform's own variables still win, and the command never receives `PENV_BUNDLE_KEY`. The key is shown once; run `penv bundle` with it set to rebuild under the same key. The key set with no bundle for that environment, a wrong key, or a bundle made for another environment stops the run. Refused for an AI agent.
 
 ### CI
+
 
 ```yaml
 permissions:
@@ -460,6 +517,7 @@ Measured on one project against varlock 1.20.0 ([method and script](./docs/BENCH
 | `NEXT_PUBLIC_` key built from a secret | refused | accepted with a warning |
 | Server response holding a secret (Node.js, Python) | masked | sent unmasked |
 | `.env` with a secret, not gitignored | `check` fails | passes |
+| Placeholders for an agent's command | HTTPS APIs, Postgres, Redis | HTTPS APIs |
 
 Also in penv: an 11.7 MB static binary (varlock's standalone binary is 105 MB and bundles Node.js), and masking inside Python processes.
 
@@ -499,12 +557,13 @@ penv run -- npm run dev       # native; @plugin and @initPenv are ignored
 |---|---|
 | `penv` | status and next command |
 | `init` | `.env.schema` from `.env`; gitignore `.env*` |
-| `run [--env E] -- cmd` | validate, compute, run, mask |
-| `check [KEY] [--env E]` | validate; assertions, rotation, client bundle checks |
+| `run [--env E] [--sealed] -- cmd` | validate, compute, run, mask; `--sealed` for placeholders |
+| `check [KEY] [--env E] [--strict]` | validate; assertions, rotation, client bundle checks, code reads |
 | `scan [PATH...] [--staged] [--install-hook]` | secret values in files |
 | `ls` | keys, types, presence |
 | `why KEY` | where a value comes from, never the value |
 | `encrypt` / `decrypt` | convert the `.env` files' secrets |
+| `bundle [--env E]` | encrypted values for a deploy, opened by `PENV_BUNDLE_KEY` |
 | `gen ts\|py\|go\|rust\|php\|java\|csharp` | typed file |
 | `guard` | agent deny rules |
 | `set KEY` / `unset KEY` | write or remove one value |

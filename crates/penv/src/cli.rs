@@ -18,7 +18,9 @@ Everyday
   run        Run a command with your secrets loaded into it
   ls         List your keys and show which ones have a value
     why        Say where a key's value comes from, never the value
-  encrypt    Encrypt the secrets in your .env files
+    encrypt    Encrypt the secrets in your .env files
+  bundle     Write an encrypted file of one environment's values for a deploy
+
   decrypt    Write the .env files' secrets back in plain text
 
   set        Save one value (typed hidden, never shown)
@@ -201,6 +203,13 @@ pub enum Command {
         env: Option<String>,
     },
 
+    /// Write one environment's values, encrypted, to .penv/<env>.bundle for a deploy
+    Bundle {
+        /// The environment to bundle
+        #[arg(long)]
+        env: Option<String>,
+    },
+
     /// Encrypt the sensitive values in the .env files beside .env.schema
     Encrypt,
 
@@ -230,7 +239,7 @@ pub enum Command {
 
     /// Write the typed file for your language (ts, py, go, rust, php, java, csharp)
     Gen {
-        /// The target name, such as ts or py; omit it to list the targets
+        /// The target name: ts, py, go, rust, php, java or csharp; omit it to list them
         target: Option<String>,
         /// Write here instead, relative to the repository root
         #[arg(long, value_name = "PATH")]
