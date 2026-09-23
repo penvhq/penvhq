@@ -6,7 +6,7 @@ set edit:completion:arg-completer[penv] = {|@words|
     fn cand {|text desc|
         edit:complex-candidate $text &display=$text' '$desc
     }
-    var valued = [&'--format'=['json' 'text'] &'--guards'=[] &'--output'=[] &'--env'=[] &'--org'=[] &'--value'=[] &'--out'=[] &'--approval'=[]]
+    var valued = [&'--format'=['json' 'text'] &'--provider'=[] &'--guards'=[] &'--output'=[] &'--env'=[] &'--org'=[] &'--value'=[] &'--out'=[] &'--approval'=[]]
     var previous = ''
     if (> (count $words) 1) { set previous = $words[-2] }
     var command = 'penv'
@@ -48,6 +48,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;init') {
             cand '--force' 'Overwrite an existing .env.schema'
@@ -57,6 +58,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;run') {
             cand '--env' 'The environment to read'
@@ -65,6 +67,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;push') {
             cand '--env' 'The environment to write to'
@@ -73,6 +76,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;pull') {
             cand '--env' 'The environment to read'
@@ -80,16 +84,19 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;login') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;logout') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;set') {
             cand '--env' 'The environment to write to'
@@ -97,24 +104,28 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;unset') {
             cand '--env' 'The environment to write to'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;ls') {
             cand '--env' 'The environment to read'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;check') {
             cand '--env' 'The environment to check'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;gen') {
             cand '--out' 'Write here instead, relative to the repository root'
@@ -123,6 +134,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;scan') {
             cand '--staged' 'Scan only what is staged for the next commit'
@@ -131,6 +143,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;guard') {
             cand '--all' 'Write every harness penv knows, installed or not'
@@ -138,6 +151,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;reveal') {
             cand '--env' 'The environment to read'
@@ -145,6 +159,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;project') {
             cand 'ls' 'List your projects and their environments'
@@ -154,30 +169,35 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;project;ls') {
             cand '--org' 'Only this organisation'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;project;new') {
             cand '--org' 'The organisation that owns it'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;project;rename') {
             cand '--org' ''
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;project;rm') {
             cand '--org' ''
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;env') {
             cand 'ls' 'List the project''s environments'
@@ -188,48 +208,57 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;env;ls') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;env;new') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;env;rename') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;env;copy') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;env;rm') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;machine') {
             cand 'enroll' 'Give this server its own identity, from a one-time secret made in the console'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;machine;enroll') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;upgrade') {
             cand '--check' 'Only report what the latest release is'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;completions') {
             cand 'bash' 'bash'
@@ -240,21 +269,25 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;hook') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;schema') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;help') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
     }
 }

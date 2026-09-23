@@ -32,6 +32,7 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
     if cli.agent {
         crate::agent::flag_session();
     }
+    crate::providers::remember(cli.provider.as_deref(), cwd);
     match &cli.command {
         None => state::run(out, cwd, env),
         Some(Command::Init {

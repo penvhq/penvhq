@@ -29,7 +29,8 @@ pub struct Cloud {
 impl Cloud {
     pub fn open(env: &Env, detection: &Detection) -> Result<Cloud, CliError> {
         trust(env, detection.is_agent() || crate::agent::flagged())?;
-        let api = Api::from_env(env.as_map())
+        let chosen = crate::providers::chosen(env)?;
+        let api = Api::new(&chosen.url)
             .map_err(|e| refuse(e, None))?
             .stamped(detection.name(), detection.session_id.as_deref());
         let keychain: Box<dyn Keychain> = match Keyring::open(api.base_url()) {

@@ -12,7 +12,7 @@ function __fish_penv_path --description 'the penv command path typed so far'
         else if test "$token" = '--'
             break
         else if string match -q -- '-*' $token
-            if contains -- $token --format --guards --output --env --org --value --out --approval
+            if contains -- $token --format --provider --guards --output --env --org --value --out --approval
                 set skip 1
             end
         else
@@ -31,6 +31,7 @@ complete -c penv -f
 complete -c penv -l json -d 'Emit JSON on stdout, whatever stdout is attached to'
 complete -c penv -l format -r -d 'Pick the output format: json or text' -a 'json text'
 complete -c penv -l agent -d 'Treat this session as an agent: JSON out, values masked'
+complete -c penv -l provider -r -d 'Read values from this provider instead of the one @penv= names'
 complete -c penv -n '__fish_penv_at ""' -a 'init' -d 'Read .env, write .env.schema, and keep .env out of the repository'
 complete -c penv -n '__fish_penv_at ""' -a 'run' -d 'Run a command with your secrets loaded into it'
 complete -c penv -n '__fish_penv_at ""' -a 'push' -d 'Move local values to the cloud and delete .env'
@@ -56,6 +57,7 @@ complete -c penv -n '__fish_penv_at ""' -a 'help' -d 'Show help for a command'
 complete -c penv -n '__fish_penv_at ""' -l json -d 'Emit JSON on stdout, whatever stdout is attached to'
 complete -c penv -n '__fish_penv_at ""' -l format -r -d 'Pick the output format: json or text' -a 'json text'
 complete -c penv -n '__fish_penv_at ""' -l agent -d 'Treat this session as an agent: JSON out, values masked'
+complete -c penv -n '__fish_penv_at ""' -l provider -r -d 'Read values from this provider instead of the one @penv= names'
 complete -c penv -n '__fish_penv_at "init"' -l force -d 'Overwrite an existing .env.schema'
 complete -c penv -n '__fish_penv_at "init"' -l guards -r -d 'Guard exactly these harnesses instead of the installed ones'
 complete -c penv -n '__fish_penv_at "init"' -l no-guards -d 'Write no harness rules at all'

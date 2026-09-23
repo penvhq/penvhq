@@ -86,6 +86,9 @@ impl Workspace {
         let dir = root.join(PROJECT);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         for (file, contents) in files {
+            if let Some(parent) = dir.join(file).parent() {
+                std::fs::create_dir_all(parent).expect("a scratch directory");
+            }
             std::fs::write(dir.join(file), contents).expect("a scratch file");
         }
         Workspace { root, dir }
@@ -1673,4 +1676,93 @@ fn a_ca_bundle_the_user_can_write_is_refused_for_an_agent_and_used_for_a_person(
         stdout(&broken),
         stderr(&broken)
     );
+}
+
+// --- providers ----------------------------------------------------------------------
+
+fn provider_schema(prefix: &str) -> String {
+    cloud_schema().replacen("@penv=acme/", &format!("@penv={prefix}acme/"), 1)
+}
+
+fn run_values(workspace: &Workspace, mock: &Mock, extra: &[&str]) -> std::process::Output {
+    workspace
+        .command(mock)
+        .args(extra)
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn penv_named_as_the_provider_reads_like_no_prefix() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &provider_schema("penv:"))]);
+    let out = run_values(&workspace, &mock, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(mock.hits("GET", ENVS).len(), 1);
+}
+
+#[test]
+fn a_provider_penv_does_not_have_is_refused_by_name_before_any_request() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &provider_schema("doppler:"))]);
+    let out = run_values(&workspace, &mock, &[]);
+    assert_ne!(out.status.code(), Some(0));
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains("unknown_provider") && said.contains("doppler") && said.contains("penv"),
+        "{said}"
+    );
+    assert!(
+        mock.hits("GET", ENVS).is_empty(),
+        "nothing is sent to a provider penv does not know"
+    );
+
+    // --provider picks one for this run, whatever the header says.
+    let out = run_values(&workspace, &mock, &["--provider", "penv"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(mock.hits("GET", ENVS).len(), 1);
+}
+
+#[test]
+fn the_providers_url_comes_from_config_and_penv_url_beats_it() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let config = format!("[providers.penv]\nurl = \"{}\"\n", mock.url());
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".penv/config.toml", &config),
+    ]);
+    let out = workspace
+        .command(&mock)
+        .env_remove("PENV_URL")
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        mock.hits("GET", ENVS).len(),
+        1,
+        "config.toml sent the read to the mock"
+    );
+
+    std::fs::write(
+        workspace.path().join(".penv/config.toml"),
+        "[providers.penv]\nurl = \"http://127.0.0.1:9\"\n",
+    )
+    .unwrap();
+    let out = run_values(&workspace, &mock, &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "PENV_URL wins: {}",
+        stderr(&out)
+    );
+    assert_eq!(mock.hits("GET", ENVS).len(), 2);
 }

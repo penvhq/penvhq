@@ -32,6 +32,7 @@ _penv() {
         '--json[Emit JSON on stdout, whatever stdout is attached to]' \
         '--format[Pick the output format: json or text]:value:(json text)' \
         '--agent[Treat this session as an agent: JSON out, values masked]' \
+        '--provider[Read values from this provider instead of the one @penv= names]:value:' \
         '1: :->command' \
         '*:: :->args' && return 0
 
@@ -39,28 +40,28 @@ _penv() {
         command) _describe -t commands 'penv command' commands ;;
         args)
             case $words[1] in
-                init) _arguments '--force[Overwrite an existing .env.schema]' '--guards[Guard exactly these harnesses instead of the installed ones]:value:' '--no-guards[Write no harness rules at all]' '--output[Write the generated typed file here, relative to the repository root]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                run) _arguments '--env[The environment to read]:value:' '--no-mask[Show secrets in the command'\''s output instead of hiding them]' '--no-preload[Do not load penv'\''s masking into the command'\''s runtime (Node, Bun, Deno, Python)]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '*:command:_command_names -e' ;;
-                push) _arguments '--env[The environment to write to]:value:' '--org[The organisation that owns a project penv is about to create]:value:' '--prune[Delete cloud keys the schema no longer lists]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                pull) _arguments '--env[The environment to read]:value:' '--i-am-human[Confirm a person, not an agent, asked for the file]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                login) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                logout) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                set) _arguments '--env[The environment to write to]:value:' '--value[Refused: a value passed here lands in the shell history]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                unset) _arguments '--env[The environment to write to]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                ls) _arguments '--env[The environment to read]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                check) _arguments '--env[The environment to check]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                gen) _arguments '--out[Write here instead, relative to the repository root]:value:' '--check[Compare with what is on disk instead of writing]' '--options[Show what this target'\''s options change instead of writing]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                scan) _arguments '--staged[Scan only what is staged for the next commit]' '--install-hook[Write a git pre-commit hook that runs penv scan --staged]' '--env[The environment whose values to look for]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                guard) _arguments '--all[Write every harness penv knows, installed or not]' '--check[Report coverage instead of writing]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                reveal) _arguments '--env[The environment to read]:value:' '--approval[Print the value a person approved under this id]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
+                init) _arguments '--force[Overwrite an existing .env.schema]' '--guards[Guard exactly these harnesses instead of the installed ones]:value:' '--no-guards[Write no harness rules at all]' '--output[Write the generated typed file here, relative to the repository root]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                run) _arguments '--env[The environment to read]:value:' '--no-mask[Show secrets in the command'\''s output instead of hiding them]' '--no-preload[Do not load penv'\''s masking into the command'\''s runtime (Node, Bun, Deno, Python)]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' '*:command:_command_names -e' ;;
+                push) _arguments '--env[The environment to write to]:value:' '--org[The organisation that owns a project penv is about to create]:value:' '--prune[Delete cloud keys the schema no longer lists]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                pull) _arguments '--env[The environment to read]:value:' '--i-am-human[Confirm a person, not an agent, asked for the file]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                login) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                logout) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                set) _arguments '--env[The environment to write to]:value:' '--value[Refused: a value passed here lands in the shell history]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                unset) _arguments '--env[The environment to write to]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                ls) _arguments '--env[The environment to read]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                check) _arguments '--env[The environment to check]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                gen) _arguments '--out[Write here instead, relative to the repository root]:value:' '--check[Compare with what is on disk instead of writing]' '--options[Show what this target'\''s options change instead of writing]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                scan) _arguments '--staged[Scan only what is staged for the next commit]' '--install-hook[Write a git pre-commit hook that runs penv scan --staged]' '--env[The environment whose values to look for]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                guard) _arguments '--all[Write every harness penv knows, installed or not]' '--check[Report coverage instead of writing]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                reveal) _arguments '--env[The environment to read]:value:' '--approval[Print the value a person approved under this id]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 project) _penv_project ;;
                 env) _penv_env ;;
                 machine) _penv_machine ;;
-                upgrade) _arguments '--check[Only report what the latest release is]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                completions) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '1: :(bash zsh fish powershell elvish)' ;;
-                hook) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                schema) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                help) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
+                upgrade) _arguments '--check[Only report what the latest release is]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                completions) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' '1: :(bash zsh fish powershell elvish)' ;;
+                hook) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                schema) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                help) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 *) ;;
             esac ;;
     esac
@@ -79,6 +80,7 @@ _penv_project() {
         '--json[Emit JSON on stdout, whatever stdout is attached to]' \
         '--format[Pick the output format: json or text]:value:(json text)' \
         '--agent[Treat this session as an agent: JSON out, values masked]' \
+        '--provider[Read values from this provider instead of the one @penv= names]:value:' \
         '1: :->command' \
         '*:: :->args' && return 0
 
@@ -86,10 +88,10 @@ _penv_project() {
         command) _describe -t commands 'project command' commands ;;
         args)
             case $words[1] in
-                ls) _arguments '--org[Only this organisation]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                new) _arguments '--org[The organisation that owns it]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                rename) _arguments '--org[]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                rm) _arguments '--org[]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
+                ls) _arguments '--org[Only this organisation]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                new) _arguments '--org[The organisation that owns it]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                rename) _arguments '--org[]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                rm) _arguments '--org[]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 *) ;;
             esac ;;
     esac
@@ -109,6 +111,7 @@ _penv_env() {
         '--json[Emit JSON on stdout, whatever stdout is attached to]' \
         '--format[Pick the output format: json or text]:value:(json text)' \
         '--agent[Treat this session as an agent: JSON out, values masked]' \
+        '--provider[Read values from this provider instead of the one @penv= names]:value:' \
         '1: :->command' \
         '*:: :->args' && return 0
 
@@ -116,11 +119,11 @@ _penv_env() {
         command) _describe -t commands 'env command' commands ;;
         args)
             case $words[1] in
-                ls) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                new) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                rename) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                copy) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
-                rm) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
+                ls) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                new) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                rename) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                copy) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                rm) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 *) ;;
             esac ;;
     esac
@@ -136,6 +139,7 @@ _penv_machine() {
         '--json[Emit JSON on stdout, whatever stdout is attached to]' \
         '--format[Pick the output format: json or text]:value:(json text)' \
         '--agent[Treat this session as an agent: JSON out, values masked]' \
+        '--provider[Read values from this provider instead of the one @penv= names]:value:' \
         '1: :->command' \
         '*:: :->args' && return 0
 
@@ -143,7 +147,7 @@ _penv_machine() {
         command) _describe -t commands 'machine command' commands ;;
         args)
             case $words[1] in
-                enroll) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' ;;
+                enroll) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 *) ;;
             esac ;;
     esac
