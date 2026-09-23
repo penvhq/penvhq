@@ -182,6 +182,16 @@ impl penv_targets::Tree for Disk {
     fn exists(&self, path: &str) -> bool {
         Path::new(path).exists()
     }
+
+    fn files(&self, path: &str) -> Vec<String> {
+        std::fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect()
+    }
 }
 
 #[cfg(test)]

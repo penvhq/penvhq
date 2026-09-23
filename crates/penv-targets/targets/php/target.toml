@@ -1,0 +1,26 @@
+name = "php"
+output = "src/Env.php"
+detect = ["composer.json"]
+import = "use {namespace}\\Env;"
+
+[options]
+namespace = "App"
+
+[[option]]
+name = "namespace"
+default = "App"
+about = "The PHP namespace of the generated classes."
+
+[types]
+string = "string"
+number = "float"
+integer = "int"
+boolean = "bool"
+url = "string"
+email = "string"
+port = "int"
+enum = "'string'"
+
+[check]
+command = ["php", "-l", "{file}"]
+probe = ["php", "--version"]

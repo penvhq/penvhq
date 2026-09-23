@@ -30,7 +30,7 @@ Move values
 
 Set up a folder
   init       Create .env.schema from your .env and keep .env out of git
-  gen        Write the typed file for your language (ts, py)
+  gen        Write the typed file for your language (ts, py, go, rust, php, java, csharp)
   guard      Write the rules that keep AI tools out of .env
 
 Cloud
@@ -219,7 +219,7 @@ pub enum Command {
         strict: bool,
     },
 
-    /// Write the typed file for your language (ts, py)
+    /// Write the typed file for your language (ts, py, go, rust, php, java, csharp)
     Gen {
         /// The target name, such as ts or py; omit it to list the targets
         target: Option<String>,
