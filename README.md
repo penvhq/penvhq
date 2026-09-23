@@ -412,17 +412,20 @@ penv run -- npm run dev
 | plugin functions, e.g. `op(...)` | error naming the function; single-quote the value to pass it literally |
 | `exec(...)` | refused; a schema never starts a process |
 
-Measured on one project against varlock 1.20.0:
+Measured on one project against varlock 1.20.0 ([method and script](./docs/BENCHMARKS.md)):
 
 | | penv | varlock |
 |---|---|---|
-| `run -- true` | ~3 ms | ~340 ms |
+| `run -- true` | ~6 ms | ~370 ms |
 | Peak memory | 11 MB | 95 MB |
 | URL built from a secret | masked | warning; value exposed |
 | Password containing `@` in a URL | `${DB_PASSWORD \| urlencode}` | invalid URL |
 | `${KEY:-fallback}` | supported | fails |
 | `@assert`, `@rotate` | enforced | rejected as unknown decorators |
 | base64-encoded secret in a committed file | found by `penv scan` | missed by `varlock scan` |
+| `NEXT_PUBLIC_` key built from a secret | refused | accepted with a warning |
+| Server response holding a secret (Node.js, Python) | masked | sent unmasked |
+| `.env` with a secret, not gitignored | `check` fails | passes |
 
 Also in penv: a static binary with no Node.js, and masking inside Python processes.
 
