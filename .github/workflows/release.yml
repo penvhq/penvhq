@@ -24,11 +24,27 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME is version $tagged and Cargo.toml [workspace.package] says $declared. Bump one of them and tag again."
             exit 1
           fi
+      # The notes are this version's section of CHANGELOG.md; GitHub's list of
+      # pull requests follows them.
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          version=${GITHUB_REF_NAME#v}
+          awk -v v="$version" '
+            $0 == "## " v { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
       # The installers are assets too, so penv.cloud serves /install from the release
       # rather than from whatever main happens to hold.
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
+          body_path: notes.md
           generate_release_notes: true
           files: |
             install.sh

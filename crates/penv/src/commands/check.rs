@@ -142,17 +142,33 @@ pub fn run(
     }
     if only.is_none() {
         let (undeclared, unused) = code_usage(dir, &schema);
-        for (name, at) in undeclared {
-            let message = format!("{name} is read in {at} and not declared in .env.schema");
-            if strict {
+        if strict {
+            for (name, at) in &undeclared {
                 violations.push(Violation::new(
-                    &name,
+                    name,
                     "undeclared",
-                    format!("{message}. Declare it, or drop --strict to let it pass."),
+                    format!("{name} is read in {at} and not declared in .env.schema. Declare it, or drop --strict to let it pass."),
                 ));
-            } else {
-                notes.push(message);
             }
+        } else if undeclared.len() <= 10 {
+            for (name, at) in &undeclared {
+                notes.push(format!(
+                    "{name} is read in {at} and not declared in .env.schema"
+                ));
+            }
+        } else {
+            // A repository that has never had a schema reads dozens: one line, not a page.
+            let shown: Vec<String> = undeclared
+                .iter()
+                .take(10)
+                .map(|(n, at)| format!("{n} ({at})"))
+                .collect();
+            notes.push(format!(
+                "{} variables are read in code and not declared in .env.schema: {}, and {} more; penv check --strict lists them all",
+                undeclared.len(),
+                shown.join(", "),
+                undeclared.len() - 10
+            ));
         }
         if !unused.is_empty() {
             notes.push(format!(
