@@ -17,8 +17,8 @@ about = "Property names in the exported object: the environment key, or its came
 [[option]]
 name = "runtime"
 default = "node"
-values = ["node", "vite", "deno"]
-about = "The accessor every key is read through: process.env, import.meta.env or Deno.env.get."
+values = ["node", "vite", "deno", "workers"]
+about = "Where values are read: node (process.env, then Deno.env or Netlify.env), vite (import.meta.env for public keys), deno (Deno.env.get), workers (cloudflare:workers bindings)."
 
 [[suggest]]
 option = "runtime"
@@ -33,6 +33,10 @@ files = [
   "vite.config.ts",
   "vite.config.mts",
 ]
+
+[[suggest.rule]]
+value = "workers"
+files = ["wrangler.toml", "wrangler.json", "wrangler.jsonc"]
 
 [[suggest.rule]]
 value = "deno"

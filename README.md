@@ -264,16 +264,39 @@ penv gen ts
 penv gen py
 ```
 
-`gen ts` writes a typed `env`, a [Standard Schema](https://standardschema.dev) validator, and `publicEnv` for public keys:
+`gen ts` writes one typed `env` and a [Standard Schema](https://standardschema.dev) validator. The same import works in server and client code:
 
 ```ts
-import { env, publicEnv } from "./env";
+import { env } from "@/env";   // the path gen prints
 
-env.STRIPE_SECRET_KEY;         // server only
-publicEnv.NEXT_PUBLIC_API_URL; // literal access, inlined by the bundler
+env.STRIPE_SECRET_KEY;          // server: read at runtime; in the browser it throws "server-only"
+env.NEXT_PUBLIC_API_URL;        // client and server: inlined by the bundler
 ```
 
-`gen py` writes `penv_env.py`, on the standard library or with pydantic types. The output path is asked once and stored in `.penv/targets/` (commit it). `--out PATH` skips the prompt.
+Public keys are read by their literal name (`process.env.NEXT_PUBLIC_API_URL`), the form bundlers inline. Every other key is read by computed name (`process.env[name]`), which no bundler inlines, so a secret's value never reaches client code whatever the bundler. Checked with real builds of Next.js 16 (Node and edge routes), Vite 8 (client and SSR) and Parcel 2.16, in Chromium, and in workerd, Node 22, Bun 1.4 and Deno 2.9.
+
+| `runtime` option | Reads from |
+|---|---|
+| `node` (default) | `process.env`, then `Deno.env`, then `Netlify.env`: Node, Bun, Deno, Next.js, Netlify Edge, Workers with `nodejs_compat` |
+| `vite` | public keys from `import.meta.env`; the rest as `node` (SSR) |
+| `deno` | `Deno.env.get` |
+| `workers` | `import { env } from "cloudflare:workers"`: any Workers configuration |
+
+A bundler configured to inline the whole environment (`define: { "process.env": … }`) copies every value into the bundle whatever penv generates; the build scan fails that build.
+
+`gen py` writes `penv_env.py`, on the standard library or with pydantic types. The output path is asked once and kept in `.penv/config.toml`, with the target's options (commit it). `--out PATH` skips the prompt.
+
+```toml
+# .penv/config.toml
+[targets.ts]
+output = "src/env.ts"
+
+[targets.ts.options]
+key_case = "upper"
+runtime = "node"
+```
+
+`.penv/<name>.tmpl` overrides a target's template. A language penv does not ship is a `[targets.<name>]` section with `output`, `detect` and `types`, plus `.penv/<name>.tmpl`. [Design, language targets](./docs/Design.md#7-language-targets).
 
 ## Coding Agents
 
