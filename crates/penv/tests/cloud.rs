@@ -1729,7 +1729,7 @@ fn a_provider_penv_does_not_have_is_refused_by_name_before_any_request() {
 }
 
 #[test]
-fn the_providers_url_comes_from_config_and_penv_url_beats_it() {
+fn a_root_named_only_in_config_never_receives_a_token_from_the_environment() {
     let mock = Mock::new();
     mock.on("GET", ENVS, 200, &values_body());
     let config = format!("[providers.penv]\nurl = \"{}\"\n", mock.url());
@@ -1737,6 +1737,7 @@ fn the_providers_url_comes_from_config_and_penv_url_beats_it() {
         (".env.schema", &cloud_schema()),
         (".penv/config.toml", &config),
     ]);
+    // PENV_TOKEN is set by the harness; only config.toml names the root.
     let out = workspace
         .command(&mock)
         .env_remove("PENV_URL")
@@ -1745,24 +1746,75 @@ fn the_providers_url_comes_from_config_and_penv_url_beats_it() {
         .arg(ECHO_VALUES)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert_eq!(
-        mock.hits("GET", ENVS).len(),
-        1,
-        "config.toml sent the read to the mock"
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains("credential_withheld") && said.contains("PENV_URL="),
+        "{said}"
+    );
+    assert!(!said.contains(TOKEN), "the token is never printed");
+    assert!(
+        mock.requests().is_empty(),
+        "nothing at all reached the config-named root"
     );
 
-    std::fs::write(
-        workspace.path().join(".penv/config.toml"),
-        "[providers.penv]\nurl = \"http://127.0.0.1:9\"\n",
-    )
-    .unwrap();
+    // Naming the same root in PENV_URL is a choice made on purpose: the token goes.
     let out = run_values(&workspace, &mock, &[]);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "PENV_URL wins: {}",
-        stderr(&out)
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(mock.hits("GET", ENVS).len(), 1);
+}
+
+#[test]
+fn penv_url_beats_the_root_config_names() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (
+            ".penv/config.toml",
+            "[providers.penv]\nurl = \"http://127.0.0.1:9\"\n",
+        ),
+    ]);
+    let out = run_values(&workspace, &mock, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(mock.hits("GET", ENVS).len(), 1);
+}
+
+#[test]
+fn ci_and_aws_credentials_are_withheld_from_a_config_named_root_too() {
+    let mock = Mock::new();
+    let config = format!("[providers.penv]\nurl = \"{}\"\n", mock.url());
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".penv/config.toml", &config),
+    ]);
+    let kinds: [&[(&str, &str)]; 2] = [
+        &[("PENV_OIDC_TOKEN", "eyJ.FAKE.jwt")],
+        &[
+            ("AWS_ACCESS_KEY_ID", "AKIAFAKE"),
+            ("AWS_SECRET_ACCESS_KEY", "FAKEsecret"),
+        ],
+    ];
+    for vars in kinds {
+        let mut command = workspace.command(&mock);
+        command.env_remove("PENV_URL").env_remove("PENV_TOKEN");
+        for (k, v) in vars {
+            command.env(k, v);
+        }
+        let out = command
+            .args(["run", "--"])
+            .args(SHELL)
+            .arg(ECHO_VALUES)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(5), "{vars:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("credential_withheld")
+                || stdout(&out).contains("credential_withheld")
+        );
+    }
+    assert!(
+        mock.requests().is_empty(),
+        "no proof of any kind reached it"
     );
-    assert_eq!(mock.hits("GET", ENVS).len(), 2);
 }

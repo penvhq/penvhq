@@ -27,6 +27,8 @@ penv run --provider penv -- npm run dev      # another one, for this command
 | Provider | `--provider`, the `@penv=` prefix, `penv` |
 | API root | `PENV_URL` (provider `penv` only), `[providers.<slug>] url`, the provider's default |
 
+A root that only `.penv/config.toml` names receives only a login or keypair this machine holds for that root. `PENV_TOKEN`, CI OIDC tokens and AWS proofs are withheld from it: a committed file can be changed in a pull request, and CI would otherwise hand its credentials to whatever URL the pull request names. The command exits 5 with `credential_withheld`. To send them on purpose, name the root in `PENV_URL`.
+
 A slug is a lowercase word: `a-z`, `0-9`, `-`, starting with a letter, at most 32 characters. A slug penv does not have is refused by name before any request is sent. Local files, masking, taint, `check`, the build scan and the agent rules work the same whatever the provider.
 
 ## What a provider is
@@ -80,7 +82,7 @@ Rules every client follows:
 2. **No redirects** to another host. A redirect is refused, not followed.
 3. **Timeouts** on every request; a read that times out fails the command. It never falls back to an empty environment.
 4. **Values stay out of errors, logs and panics.** An error names the provider, the address and the HTTP status or the provider's error code.
-5. **Credentials are never written to disk in plain text.** A login goes to the OS keychain, keyed by API root, so an overridden `url` never receives a login stored for another root. A token in the environment goes to whichever root is chosen, so an override in a committed `config.toml` is reviewed like any code change.
+5. **Credentials are never written to disk in plain text.** A login goes to the OS keychain, keyed by API root, so an overridden `url` never receives a login stored for another root. Credentials from the environment go only to the provider's default root or to one named in the environment, never to a root only `config.toml` names.
 6. **Trust** follows penv: the compiled-in roots, or `SSL_CERT_FILE` under its agent rule.
 7. **One read per address per command**; penv caches across commands only where the provider's terms allow.
 

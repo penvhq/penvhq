@@ -1,7 +1,8 @@
 //! Which provider a command reads from, and at what address. `--provider` wins,
 //! then the prefix of `@penv=` in the schema, then penv.cloud. The API root is
 //! `PENV_URL` (penv.cloud only), then `[providers.<slug>] url` in
-//! `.penv/config.toml`, then the provider's own default.
+//! `.penv/config.toml`, then the provider's own default. Credentials from the
+//! environment never go to a root that only `config.toml` names.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -23,6 +24,11 @@ pub fn remember(flag: Option<&str>, cwd: &Path) {
 pub struct Chosen {
     pub provider: &'static Provider,
     pub url: String,
+    /// The root came from `.penv/config.toml`. A committed file can be changed
+    /// in a pull request, so credentials read from the environment (a token,
+    /// CI OIDC, an AWS proof) are not sent there; only a login this machine
+    /// holds for that root is.
+    pub from_config: bool,
 }
 
 pub fn chosen(env: &Env) -> Result<Chosen, CliError> {
@@ -55,8 +61,14 @@ pub fn chosen(env: &Env) -> Result<Chosen, CliError> {
         Some(dir) => crate::config::Config::load(&dir)?.provider_url(provider.slug),
         None => None,
     };
-    let url = from_env
-        .or(from_config)
-        .unwrap_or_else(|| provider.default_url.to_string());
-    Ok(Chosen { provider, url })
+    let (url, from_config) = match (from_env, from_config) {
+        (Some(url), _) => (url, false),
+        (None, Some(url)) => (url, true),
+        (None, None) => (provider.default_url.to_string(), false),
+    };
+    Ok(Chosen {
+        provider,
+        url,
+        from_config,
+    })
 }

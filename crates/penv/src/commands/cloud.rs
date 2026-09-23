@@ -24,6 +24,8 @@ pub struct Cloud {
     pub keychain: Box<dyn Keychain>,
     pub cache_dir: Option<PathBuf>,
     pub now: u64,
+    /// The root came from config.toml: environment credentials stay home.
+    pub withhold_env: bool,
 }
 
 impl Cloud {
@@ -39,6 +41,7 @@ impl Cloud {
         };
         Ok(Cloud {
             cache_dir: penv_cloud::cache_dir(env.as_map()),
+            withhold_env: chosen.from_config,
             api,
             keychain,
             now: SystemClock.now(),
@@ -47,6 +50,30 @@ impl Cloud {
 
     /// The credential this host can prove, whichever kind that turns out to be.
     pub fn bearer(&self, env: &Env, org: Option<&str>) -> Result<Bearer, CliError> {
+        if self.withhold_env {
+            // Only what this machine holds for this root: its login or keypair.
+            let none = std::collections::BTreeMap::new();
+            return match credential::resolve(&none, self.keychain.as_ref(), org) {
+                Ok(kind) => kind.obtain(&self.api, self.now).map_err(|e| refuse(e, None)),
+                Err(penv_cloud::CloudError::NoCredential)
+                    if credential::present(env.as_map(), self.keychain.as_ref()) =>
+                {
+                    Err(CliError::new(
+                        "credential_withheld",
+                        format!(
+                            "{} comes from .penv/config.toml, so penv does not send it PENV_TOKEN, a CI token or an AWS proof.",
+                            self.api.base_url()
+                        ),
+                        format!(
+                            "Sign in there with penv login, or set PENV_URL={} to send those credentials on purpose.",
+                            self.api.base_url()
+                        ),
+                    )
+                    .with_exit(Exit::NoCredential))
+                }
+                Err(e) => Err(refuse(e, None)),
+            };
+        }
         credential::resolve(env.as_map(), self.keychain.as_ref(), org)
             .and_then(|kind| kind.obtain(&self.api, self.now))
             .map_err(|e| refuse(e, None))
