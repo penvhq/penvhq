@@ -81,15 +81,47 @@ impl Head {
             .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"))
     }
 
+    /// The one length the message declares. Two that disagree, a list, or a
+    /// length beside chunked encoding is how requests are smuggled past a
+    /// proxy, so each is refused rather than guessed at.
     fn length(&self) -> io::Result<Option<usize>> {
-        match self.get("content-length") {
-            None => Ok(None),
-            Some(v) => v
+        let mut found: Option<usize> = None;
+        for (_, v) in self
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        {
+            let n = v
                 .trim()
                 .parse::<usize>()
-                .map(Some)
-                .map_err(|_| bad("a Content-Length that is not a number")),
+                .map_err(|_| bad("a Content-Length that is not one number"))?;
+            if found.is_some_and(|f| f != n) {
+                return Err(bad("two Content-Length headers that disagree"));
+            }
+            found = Some(n);
         }
+        Ok(found)
+    }
+
+    fn framing_conflict(&self) -> io::Result<()> {
+        let encodings: Vec<&str> = self
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("transfer-encoding"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        if encodings.is_empty() {
+            return Ok(());
+        }
+        let joined = encodings.join(",").to_ascii_lowercase();
+        let last = joined.rsplit(',').next().unwrap_or("").trim();
+        if last != "chunked" {
+            return Err(bad("a Transfer-Encoding that does not end in chunked"));
+        }
+        if self.get("content-length").is_some() {
+            return Err(bad("a Content-Length beside Transfer-Encoding"));
+        }
+        Ok(())
     }
 
     pub fn status(&self) -> Option<u16> {
@@ -178,6 +210,7 @@ pub enum Framing {
 }
 
 pub fn request_framing(head: &Head) -> io::Result<Framing> {
+    head.framing_conflict()?;
     if head.chunked() {
         return Ok(Framing::Chunked);
     }
@@ -200,6 +233,7 @@ pub fn response_framing(head: &Head, request_method: &str) -> io::Result<Framing
     {
         return Ok(Framing::None);
     }
+    head.framing_conflict()?;
     if head.chunked() {
         return Ok(Framing::Chunked);
     }
@@ -463,6 +497,28 @@ mod tests {
         .unwrap();
         assert!(request_framing(&head).is_err());
         assert!(read_head(&mut Cursor::new(Vec::new())).unwrap().is_none());
+    }
+
+    #[test]
+    fn framing_a_proxy_could_be_smuggled_through_is_refused() {
+        for head in [
+            "POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length: 5, 5\r\n\r\n",
+            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n",
+            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked, identity\r\n\r\n",
+            "POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n",
+        ] {
+            let parsed = read_head(&mut Cursor::new(head.as_bytes().to_vec()))
+                .unwrap()
+                .unwrap();
+            assert!(request_framing(&parsed).is_err(), "{head:?}");
+        }
+        let same = read_head(&mut Cursor::new(
+            b"POST / HTTP/1.1\r\nContent-Length: 5\r\ncontent-length: 5\r\n\r\n".to_vec(),
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(request_framing(&same).unwrap(), Framing::Length(5));
     }
 
     #[test]

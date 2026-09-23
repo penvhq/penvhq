@@ -84,3 +84,24 @@ fn check_names_undeclared_reads_and_unused_keys_and_strict_fails_on_the_first() 
     assert!(text.contains("fail REDIS_URL"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn many_undeclared_reads_are_one_note_and_strict_names_every_one() {
+    let code: String = (0..12).map(|i| format!("process.env.KEY_{i};\n")).collect();
+    let dir = workspace(&[
+        (".env.schema", "# @type=string @sensitive=false\nA=b\n"),
+        ("src/a.ts", &code),
+        ("src/b.ts", "process.env.A;\n"),
+    ]);
+    let (code_ok, text) = check(&dir, &[]);
+    assert_eq!(code_ok, 0, "{text}");
+    assert_eq!(text.matches("not declared").count(), 1, "{text}");
+    assert!(
+        text.contains("12 variables are read in code") && text.contains("and 2 more"),
+        "{text}"
+    );
+    let (code_strict, text) = check(&dir, &["--strict"]);
+    assert_eq!(code_strict, 3);
+    assert_eq!(text.matches("fail KEY_").count(), 12, "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

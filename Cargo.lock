@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "penv"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 dependencies = [
  "clap",
  "cliclack",
@@ -1402,11 +1402,11 @@ dependencies = [
 
 [[package]]
 name = "penv-agent"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 
 [[package]]
 name = "penv-cloud"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "penv-dotenv"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 dependencies = [
  "penv-schema",
  "thiserror",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "penv-guards"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 dependencies = [
  "minijinja",
  "penv-schema",
@@ -1442,25 +1442,25 @@ dependencies = [
 
 [[package]]
 name = "penv-mask"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 
 [[package]]
 name = "penv-release"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 dependencies = [
  "penv-cloud",
 ]
 
 [[package]]
 name = "penv-schema"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "penv-targets"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 dependencies = [
  "minijinja",
  "penv-schema",
