@@ -123,6 +123,14 @@ DATABASE_URL=postgres://${DB_HOST}:${DB_PORT:-5432}/app
 
 # @type=url
 REPLICA_URL=penv(production/DATABASE_URL)
+
+# @type=url @sensitive=false
+POOL_URL=postgres://app:${DB_PASS | urlencode}@pool/app   # still masked: built from DB_PASS
+
+# @type=string
+SESSION_SECRET=random(32)                                 # generated on first run, kept in .env.local
+
+# @assert(if(forEnv(production), startsWith($STRIPE_SECRET_KEY, sk_live_), true), "test Stripe key in production")
 ```
 
 Functions, `${KEY}` expansion and `penv()` addresses: [Design, section 2](./docs/Design.md#values). Under an `@penv=` header, a local file still wins over the cloud on the machine that holds it, and `run` names every key it replaced.

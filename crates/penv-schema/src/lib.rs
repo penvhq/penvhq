@@ -9,7 +9,7 @@ pub mod rotate;
 mod validate;
 
 pub use ir::{
-    BaseType, Diagnostic, Import, Key, PUBLIC_PREFIXES, RequiredDefault, Schema, Type,
+    Assert, BaseType, Diagnostic, Import, Key, PUBLIC_PREFIXES, RequiredDefault, Schema, Type,
     is_public_prefixed, is_valid_key_name,
 };
 pub use parse::parse;

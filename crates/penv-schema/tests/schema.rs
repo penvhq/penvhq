@@ -549,3 +549,38 @@ fn required_for_an_environment_is_settled_per_environment_and_round_trips() {
     assert!(prod.get("A").unwrap().required && prod.get("B").unwrap().required);
     assert_eq!(parse(&render(&schema)).unwrap(), schema);
 }
+
+#[test]
+fn asserts_parse_from_any_block_and_round_trip() {
+    let source = "# @schema=1\n# @assert(not(eq($PORT, $ADMIN_PORT)), \"PORT and ADMIN_PORT collide\")\n\n# @type=string @assert(if(forEnv(production), startsWith($STRIPE_KEY, sk_live_), true), \"test key in production\")\nSTRIPE_KEY=\n";
+    let once = parse(source).unwrap();
+    assert_eq!(once.asserts.len(), 2);
+    assert_eq!(once.asserts[0].expr, "not(eq($PORT, $ADMIN_PORT))");
+    assert_eq!(once.asserts[1].message, "test key in production");
+    let text = |s: &penv_schema::Schema| {
+        s.asserts
+            .iter()
+            .map(|a| (a.expr.clone(), a.message.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(text(&parse(&render(&once)).unwrap()), text(&once));
+    let err = parse("# @assert(eq($A, b))\nA=\n").unwrap_err();
+    assert!(
+        err[0].message.contains("@assert takes"),
+        "{}",
+        err[0].message
+    );
+}
+
+#[test]
+fn import_reads_varlocks_pick_list_and_the_positional_form() {
+    let picked = parse(
+        "# @import(\"./shared/.env.schema\", pick=[API_KEY, API_URL])\n\n# @type=string\nA=\n",
+    )
+    .unwrap();
+    assert_eq!(picked.imports[0].path, "./shared/.env.schema");
+    assert_eq!(picked.imports[0].keys, ["API_KEY", "API_URL"]);
+    let positional =
+        parse("# @import(./shared/.env.schema, API_KEY)\n\n# @type=string\nA=\n").unwrap();
+    assert_eq!(positional.imports[0].keys, ["API_KEY"]);
+}

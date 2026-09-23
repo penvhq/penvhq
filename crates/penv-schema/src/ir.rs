@@ -47,6 +47,15 @@ impl RequiredDefault {
     }
 }
 
+/// `@assert(expression, "message")`: a check across keys, written in any block.
+/// The expression uses the value functions; the message is shown when it is false.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assert {
+    pub expr: String,
+    pub message: String,
+    pub line: u32,
+}
+
 /// `@import(path, KEY, ...)`: another schema's keys, all of them when none are named.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Import {
@@ -65,6 +74,7 @@ pub struct Schema {
     /// `@currentEnv=$KEY`: the key whose value names the environment.
     pub current_env: Option<String>,
     pub imports: Vec<Import>,
+    pub asserts: Vec<Assert>,
     pub keys: Vec<Key>,
     /// Lines penv read past: varlock-only or unknown decorators, types and constraints.
     pub warnings: Vec<Diagnostic>,
@@ -80,6 +90,7 @@ impl Default for Schema {
             default_required: RequiredDefault::Yes,
             current_env: None,
             imports: Vec::new(),
+            asserts: Vec::new(),
             keys: Vec::new(),
             warnings: Vec::new(),
         }
@@ -117,6 +128,7 @@ impl Schema {
             "defaultRequired": self.default_required.to_json(),
             "currentEnv": self.current_env,
             "imports": self.imports.iter().map(|i| json!({ "path": i.path, "keys": i.keys })).collect::<Vec<_>>(),
+                        "asserts": self.asserts.iter().map(|a| json!({ "expr": a.expr, "message": a.message })).collect::<Vec<_>>(),
             "keys": self.keys.iter().map(Key::to_json).collect::<Vec<_>>(),
         })
     }

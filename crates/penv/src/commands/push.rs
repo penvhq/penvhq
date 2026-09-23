@@ -75,11 +75,14 @@ pub fn run(
     let pushed: Vec<String> = layers
         .raw
         .iter()
-        .filter(|(_, raw)| !raw.text.is_empty())
+        // `random()` is this machine's own value: it is generated here, never sent.
+        .filter(|(_, raw)| !raw.text.is_empty() && !raw.text.trim_start().starts_with("random("))
         .map(|(name, _)| name.clone())
         .collect();
     let read = layers.read.clone();
-    let (mut values, errors) = source::finish(&schema, layers.raw, env, &wanted);
+    let (mut values, mut errors) = source::finish(&schema, layers.raw, env, &wanted);
+    // Only what is pushed has to compute; a default or a random() stays behind.
+    errors.retain(|e| pushed.contains(&e.key));
     source::warn_unset(&errors);
     if source::failed(&errors) {
         return Err(source::unresolved(&errors));

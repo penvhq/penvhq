@@ -69,14 +69,26 @@ pub fn run(
 
     let environment = source::environment(environment, process_env, &schema, dir);
     let mut fetcher = cloud::Fetcher::new(process_env, &detection);
-    let resolved = source::values(&schema, dir, &environment, process_env, &mut fetcher)?;
+    let resolved = source::values_with(
+        &schema,
+        dir,
+        &environment,
+        process_env,
+        &mut fetcher,
+        source::Generate::Yes,
+    )?;
     source::report(&resolved, dir);
     if source::failed(&resolved.errors) {
         return Err(source::unresolved(&resolved.errors));
     }
+    let tainted = resolved.tainted.clone();
+    let failed_asserts = resolved.failed_asserts.clone();
     let values = resolved.values;
 
-    let violations = validate(&schema.for_environment(&environment), &values);
+    let mut violations = validate(&schema.for_environment(&environment), &values);
+    violations.extend(failed_asserts.iter().map(|(line, message)| {
+        penv_schema::Violation::new(&format!("@assert line {line}"), "assert", message.clone())
+    }));
     if !violations.is_empty() {
         let style = out.style();
         let text = violations
@@ -103,6 +115,18 @@ pub fn run(
         );
     }
 
+    if mask {
+        let short = source::too_short_to_mask(&schema, &tainted, &values);
+        if !short.is_empty() {
+            ui::warn(&format!(
+                "{} {} sensitive and shorter than {} characters, so it cannot be masked; mark it @sensitive=false or use a longer value.",
+                short.join(", "),
+                if short.len() == 1 { "is" } else { "are" },
+                penv_mask::MIN_SECRET_LEN
+            ));
+        }
+    }
+
     let drift = extras(&schema, &values);
     if !drift.is_empty() {
         ui::warn(&format!(
@@ -112,7 +136,7 @@ pub fn run(
     }
 
     let secrets = if mask {
-        masked_values(&schema, &values)
+        masked_values(&schema, &values, &tainted)
     } else {
         Vec::new()
     };
@@ -121,11 +145,16 @@ pub fn run(
 }
 
 /// Everything the child is handed except the keys the schema marks public. A key
-/// the schema never heard of is masked; `check` names it as drift.
-fn masked_values(schema: &Schema, values: &Values) -> Vec<String> {
+/// the schema never heard of is masked; `check` names it as drift. A public key
+/// computed from a sensitive one is masked too.
+fn masked_values(
+    schema: &Schema,
+    values: &Values,
+    tainted: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
     values
         .iter()
-        .filter(|(name, _)| schema.get(name).is_none_or(|key| key.sensitive))
+        .filter(|(name, _)| source::is_sensitive(schema, tainted, name))
         .map(|(_, value)| value)
         .filter(|value| !value.is_empty())
         .cloned()
@@ -388,7 +417,7 @@ mod tests {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
 
-        let masked = masked_values(&schema, &values);
+        let masked = masked_values(&schema, &values, &Default::default());
         assert!(
             masked.contains(&"left_over_FAKE".to_string()),
             "a key the schema never heard of must still be masked: {masked:?}"

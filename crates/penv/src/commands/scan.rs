@@ -44,7 +44,7 @@ pub fn run(
         .values
         .iter()
         .filter(|(name, value)| {
-            !value.is_empty() && schema.get(name).is_none_or(|key| key.sensitive)
+            !value.is_empty() && source::is_sensitive(&schema, &resolved.tainted, name)
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();

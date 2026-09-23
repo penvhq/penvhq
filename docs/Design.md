@@ -70,7 +70,21 @@ REPLICA_URL=penv(production/DATABASE_URL)
 LITERAL='${not expanded}'
 ```
 
-Functions: `ref`, `concat`, `fallback`, `if`, `eq`, `not`, `isEmpty`, `forEnv`, `penv`. Any other `name(...)` value, a varlock plugin's `op(...)` included, is a validation failure naming the function rather than a literal string handed to the process; single-quote it to pass it as written. `exec` is refused by name: a schema never starts a process. A cycle, a chain deeper than 128 references, or a value that cannot be computed is a validation failure naming the key and never the value. A schema default may be computed the same way.
+Functions: `ref`, `concat`, `fallback`, `if`, `match`, `eq`, `not`, `and`, `or`, `isEmpty`, `startsWith`, `endsWith`, `forEnv`, `penv`, `random`.
+
+```dotenv
+API=match($APP_ENV, production: api.acme.com, staging: stg.acme.com, _: localhost:3000)
+DATABASE_URL=postgres://app:${DB_PASS | urlencode}@db/app     # filters: urlencode, base64, lower, upper, trim
+SESSION_SECRET=random(32)                                      # generated once per machine
+# @assert(if(forEnv(production), startsWith($STRIPE_KEY, sk_live_), true), "test key in production")
+```
+
+- `match(subject, label: value, ..., _: value)`: the first label equal to the subject wins, `_` otherwise; no match and no `_` is a validation failure. A case needs a space after its `:`, so `localhost:3000` is a value, not a case.
+- `${KEY | filter | ...}` runs filters left to right. An unknown filter is a validation failure naming it. A default cannot hold a `|`.
+- `random(N)`, N from 8 to 512, letters and digits from the operating system's generator. `run` generates it once and keeps it in `.env.local` (`.env.test.local` for test); later runs read it back. `check`, `ls` and `scan` never write it; `check` notes it as pending. `push` never sends it.
+- `@assert(expression, "message")`, in any block, is checked by `run` (exit 3 before the child starts) and `check`. Only the message is shown; a check that cannot run says so without values.
+- **Taint.** A value computed from a sensitive key, directly or through other keys, filters or `penv()`, is masked like a sensitive one, whatever its own `@sensitive` says; `ls` shows it as sensitive and `check` notes it. A key read only to decide (an `if` condition, a `match` subject, `eq`, `startsWith` and the other true-or-false functions) does not taint the value chosen. `penv(env/KEY)` inherits KEY's sensitivity; an address penv cannot judge is sensitive.
+- `check` notes a schema that uses penv-only features (`@rotate`, `@assert`, `random()`, `match()`, `penv()`, filters): varlock will not load it. Any other `name(...)` value, a varlock plugin's `op(...)` included, is a validation failure naming the function rather than a literal string handed to the process; single-quote it to pass it as written. `exec` is refused by name: a schema never starts a process. A cycle, a chain deeper than 128 references, or a value that cannot be computed is a validation failure naming the key and never the value. A schema default may be computed the same way.
 
 Precedence, highest first: the process environment (a key it already sets keeps that value, as dotenv and varlock do), then the value files, then the cloud, then the schema default. The key `@currentEnv` names always holds the environment the command is for, so `--env production` and `$APP_ENV` agree. A `$KEY` that nothing sets resolves empty and is reported by the key holding it, never by the referenced name, which in an unquoted password is part of the secret. `@required=forEnv(a, b)` and `@optional=forEnv(a, b)` settle per environment.
 

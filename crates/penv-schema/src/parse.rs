@@ -1,5 +1,5 @@
 use crate::ir::{
-    BaseType, Diagnostic, Import, Key, RequiredDefault, SCHEMA_VERSION, Schema, Type,
+    Assert, BaseType, Diagnostic, Import, Key, RequiredDefault, SCHEMA_VERSION, Schema, Type,
     is_public_prefixed, is_valid_key_name,
 };
 use crate::resolve::is_expression;
@@ -67,6 +67,7 @@ impl Block {
                     | "defaultRequired"
                     | "currentEnv"
                     | "import"
+                    | "assert"
             ) || VARLOCK_HEADER.contains(&d.name.as_str())
         })
     }
@@ -76,6 +77,32 @@ impl Parser {
     fn error(&mut self, line: u32, column: u32, code: &str, message: impl Into<String>) {
         self.diags
             .push(Diagnostic::new(line, column, code, message));
+    }
+
+    /// `@assert(expression, "message")`, from a header or a key block alike. The
+    /// message is the last argument; the expression may hold commas of its own.
+    fn read_assert(&mut self, d: &Decorator) {
+        let text = d.value.as_deref().filter(|_| d.call).unwrap_or_default();
+        let parsed = last_top_level_comma(text)
+            .map(|at| (text[..at].trim(), unquote(text[at + 1..].trim())));
+        match parsed {
+            Some((expr, message)) if !expr.is_empty() && !message.is_empty() => {
+                self.schema.asserts.push(Assert {
+                    expr: expr.to_string(),
+                    message,
+                    line: d.line,
+                });
+            }
+            _ => self.error(
+                d.line,
+                d.column,
+                "invalid_decorator",
+                format!(
+                    "line {}: @assert takes an expression and a message, such as @assert(not(eq($PORT, $ADMIN_PORT)), \"PORT and ADMIN_PORT collide\")",
+                    d.line
+                ),
+            ),
+        }
     }
 
     /// Read past, reported, never fatal: a varlock schema must parse here.
@@ -342,15 +369,16 @@ impl Parser {
                     ),
                 },
                 "import" => {
-                    let args: Vec<String> = d
-                        .value
-                        .as_deref()
-                        .map(split_args)
-                        .unwrap_or_default()
+                    // varlock's current form is `pick=[A, B]`; the older
+                    // positional keys still read.
+                    let text = d.value.clone().unwrap_or_default();
+                    let (text, picked) = take_pick(&text);
+                    let mut args: Vec<String> = split_args(&text)
                         .iter()
                         .map(|a| unquote(a.trim()))
                         .filter(|a| !a.is_empty())
                         .collect();
+                    args.extend(picked);
                     match args.split_first() {
                         Some((path, keys)) if d.call => self.schema.imports.push(Import {
                             path: path.clone(),
@@ -368,6 +396,7 @@ impl Parser {
                         ),
                     }
                 }
+                "assert" => self.read_assert(d),
                 "plugin" => self.warn(
                     d,
                     "varlock_only",
@@ -574,6 +603,7 @@ impl Parser {
                         key.dynamic = Some(d.name == "dynamic");
                     }
                 }
+                "assert" => self.read_assert(d),
                 other => self.warn(
                     d,
                     "unknown_decorator",
@@ -770,4 +800,43 @@ fn is_divider(trimmed: &str) -> bool {
     trimmed
         .strip_prefix('#')
         .is_some_and(|rest| rest.trim_start().starts_with("---"))
+}
+
+/// The last `,` outside quotes and brackets.
+fn last_top_level_comma(text: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut last = None;
+    for (i, c) in text.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None => match c {
+                '"' | '\'' => quote = Some(c),
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => last = Some(i),
+                _ => {}
+            },
+        }
+    }
+    last
+}
+
+/// Pull `pick=[A, B]` out of `@import(...)` arguments, returning the rest and the keys.
+fn take_pick(text: &str) -> (String, Vec<String>) {
+    let Some(start) = text.find("pick=[") else {
+        return (text.to_string(), Vec::new());
+    };
+    let Some(len) = text[start..].find(']') else {
+        return (text.to_string(), Vec::new());
+    };
+    let inner = &text[start + "pick=[".len()..start + len];
+    let keys = inner
+        .split(',')
+        .map(|k| unquote(k.trim()))
+        .filter(|k| !k.is_empty())
+        .collect();
+    let rest = format!("{}{}", &text[..start], &text[start + len + 1..]);
+    (rest, keys)
 }

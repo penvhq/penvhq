@@ -23,6 +23,10 @@ pub fn render(schema: &Schema) -> String {
     if let Some(key) = &schema.current_env {
         let _ = writeln!(out, "# @currentEnv=${key}");
     }
+    for assert in &schema.asserts {
+        let message = assert.message.replace('\\', "\\\\").replace('"', "\\\"");
+        let _ = writeln!(out, "# @assert({}, \"{message}\")", assert.expr);
+    }
     for import in &schema.imports {
         let args: Vec<String> = std::iter::once(&import.path)
             .chain(&import.keys)

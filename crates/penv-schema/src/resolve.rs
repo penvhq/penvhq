@@ -7,9 +7,26 @@ use crate::validate::Values;
 
 /// The functions penv evaluates. `exec` is refused by name: a schema never
 /// starts a process.
-pub const FUNCTIONS: [&str; 9] = [
-    "ref", "concat", "fallback", "if", "eq", "not", "isEmpty", "forEnv", "penv",
+pub const FUNCTIONS: [&str; 15] = [
+    "ref",
+    "concat",
+    "fallback",
+    "if",
+    "eq",
+    "not",
+    "isEmpty",
+    "forEnv",
+    "penv",
+    "match",
+    "and",
+    "or",
+    "startsWith",
+    "endsWith",
+    "random",
 ];
+
+/// Filters a `${KEY | filter}` reference runs, left to right.
+pub const FILTERS: [&str; 5] = ["urlencode", "base64", "lower", "upper", "trim"];
 
 /// How deep references may chain before penv stops rather than exhaust the stack.
 pub const MAX_DEPTH: usize = 128;
@@ -62,6 +79,25 @@ pub fn resolve(
     environment: &str,
     fetched: &Values,
 ) -> (Values, Vec<ResolveError>) {
+    let out = resolve_full(raw, outside, environment, fetched);
+    (out.values, out.errors)
+}
+
+/// Everything one resolution learned: the values, what failed, and which keys
+/// (or `penv:<address>` reads) each value was computed from.
+#[derive(Debug, Clone, Default)]
+pub struct Resolution {
+    pub values: Values,
+    pub errors: Vec<ResolveError>,
+    pub deps: BTreeMap<String, BTreeSet<String>>,
+}
+
+pub fn resolve_full(
+    raw: &BTreeMap<String, Raw>,
+    outside: &Values,
+    environment: &str,
+    fetched: &Values,
+) -> Resolution {
     let mut run = Run {
         raw,
         outside,
@@ -72,11 +108,43 @@ pub fn resolve(
         stack: Vec::new(),
         errors: Vec::new(),
         quiet: 0,
+        deps: BTreeMap::new(),
+        control: 0,
     };
     for name in raw.keys() {
         run.value(name);
     }
-    (run.done, run.errors)
+    Resolution {
+        values: run.done,
+        errors: run.errors,
+        deps: run.deps,
+    }
+}
+
+/// Keys whose value was computed, however indirectly, from a sensitive key or a
+/// `penv()` read of one: a URL built from a password is a password.
+pub fn tainted(
+    deps: &BTreeMap<String, BTreeSet<String>>,
+    sensitive: impl Fn(&str) -> bool,
+) -> BTreeSet<String> {
+    let source = |dep: &str| match dep.strip_prefix("penv:") {
+        // `penv(env/KEY)` inherits KEY's sensitivity; an address penv cannot
+        // judge is treated as sensitive.
+        Some(address) => sensitive(address.rsplit('/').next().unwrap_or(address)),
+        None => sensitive(dep),
+    };
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let before = out.len();
+        for (key, from) in deps {
+            if !out.contains(key) && from.iter().any(|d| source(d) || out.contains(d)) {
+                out.insert(key.clone());
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
 }
 
 /// Every `penv(address)` the computed values name, so the caller can fetch them
@@ -106,6 +174,7 @@ fn collect(expr: &Expr, out: &mut Vec<String>) {
         }
         Expr::Template(parts) => parts.iter().for_each(|p| collect(p, out)),
         Expr::Default { or, .. } => collect(or, out),
+        Expr::Filter { inner, .. } => collect(inner, out),
         Expr::Text(_) | Expr::Ref(_) => {}
     }
 }
@@ -119,6 +188,11 @@ enum Expr {
         key: String,
         or: Box<Expr>,
         when_empty: bool,
+    },
+    /// `${KEY | urlencode | lower}`.
+    Filter {
+        inner: Box<Expr>,
+        filters: Vec<String>,
     },
     Template(Vec<Expr>),
     Call(String, Vec<Expr>),
@@ -136,6 +210,10 @@ struct Run<'a> {
     /// Inside `fallback`, `isEmpty`, an `if` condition or `${KEY-or}`, where an
     /// unset key is the point rather than a mistake.
     quiet: usize,
+    deps: BTreeMap<String, BTreeSet<String>>,
+    /// Inside a condition: a key read here decides which value is chosen but is
+    /// not copied into it, so it does not taint the result.
+    control: usize,
 }
 
 impl Run<'_> {
@@ -174,9 +252,14 @@ impl Run<'_> {
                 return None;
             }
         };
+        // Another key is computed on its own terms: a condition or fallback
+        // around the reference to it does not reach inside it.
+        let (quiet, control) = (self.quiet, self.control);
+        (self.quiet, self.control) = (0, 0);
         self.stack.push(name.to_string());
         let result = self.eval(&expr);
         self.stack.pop();
+        (self.quiet, self.control) = (quiet, control);
         match result {
             Ok(v) => {
                 self.done.insert(name.to_string(), v.clone());
@@ -210,6 +293,16 @@ impl Run<'_> {
         }
     }
 
+    /// Note that the value being computed reads `dep`.
+    fn depend(&mut self, dep: &str) {
+        if self.control > 0 {
+            return;
+        }
+        if let Some(key) = self.stack.last().cloned() {
+            self.deps.entry(key).or_default().insert(dep.to_string());
+        }
+    }
+
     /// Evaluate where an unset key is expected.
     fn quietly(&mut self, expr: &Expr) -> Result<String, String> {
         self.quiet += 1;
@@ -235,6 +328,7 @@ impl Run<'_> {
                 if self.raw.contains_key(name) && self.value(name).is_none() {
                     return Err(format!("{name} could not be computed"));
                 }
+                self.depend(name);
                 let found = self.value(name);
                 if found.is_none() && self.quiet == 0 {
                     self.unset(name);
@@ -254,12 +348,43 @@ impl Run<'_> {
                     Ok(value)
                 }
             }
+            Expr::Filter { inner, filters } => {
+                let mut value = self.eval(inner)?;
+                for filter in filters {
+                    value = apply_filter(filter, &value)?;
+                }
+                Ok(value)
+            }
             Expr::Template(parts) => parts.iter().map(|p| self.eval(p)).collect(),
             Expr::Call(name, args) => self.call(name, args),
         }
     }
 
     fn call(&mut self, name: &str, args: &[Expr]) -> Result<String, String> {
+        // A function that answers true or false copies no value out of its
+        // arguments: what it reads is control, not data.
+        let decides = matches!(
+            name,
+            "eq" | "not" | "isEmpty" | "forEnv" | "and" | "or" | "startsWith" | "endsWith"
+        );
+        if decides {
+            self.control += 1;
+        }
+        let out = self.call_inner(name, args);
+        if decides {
+            self.control -= 1;
+        }
+        out
+    }
+
+    fn deciding(&mut self, expr: &Expr) -> Result<String, String> {
+        self.control += 1;
+        let out = self.quietly(expr);
+        self.control -= 1;
+        out
+    }
+
+    fn call_inner(&mut self, name: &str, args: &[Expr]) -> Result<String, String> {
         let arity = |min: usize, max: usize| {
             if args.len() < min || args.len() > max {
                 Err(format!(
@@ -296,7 +421,7 @@ impl Run<'_> {
             }
             "if" => {
                 arity(2, 3)?;
-                if truthy(&self.quietly(&args[0])?) {
+                if truthy(&self.deciding(&args[0])?) {
                     self.eval(&args[1])
                 } else {
                     args.get(2).map_or(Ok(String::new()), |a| self.eval(a))
@@ -318,6 +443,7 @@ impl Run<'_> {
                 arity(1, 1)?;
                 let address = self.eval(&args[0])?;
                 let address = address.trim();
+                self.depend(&format!("penv:{address}"));
                 self.fetched.get(address).cloned().ok_or_else(|| {
                     format!(
                         "penv({address}) takes a written address, such as production/DATABASE_URL"
@@ -331,6 +457,52 @@ impl Run<'_> {
                     hit |= self.eval(arg)? == self.environment;
                 }
                 Ok(flag(hit))
+            }
+            "match" => {
+                arity(2, usize::MAX)?;
+                let subject = self.deciding(&args[0])?;
+                let mut fallback = None;
+                for arm in &args[1..] {
+                    let Expr::Call(kind, parts) = arm else {
+                        return Err("match() takes cases written label: value".into());
+                    };
+                    if kind != ":" {
+                        return Err("match() takes cases written label: value".into());
+                    }
+                    let label = self.deciding(&parts[0])?;
+                    if label == "_" {
+                        fallback = Some(&parts[1]);
+                    } else if label == subject {
+                        return self.eval(&parts[1]);
+                    }
+                }
+                match fallback {
+                    Some(expr) => self.eval(expr),
+                    None => Err("match() found no case for the value and has no _ case".into()),
+                }
+            }
+            "and" | "or" => {
+                arity(1, usize::MAX)?;
+                let want = name == "and";
+                for arg in args {
+                    if truthy(&self.quietly(arg)?) != want {
+                        return Ok(flag(!want));
+                    }
+                }
+                Ok(flag(want))
+            }
+            "startsWith" | "endsWith" => {
+                arity(2, 2)?;
+                let value = self.eval(&args[0])?;
+                let part = self.eval(&args[1])?;
+                Ok(flag(if name == "startsWith" {
+                    value.starts_with(&part)
+                } else {
+                    value.ends_with(&part)
+                }))
+            }
+            "random" => {
+                Err("random() is generated by penv run, which keeps the value in .env.local".into())
             }
             _ => Err(format!("{name}() is not a function penv runs")),
         }
@@ -396,6 +568,12 @@ fn parse(text: &str) -> Result<Expr, String> {
 
 fn arg(text: &str) -> Result<Expr, String> {
     let text = text.trim();
+    // A `label: value` case for match(): the first `:` outside quotes.
+    if let Some(colon) = case_colon(text) {
+        let label = arg(&text[..colon])?;
+        let value = arg(&text[colon + 1..])?;
+        return Ok(Expr::Call(":".into(), vec![label, value]));
+    }
     if let Some(q) = text.chars().next().filter(|c| *c == '"' || *c == '\'') {
         if text.len() >= 2 && text.ends_with(q) {
             let inner = &text[1..text.len() - 1];
@@ -406,6 +584,10 @@ fn arg(text: &str) -> Result<Expr, String> {
             });
         }
         return Err("a quoted argument is never closed".into());
+    }
+    // `${KEY:-or}` and `${KEY | filter}` as an argument read like they do in text.
+    if text.starts_with("${") {
+        return Ok(template(text));
     }
     if let Some(name) = text.strip_prefix('$') {
         let name = name
@@ -418,6 +600,64 @@ fn arg(text: &str) -> Result<Expr, String> {
         return parse(text);
     }
     Ok(Expr::Text(text.to_string()))
+}
+
+/// The `:` of a `label: value` match case: after a bare label, before anything
+/// quoted or bracketed, and followed by a space. `http://x` and `a:b` are not cases.
+fn case_colon(text: &str) -> Option<usize> {
+    let colon = text.find(": ")?;
+    let label = &text[..colon];
+    let bare = !label.is_empty()
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    let quoted = label.len() >= 2
+        && (label.starts_with('"') && label.ends_with('"')
+            || label.starts_with('\'') && label.ends_with('\''));
+    (bare || quoted).then_some(colon)
+}
+
+fn apply_filter(filter: &str, value: &str) -> Result<String, String> {
+    Ok(match filter {
+        "urlencode" => value
+            .bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect(),
+        "base64" => base64(value.as_bytes()),
+        "lower" => value.to_lowercase(),
+        "upper" => value.to_uppercase(),
+        "trim" => value.trim().to_string(),
+        other => {
+            return Err(format!(
+                "{other} is not a filter penv runs; filters are {}",
+                FILTERS.join(", ")
+            ));
+        }
+    })
+}
+
+/// Standard base64 with padding.
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(TABLE[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// `${KEY}` and `$KEY` inside text. `\$` is a literal dollar, as in
@@ -441,7 +681,10 @@ fn template(text: &str) -> Expr {
         if chars.get(i + 1) == Some(&'{')
             && let Some(end) = closing_brace(&chars, i + 2)
         {
-            let inner: String = chars[i + 2..end].iter().collect();
+            let whole: String = chars[i + 2..end].iter().collect();
+            let mut pieces = top_level_pipes(&whole).into_iter();
+            let inner = pieces.next().unwrap_or_default().trim().to_string();
+            let filters: Vec<String> = pieces.map(|f| f.trim().to_string()).collect();
             // A key name holds no `-`, so the first one is the operator.
             let split = inner
                 .find('-')
@@ -456,6 +699,14 @@ fn template(text: &str) -> Expr {
                     when_empty,
                 },
                 None => Expr::Ref(inner),
+            };
+            let expr = if filters.is_empty() {
+                expr
+            } else {
+                Expr::Filter {
+                    inner: Box::new(expr),
+                    filters,
+                }
             };
             if !buf.is_empty() {
                 parts.push(Expr::Text(std::mem::take(&mut buf)));
@@ -499,6 +750,25 @@ fn template(text: &str) -> Expr {
         1 if matches!(parts[0], Expr::Text(_)) => parts.remove(0),
         _ => Expr::Template(parts),
     }
+}
+
+/// Split on `|` outside any nested `${...}`.
+fn top_level_pipes(text: &str) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let mut depth = 0usize;
+    for c in text.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => {
+                out.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        out.last_mut().expect("never empty").push(c);
+    }
+    out
 }
 
 /// The `}` that closes a `${`, skipping nested `${...}` inside a default.
@@ -739,6 +1009,156 @@ mod tests {
         );
         assert!(e.is_empty());
         assert_eq!(v["DB"], "op(\"op://vault/db\")");
+    }
+
+    #[test]
+    fn filters_run_left_to_right_and_an_unknown_one_is_named() {
+        let (v, e) = run(
+            &[
+                ("PASS", Raw::literal("p@ss:w/rd ")),
+                ("USER", Raw::literal("  Admin ")),
+                (
+                    "URL",
+                    Raw::computed(
+                        "postgres://${USER | trim | lower}:${PASS | trim | urlencode}@db/app",
+                    ),
+                ),
+                ("AUTH", Raw::computed("Basic ${USER | trim | base64}")),
+                ("DEF", Raw::computed("${NOPE:-Fallback | upper}")),
+                ("BAD", Raw::computed("${PASS | rot13}")),
+            ],
+            "development",
+        );
+        assert_eq!(v["URL"], "postgres://admin:p%40ss%3Aw%2Frd@db/app");
+        assert_eq!(v["AUTH"], "Basic QWRtaW4=");
+        assert_eq!(v["DEF"], "FALLBACK");
+        assert!(
+            e.iter()
+                .any(|e| e.key == "BAD" && e.message.contains("rot13")),
+            "{e:?}"
+        );
+        assert_eq!(base64(b"ab"), "YWI=");
+        assert_eq!(base64(b"abc"), "YWJj");
+        assert_eq!(base64(b""), "");
+    }
+
+    #[test]
+    fn match_picks_a_case_falls_back_to_underscore_and_fails_without_one() {
+        let (v, e) = run(
+            &[
+                ("APP_ENV", Raw::literal("staging")),
+                (
+                    "API",
+                    Raw::computed(
+                        "match($APP_ENV, production: api.acme.com, staging: stg.acme.com, _: localhost:3000)",
+                    ),
+                ),
+                (
+                    "DEV",
+                    Raw::computed("match(qa, production: a, _: http://localhost:3000)"),
+                ),
+                ("NONE", Raw::computed("match($APP_ENV, production: a)")),
+            ],
+            "staging",
+        );
+        assert_eq!(v["API"], "stg.acme.com");
+        assert_eq!(v["DEV"], "http://localhost:3000");
+        assert!(
+            e.iter()
+                .any(|e| e.key == "NONE" && e.message.contains("no _ case")),
+            "{e:?}"
+        );
+        assert!(
+            !e.iter().any(|e| e.message.contains("staging")),
+            "the value is never named"
+        );
+    }
+
+    #[test]
+    fn values_built_from_a_sensitive_key_are_tainted_transitively() {
+        let raw: BTreeMap<String, Raw> = [
+            ("DB_PASS".to_string(), Raw::literal("hunter2")),
+            (
+                "DB_URL".to_string(),
+                Raw::computed("postgres://app:${DB_PASS | urlencode}@db"),
+            ),
+            ("POOL_URL".to_string(), Raw::computed("${DB_URL}?pool=5")),
+            ("PORT".to_string(), Raw::literal("5432")),
+            ("HOST".to_string(), Raw::computed("db:${PORT}")),
+            (
+                "REMOTE".to_string(),
+                Raw::computed("penv(production/STRIPE_KEY)"),
+            ),
+        ]
+        .into();
+        let fetched: Values = [("production/STRIPE_KEY".to_string(), "sk".to_string())].into();
+        let out = resolve_full(&raw, &Values::new(), "development", &fetched);
+        let hot = tainted(&out.deps, |k| k == "DB_PASS" || k == "STRIPE_KEY");
+        assert_eq!(
+            hot.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["DB_URL", "POOL_URL", "REMOTE"]
+        );
+
+        // A secret that only picks a branch does not taint the branch it picks.
+        let raw: BTreeMap<String, Raw> = [
+            ("KEY".to_string(), Raw::literal("sk_live_1")),
+            (
+                "MODE".to_string(),
+                Raw::computed("if(startsWith($KEY, sk_live_), live, test)"),
+            ),
+            ("PICK".to_string(), Raw::computed("match($KEY, _: fixed)")),
+            ("COPY".to_string(), Raw::computed("if(true, $KEY, x)")),
+        ]
+        .into();
+        let out = resolve_full(&raw, &Values::new(), "development", &Values::new());
+        let hot = tainted(&out.deps, |k| k == "KEY");
+        assert_eq!(hot.iter().map(String::as_str).collect::<Vec<_>>(), ["COPY"]);
+
+        // A key first computed inside a condition keeps its own taint.
+        let raw: BTreeMap<String, Raw> = [
+            ("KEY".to_string(), Raw::literal("sk_live_1")),
+            (
+                "A_MODE".to_string(),
+                Raw::computed("if(isEmpty($URL), a, b)"),
+            ),
+            ("URL".to_string(), Raw::computed("https://x/${KEY}")),
+        ]
+        .into();
+        let out = resolve_full(&raw, &Values::new(), "development", &Values::new());
+        let hot = tainted(&out.deps, |k| k == "KEY");
+        assert_eq!(hot.iter().map(String::as_str).collect::<Vec<_>>(), ["URL"]);
+    }
+
+    #[test]
+    fn and_or_and_prefix_checks() {
+        let (v, _) = run(
+            &[
+                ("K", Raw::literal("sk_live_1")),
+                (
+                    "A",
+                    Raw::computed("and(startsWith($K, sk_live_), not(endsWith($K, _test)))"),
+                ),
+                ("O", Raw::computed("or($NOPE, false, 0)")),
+            ],
+            "development",
+        );
+        assert_eq!((v["A"].as_str(), v["O"].as_str()), ("true", "false"));
+    }
+
+    #[test]
+    fn a_braced_reference_as_an_argument_keeps_its_filters_and_default() {
+        let (v, e) = run(
+            &[
+                ("LEVEL", Raw::literal("info")),
+                (
+                    "TAG",
+                    Raw::computed("concat(api-, ${LEVEL | upper}, -, ${NOPE:-x})"),
+                ),
+            ],
+            "development",
+        );
+        assert!(e.is_empty(), "{e:?}");
+        assert_eq!(v["TAG"], "api-INFO-x");
     }
 
     #[test]

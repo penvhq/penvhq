@@ -31,6 +31,7 @@ pub fn run(
         .cloud
         .clone()
         .or_else(|| (!resolved.layers.is_empty()).then(|| resolved.layers.names()));
+    let tainted = resolved.tainted.clone();
     let values = resolved.values;
 
     let present = |name: &str| {
@@ -49,7 +50,7 @@ pub fn run(
                 key.name.clone(),
                 key.ty.to_string(),
                 yes_no(key.required),
-                yes_no(key.sensitive),
+                yes_no(source::is_sensitive(&schema, &tainted, &key.name)),
                 present(&key.name).to_string(),
             ]
         })
@@ -69,7 +70,7 @@ pub fn run(
                 "name": key.name,
                 "type": key.ty.to_string(),
                 "required": key.required,
-                "sensitive": key.sensitive,
+                                "sensitive": source::is_sensitive(&schema, &tainted, &key.name),
                 "value": present(&key.name),
             })).collect::<Vec<_>>(),
         }),

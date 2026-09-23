@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use penv_cloud::api::Address;
-use penv_schema::resolve::{Raw, ResolveError, penv_addresses, resolve};
+use penv_schema::resolve::{Raw, ResolveError, penv_addresses, resolve, resolve_full, tainted};
 use penv_schema::{Diagnostic, Schema, Values};
 
 use crate::commands::cloud::Fetcher;
@@ -316,6 +316,32 @@ pub struct Resolved {
     pub created: Vec<PathBuf>,
     /// The cloud was unreachable and the local layers stood in.
     pub offline: bool,
+    /// Keys computed from a sensitive key, masked as if marked sensitive.
+    pub tainted: std::collections::BTreeSet<String>,
+    /// `@assert` checks that were false or could not be evaluated: line, message.
+    pub failed_asserts: Vec<(u32, String)>,
+    /// `random()` keys this call generated, with the file it wrote them to.
+    pub generated: Vec<(String, PathBuf)>,
+    /// `random()` keys left for the first `penv run` to generate.
+    pub pending: Vec<String>,
+}
+
+/// Whether `random()` values are generated and kept, or only noted. `run`
+/// generates; `check`, `ls` and `scan` never write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Generate {
+    Yes,
+    No,
+}
+
+/// True for a key whose value `run` masks: marked sensitive, undeclared, or
+/// computed from one that is.
+pub fn is_sensitive(
+    schema: &Schema,
+    tainted: &std::collections::BTreeSet<String>,
+    name: &str,
+) -> bool {
+    schema.get(name).is_none_or(|k| k.sensitive) || tainted.contains(name)
 }
 
 /// The one resolution path `run`, `ls`, `check` and `scan` share. A header reads
@@ -327,6 +353,18 @@ pub fn values(
     environment: &str,
     env: &Env,
     fetcher: &mut Fetcher,
+) -> Result<Resolved, CliError> {
+    values_with(schema, dir, environment, env, fetcher, Generate::No)
+}
+
+/// [`values`], generating `random()` values when asked.
+pub fn values_with(
+    schema: &Schema,
+    dir: &Path,
+    environment: &str,
+    env: &Env,
+    fetcher: &mut Fetcher,
+    generate: Generate,
 ) -> Result<Resolved, CliError> {
     check_environment(environment)?;
     let mut out = Resolved {
@@ -360,9 +398,15 @@ pub fn values(
             .raw
             .insert(key.clone(), Raw::literal(environment.to_string()));
     }
-    let raw = with_defaults(schema, out.layers.raw.clone());
+    let mut raw = with_defaults(schema, out.layers.raw.clone());
+    randoms(&mut raw, dir, environment, generate, &mut out)?;
     let mut fetched = Values::new();
-    for written in penv_addresses(&raw) {
+    // `@assert` expressions may read other environments too.
+    let mut named = raw.clone();
+    for (i, check) in schema.asserts.iter().enumerate() {
+        named.insert(format!("\0assert{i}"), Raw::computed(check.expr.clone()));
+    }
+    for written in penv_addresses(&named) {
         let value = reference(
             schema,
             dir,
@@ -374,9 +418,13 @@ pub fn values(
         )?;
         fetched.insert(written, value);
     }
-    let (values, errors) = resolve(&raw, env.as_map(), environment, &fetched);
-    out.values = values;
-    out.errors = errors;
+    let resolution = resolve_full(&raw, env.as_map(), environment, &fetched);
+    out.tainted = tainted(&resolution.deps, |name| {
+        schema.get(name).is_none_or(|k| k.sensitive)
+    });
+    out.values = resolution.values;
+    out.errors = resolution.errors;
+    out.failed_asserts = asserts(schema, &out.values, env, environment, &fetched);
     Ok(out)
 }
 
@@ -402,6 +450,9 @@ pub fn report(resolved: &Resolved, dir: &Path) {
             "local files replaced the cloud value of {listed}."
         ));
     }
+    for (key, path) in &resolved.generated {
+        crate::ui::note(&format!("generated {key} and kept it in {}.", show(path)));
+    }
     for path in &resolved.created {
         crate::ui::note(&format!(
             "created an empty {} for penv() to read.",
@@ -419,6 +470,136 @@ pub fn report(resolved: &Resolved, dir: &Path) {
         };
         crate::ui::warn(&format!("there is no .env.{env}, so {env} used {used}."));
     }
+}
+
+/// Each `@assert` against the resolved values. A key named with a NUL cannot
+/// collide with a real one.
+fn asserts(
+    schema: &Schema,
+    values: &Values,
+    env: &Env,
+    environment: &str,
+    fetched: &Values,
+) -> Vec<(u32, String)> {
+    let slot = "\0assert".to_string();
+    let mut failed = Vec::new();
+    for check in &schema.asserts {
+        let mut raw: BTreeMap<String, Raw> = values
+            .iter()
+            .map(|(k, v)| (k.clone(), Raw::literal(v.clone())))
+            .collect();
+        raw.insert(slot.clone(), Raw::computed(check.expr.clone()));
+        let (out, errors) = resolve(&raw, env.as_map(), environment, fetched);
+        let hard = errors.iter().find(|e| e.key == slot && !e.soft);
+        match (out.get(&slot), hard) {
+            (_, Some(error)) => failed.push((
+                check.line,
+                format!(
+                    "{} (the check could not run: {})",
+                    check.message,
+                    error.message.trim_start_matches("\0assert: ")
+                ),
+            )),
+            (Some(v), None) if v.is_empty() || v == "false" || v == "0" => {
+                failed.push((check.line, check.message.clone()));
+            }
+            _ => {}
+        }
+    }
+    failed
+}
+
+/// `random(N)` values: generated once and kept in this machine's `.env.local`
+/// (`.env.test.local` for test, which skips `.env.local`), so the next run reads
+/// the same value and `push` never sends it.
+fn randoms(
+    raw: &mut BTreeMap<String, Raw>,
+    dir: &Path,
+    environment: &str,
+    generate: Generate,
+    out: &mut Resolved,
+) -> Result<(), CliError> {
+    let wanted: Vec<(String, Option<usize>)> = raw
+        .iter()
+        .filter(|(_, r)| r.computed && is_random(&r.text))
+        .map(|(k, r)| (k.clone(), random_len(&r.text)))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    let file = dir.join(if environment == "test" {
+        ".env.test.local"
+    } else {
+        ".env.local"
+    });
+    for (key, len) in wanted {
+        let Some(len) = len.filter(|n| (8..=512).contains(n)) else {
+            return Err(CliError::new(
+                "invalid_value",
+                format!("{key}: random() takes a length from 8 to 512."),
+                "Write random(32), for example.",
+            )
+            .with_exit(Exit::Validation));
+        };
+        if generate == Generate::No {
+            raw.remove(&key);
+            out.pending.push(key);
+            continue;
+        }
+        let value = random_text(len)?;
+        let existing = if file.is_file() {
+            read_file(&file)?
+        } else {
+            String::new()
+        };
+        let written = penv_dotenv::upsert(&existing, &key, &value).map_err(|e| {
+            CliError::new(
+                "unwritable_value",
+                e.to_string(),
+                "Report this; generated values hold letters and digits only.",
+            )
+        })?;
+        write_private_file(&file, &written)?;
+        raw.insert(key.clone(), Raw::literal(value));
+        out.generated.push((key, file.clone()));
+    }
+    Ok(())
+}
+
+fn is_random(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with("random(") && text.ends_with(')')
+}
+
+/// The length in `random(N)`.
+fn random_len(text: &str) -> Option<usize> {
+    text.trim()
+        .strip_prefix("random(")?
+        .strip_suffix(')')?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Letters and digits from the operating system's generator, without modulo bias.
+fn random_text(len: usize) -> Result<String, CliError> {
+    const ALPHABET: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut out = String::with_capacity(len);
+    while out.len() < len {
+        let bytes = penv_cloud::random_bytes(len * 2).map_err(|e| {
+            CliError::new(
+                "no_entropy",
+                format!("the system random source failed: {e}"),
+                "Try again.",
+            )
+        })?;
+        for b in bytes {
+            if b < 248 && out.len() < len {
+                out.push(ALPHABET[usize::from(b % 62)] as char);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn own(schema: &Schema) -> Option<(String, String)> {
@@ -525,6 +706,24 @@ pub fn warn_unset(errors: &[ResolveError]) {
     for error in errors.iter().filter(|e| e.soft) {
         crate::ui::warn(&error.message);
     }
+}
+
+/// Sensitive keys whose value is too short for the masker to replace: shown as
+/// written in any output, so they are named rather than silently passed.
+pub fn too_short_to_mask(
+    schema: &Schema,
+    tainted: &std::collections::BTreeSet<String>,
+    values: &Values,
+) -> Vec<String> {
+    values
+        .iter()
+        .filter(|(name, value)| {
+            !value.is_empty()
+                && value.len() < penv_mask::MIN_SECRET_LEN
+                && is_sensitive(schema, tainted, name)
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 /// A key `finish` could not compute, as a refusal that names the key only.
