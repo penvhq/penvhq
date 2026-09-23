@@ -90,12 +90,15 @@ function load(schema, env = {}, dir) {
     const child = spawn(process.execPath, [VARLOCK, 'load', '--format', 'json'], {
       cwd: dir,
       env: {
-        PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT ?? '', HOME: dir, USERPROFILE: dir,
-        LOCALAPPDATA: path.join(dir, 'AppData'), XDG_CACHE_HOME: path.join(dir, '.cache'),
+        // The real home, so the OS's own key store backs varlock's cache where it
+        // has one; varlock's directory moves into the project, so runs share nothing.
+        ...process.env,
         XDG_CONFIG_HOME: path.join(dir, '.config'),
-        // varlock's disk cache, keyed here rather than by the OS keychain, so the
-        // cache test behaves the same on every runner.
+        // Where varlock falls back to file-based encryption (Linux without a
+        // keyring), this key backs the disk cache instead.
         _VARLOCK_CACHE_KEY: '11'.repeat(32),
+        // varlock caches differently in CI; the tests describe a developer machine.
+        CI: '', GITHUB_ACTIONS: '',
         VARLOCK_TELEMETRY_DISABLED: 'true', PENV_TOKEN: TOKEN, PENV_URL: URL_ROOT, ...env,
       },
     });
