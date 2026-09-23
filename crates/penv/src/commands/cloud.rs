@@ -250,12 +250,38 @@ pub fn key_schema(key: &Key) -> Value {
     let mut json = key.to_json();
     if let Some(object) = json.as_object_mut() {
         object.remove("name");
-        // penv.cloud refuses fields it does not know (Design, implementation debt:
-        // `hosts`). The committed schema carries @hosts either way, so the key
-        // goes up without it until the server stores it.
-        object.remove("hosts");
     }
     json
+}
+
+/// Write with every key's schema as written, and when penv.cloud refuses a
+/// schema field it does not store yet (`hosts`, docs/Cloud-API.md), write once
+/// more without it. The committed .env.schema keeps @hosts either way; the
+/// warning says the cloud copy lacks it.
+pub fn with_hosts_fallback<T>(
+    keys: &mut [penv_cloud::api::CloudKey],
+    mut write: impl FnMut(&[penv_cloud::api::CloudKey]) -> Result<T, penv_cloud::CloudError>,
+) -> Result<T, penv_cloud::CloudError> {
+    let carries_hosts = keys
+        .iter()
+        .any(|k| k.schema.as_ref().is_some_and(|s| s.get("hosts").is_some()));
+    match write(keys) {
+        Err(penv_cloud::CloudError::Api(e))
+            if carries_hosts && e.status == 400 && e.code == "schema_invalid" =>
+        {
+            for key in keys.iter_mut() {
+                if let Some(schema) = key.schema.as_mut().and_then(|s| s.as_object_mut()) {
+                    schema.remove("hosts");
+                }
+            }
+            let written = write(keys)?;
+            crate::ui::warn(
+                "penv.cloud does not store @hosts yet, so the cloud copy of the schema lacks it; .env.schema keeps it.",
+            );
+            Ok(written)
+        }
+        other => other,
+    }
 }
 
 /// One refusal shape for every cloud failure, with the exit code the design

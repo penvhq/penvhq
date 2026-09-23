@@ -82,7 +82,36 @@ DELETE /api/v1/envs/{org}/{project}/{environment}/keys/{path...}/{name}   unset
   -> 200 { "etag": "..." }
 ```
 
-Every address and key segment is percent-encoded by the client; environment names are free-form. The per-key schema is stored in `parameters.meta` as the same JSON object the CLI emits for that key in `penv schema --json`, minus `name`: `type {name, raw, members, constraints}`, `required`, `sensitive`, `default`, `description`, `example`, `docs`, `since`, `deprecated` (a string note), `rotate`, `dynamic` (boolean), `dynamicFrom`. The client omits absent fields; the server treats `null` as absent. Anything else is `400 schema_invalid`. Writes to a dynamic key answer `409 dynamic`. The console renders and edits it. `must_encrypt` follows `sensitive`.
+Every address and key segment is percent-encoded by the client; environment names are free-form. The per-key schema is stored in `parameters.meta` as the same JSON object the CLI emits for that key in `penv schema --json`, minus `name`: `type {name, raw, members, constraints}`, `required`, `sensitive`, `default`, `description`, `example`, `docs`, `since`, `deprecated` (a string note), `rotate`, `dynamic` (boolean), `dynamicFrom`, `hosts` (below). The client omits absent fields; the server treats `null` as absent. Anything else is `400 schema_invalid`. Writes to a dynamic key answer `409 dynamic`. The console renders and edits it. `must_encrypt` follows `sensitive`.
+
+### `hosts`
+
+The hosts a value may be sent to (`@hosts` in `.env.schema`). When a key has them, an agent's process gets a placeholder and penv puts the real value into requests to these hosts only. The server stores the list and hands it back; it enforces nothing with it.
+
+```json
+{ "type": { "name": "string", "raw": "string(startsWith=sk_live_)", "constraints": { "startsWith": "sk_live_" } },
+  "sensitive": true, "hosts": ["api.stripe.com", "*.stripe.com"] }
+```
+
+Accept it when every rule holds; otherwise `400 schema_invalid` with `"field": "hosts"`:
+
+| Rule | Accept | Refuse |
+|---|---|---|
+| An array of 1 to 32 strings; an empty array is absent | `["api.stripe.com"]` | `"api.stripe.com"`, `[]` kept as a value, 33 entries |
+| Each is a host name or IPv4 address: lowercase labels of `a-z`, `0-9`, `-`, 1 to 63 characters, not starting or ending with `-`, 253 characters in all | `db-1.internal`, `10.0.0.5`, `localhost` | `API.stripe.com`, `-a.com`, `a..com` |
+| A wildcard only as the whole first label, followed by at least two labels | `*.stripe.com` | `*`, `*.com`, `api.*.com` |
+| No scheme, port, path, query or user | | `https://a.com`, `a.com:443`, `a.com/v1`, `u@a.com` |
+| No duplicates | | `["a.com", "a.com"]` |
+
+Storage and round trip:
+
+1. Store the array as given, in the key's `parameters.meta`, in the order sent.
+2. Return it unchanged wherever the per-key schema is returned: `GET /envs` (`keys[].schema.hosts`) and `?values=false`.
+3. A `PUT` or `PATCH` whose schema has no `hosts` removes it, like any other schema field.
+4. `hosts` changes no permission and no audit row. It is a schema change: bump the environment `ETag`.
+5. Console: list the hosts on the key, editable with the same rules, and mark the key as "sent only to these hosts".
+
+The CLI sends `hosts` on `push` and `set`. Until the server accepts it, a `400 schema_invalid` on a write that carried `hosts` is retried once without it, and the CLI warns that the cloud copy lacks it. So the server can ship this at any time, with no CLI release.
 
 ## Reveal approvals
 

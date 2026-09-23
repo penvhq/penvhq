@@ -53,19 +53,16 @@ pub fn set(
     let cloud = Cloud::open(env, &detection)?;
     let bearer = cloud.bearer(env, schema.org.as_deref())?;
 
-    let result = cloud
-        .api
-        .key_set(
-            &bearer,
-            &at,
-            &CloudKey {
-                name: name.to_string(),
-                schema: Some(key_schema(&key)),
-                value: Some(value),
-                ..CloudKey::default()
-            },
-        )
-        .map_err(|e| refuse(e, Some(&at)))?;
+    let mut sent = [CloudKey {
+        name: name.to_string(),
+        schema: Some(key_schema(&key)),
+        value: Some(value),
+        ..CloudKey::default()
+    }];
+    let result = super::cloud::with_hosts_fallback(&mut sent, |keys| {
+        cloud.api.key_set(&bearer, &at, &keys[0])
+    })
+    .map_err(|e| refuse(e, Some(&at)))?;
 
     // A key the file never declared gets a block, with the type the value
     // implies and none of the value itself.

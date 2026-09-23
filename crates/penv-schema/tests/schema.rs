@@ -655,3 +655,20 @@ fn hosts_lists_where_a_value_may_go_and_round_trips() {
         assert!(parse(&text).is_err(), "{bad} should be refused");
     }
 }
+
+#[test]
+fn hosts_refuses_a_repeat_and_more_than_thirty_two() {
+    assert!(parse("# @hosts(a.com, a.com)\nK=\n").is_err());
+    let many: Vec<String> = (0..33).map(|i| format!("h{i}.example.com")).collect();
+    assert!(parse(&format!("# @hosts({})\nK=\n", many.join(", "))).is_err());
+    let ok: Vec<String> = (0..32).map(|i| format!("h{i}.example.com")).collect();
+    assert_eq!(
+        parse(&format!("# @hosts({})\nK=\n", ok.join(", ")))
+            .unwrap()
+            .get("K")
+            .unwrap()
+            .hosts
+            .len(),
+        32
+    );
+}

@@ -586,6 +586,30 @@ impl Parser {
                     } else {
                         vec![unquote(written.trim())]
                     };
+                    let mut seen: Vec<&String> = Vec::new();
+                    let repeated = hosts.iter().find(|h| {
+                        let again = seen.contains(h);
+                        seen.push(h);
+                        again
+                    });
+                    if let Some(again) = repeated {
+                        self.error(
+                            d.line,
+                            d.column,
+                            "invalid_decorator_value",
+                            format!("line {}: @hosts names {again} twice", d.line),
+                        );
+                        continue;
+                    }
+                    if hosts.len() > 32 {
+                        self.error(
+                            d.line,
+                            d.column,
+                            "invalid_decorator_value",
+                            format!("line {}: @hosts takes at most 32 hosts", d.line),
+                        );
+                        continue;
+                    }
                     match hosts.iter().find(|h| !crate::placeholder::is_host_pattern(h)) {
                         _ if hosts.is_empty() || hosts.iter().all(String::is_empty) => self.error(
                             d.line,

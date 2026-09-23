@@ -145,13 +145,13 @@ pub fn run(
 
     let at = address(&schema, &wanted)?;
 
-    let keys = payload(&schema, &values);
+    let mut keys = payload(&schema, &values);
     let written = keys.iter().filter(|k| k.value.is_some()).count();
     let spinner = crate::ui::spinner(&format!("Sending {} key(s) to {at}", keys.len()));
-    let result = cloud
-        .api
-        .env_put(&bearer, &at, &keys, prune)
-        .map_err(|e| refuse(e, Some(&at)))?;
+    let result = super::cloud::with_hosts_fallback(&mut keys, |keys| {
+        cloud.api.env_put(&bearer, &at, keys, prune)
+    })
+    .map_err(|e| refuse(e, Some(&at)))?;
     spinner.stop(&format!("Sent to {at}"));
 
     let removed: Vec<String> = read
