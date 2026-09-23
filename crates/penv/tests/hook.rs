@@ -264,3 +264,22 @@ fn the_known_evasions_are_known() {
         allowed(command);
     }
 }
+
+#[test]
+fn reading_penvs_local_key_file_is_refused() {
+    for command in [
+        "cat ~/.config/penv/local.key",
+        "cat /home/me/.config/penv/local.key",
+        "type %APPDATA%\\penv\\local.key",
+        "cp \"$XDG_CONFIG_HOME/penv/local.key\" /tmp/k",
+    ] {
+        denied(command, READS_ENV);
+    }
+    let read = Request {
+        path: Some("/Users/me/.config/penv/local.key".into()),
+        ..Request::command("")
+    };
+    assert_eq!(decide(&read), Decision::Deny(READS_ENV));
+    // Another program's key of the same name is not penv's.
+    allowed("cat certs/local.key");
+}

@@ -428,14 +428,10 @@ fn pull_is_refused_for_an_agent_and_written_for_a_person() {
         !stdout(&allowed).contains(SECRET),
         "pull prints the count, not the values"
     );
-    // Sensitive values land encrypted (the default); the rest in plain text.
-    let written = workspace.read(".env");
-    assert!(
-        written.starts_with("STRIPE_SECRET_KEY=enc:v1:"),
-        "{written}"
+    assert_eq!(
+        workspace.read(".env"),
+        format!("STRIPE_SECRET_KEY={SECRET}\nPORT=3000\n")
     );
-    assert!(written.ends_with("\nPORT=3000\n"), "{written}");
-    assert!(!written.contains(SECRET));
 }
 
 // --- set and unset ----------------------------------------------------------

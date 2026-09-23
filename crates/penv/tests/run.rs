@@ -658,18 +658,18 @@ fn random_is_generated_once_kept_locally_and_never_pushed() {
     let first = workspace.run(&[], "exit 0");
     assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
     let kept = std::fs::read_to_string(workspace.path().join(".env.local")).unwrap();
-    let stored = kept
+    let value = kept
         .trim()
         .strip_prefix("SESSION_SECRET=")
         .unwrap()
         .to_string();
-    assert!(stored.starts_with("enc:v1:"), "kept encrypted: {stored}");
-    // The command gets the 32 characters, not the ciphertext (sh only: cmd
-    // has no length expansion).
-    if !cfg!(windows) {
-        let length = workspace.run(&[], "printf 'len=%s' \"${#SESSION_SECRET}\"");
-        assert!(stdout(&length).contains("len=32"), "{}", stdout(&length));
-    }
+    assert_eq!(value.len(), 32);
+    assert!(value.chars().all(|c| c.is_ascii_alphanumeric()));
+    assert!(
+        !stderr(&first).contains(&value),
+        "the generated value is never printed"
+    );
+
     workspace.run(&[], "exit 0");
     let again = std::fs::read_to_string(workspace.path().join(".env.local")).unwrap();
     assert_eq!(again, kept, "a second run reuses the value");

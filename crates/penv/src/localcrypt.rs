@@ -1,5 +1,6 @@
-//! Values encrypted at rest in `.env` files: `KEY=enc:v1:<base64>`. On by
-//! default (`[local] encrypt`); penv decrypts wherever it reads a value file,
+//! Values encrypted at rest in `.env` files: `KEY=enc:v1:<base64>`. Off by
+//! default; `[local] encrypt = true` (or `penv encrypt`) turns it on. penv
+//! decrypts wherever it reads a value file, whatever the setting,
 //! so `run`, `ls`, `check` and `push` see the value and nothing else changes.
 //!
 //! The key is 32 random bytes, one per machine user, kept in the OS keychain.
@@ -18,8 +19,7 @@ const KEYCHAIN_BASE: &str = "local";
 pub const KEY_VAR: &str = "PENV_LOCAL_KEY";
 
 /// What to write for `name` into a value file under `dir`: the value encrypted
-/// when `[local] encrypt` is on (the default) and the key is sensitive, else
-/// the value as it is.
+/// when `[local] encrypt` is on and the key is sensitive, else the value as it is.
 pub fn stored(
     dir: &std::path::Path,
     name: &str,
@@ -28,7 +28,7 @@ pub fn stored(
 ) -> Result<String, CliError> {
     let on = crate::config::Config::load(dir)
         .map(|c| c.encrypt())
-        .unwrap_or(true);
+        .unwrap_or(false);
     if !on || !sensitive || value.is_empty() {
         return Ok(value.to_string());
     }

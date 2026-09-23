@@ -132,27 +132,24 @@ It reads the repository's source for `process.env`, `import.meta.env`, `Deno.env
 
 ## Encryption at Rest
 
-Sensitive values penv writes to `.env` files are encrypted: `penv set`, `penv pull` and `random()` write `KEY=enc:v1:…`, and every penv command decrypts where it reads.
+Off by default. `penv encrypt` converts the sensitive values in the `.env` files beside `.env.schema` and sets `[local] encrypt = true`, after which `penv set`, `penv pull` and `random()` write `KEY=enc:v1:…` too. Every penv command decrypts where it reads, whatever the setting.
 
 ```console
-$ printf 'sk_live_…' | penv set STRIPE_SECRET_KEY
+$ penv encrypt
+encrypted 2 value(s) in .env
+[local] encrypt = true in .penv/config.toml
 $ cat .env
 STRIPE_SECRET_KEY=enc:v1:cGVudmMx1b0Izhu…
 PORT=3000
-$ penv encrypt      # existing plain-text values
-$ penv decrypt      # back to plain text (refused for an AI agent)
+$ penv decrypt      # plain text again, and encrypt = false (refused for an AI agent)
 ```
 
 - **Key:** 32 random bytes per machine user, kept in the OS keychain. Without a keychain (containers, headless Linux), a file `~/.config/penv/local.key` readable only by you holds it. `PENV_LOCAL_KEY` (64 hex characters) supplies it instead. `penv run` never passes that variable to the command.
 - **Scope:** sensitive keys only. `@sensitive=false` values stay readable. The key name is bound to its ciphertext, so a value moved to another key does not decrypt.
 - **`push`** decrypts on your machine and sends the value; penv.cloud encrypts it with KMS as before.
-- **Other readers:** a tool that reads `.env` itself (docker compose, a framework started without `penv run`) sees `enc:v1:…`. Start it through `penv run`, or turn encryption off:
+- **Other readers:** with encryption on, a tool that reads `.env` itself (docker compose, a framework started without `penv run`) sees `enc:v1:…`. Start it through `penv run`.
+- **Agents:** `penv guard` denies the key file (`~/.config/penv/local.key`) beside `.env` and `.env.*`, and `penv hook` refuses a command that reads it.
 
-```toml
-# .penv/config.toml
-[local]
-encrypt = false
-```
 
 `penv init` writes `.penv/config.toml` with every setting at its default, each with what the other value does. On a repository that already has one, it adds the settings the file lacks and keeps the rest as written.
 

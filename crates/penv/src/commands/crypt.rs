@@ -90,9 +90,16 @@ pub fn run(
             changed.push((shown, count));
         }
     }
+    // The setting follows the command, so what penv writes next matches the files.
+    let mut config = crate::config::Config::load(&dir)?;
+    let switched = config.encrypt() != encrypt;
+    if switched {
+        config.set_encrypt(encrypt);
+        config.save(&dir)?;
+    }
     let verb = if encrypt { "encrypted" } else { "decrypted" };
     let style = out.style();
-    let text = if changed.is_empty() {
+    let mut text = if changed.is_empty() {
         format!("nothing to {}", if encrypt { "encrypt" } else { "decrypt" })
     } else {
         changed
@@ -101,8 +108,14 @@ pub fn run(
             .collect::<Vec<_>>()
             .join("\n")
     };
+    if switched {
+        text.push_str(&format!(
+            "\n{}",
+            style.dim(&format!("[local] encrypt = {encrypt} in .penv/config.toml"))
+        ));
+    }
     Ok(Report::new(
-        json!({ "action": verb, "files": changed.iter().map(|(f, n)| json!({ "file": f, "values": n })).collect::<Vec<_>>() }),
+        json!({ "action": verb, "encrypt": encrypt, "files": changed.iter().map(|(f, n)| json!({ "file": f, "values": n })).collect::<Vec<_>>() }),
         text,
     ))
 }

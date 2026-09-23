@@ -1,4 +1,5 @@
-//! Values encrypted at rest: on by default, off with `[local] encrypt = false`.
+//! Values encrypted at rest: off by default, on with `[local] encrypt = true`
+//! or `penv encrypt`.
 
 use std::process::{Command, Output, Stdio};
 
@@ -66,10 +67,11 @@ fn text(o: &Output) -> String {
 
 const SCHEMA: &str =
     "# @type=string\nSTRIPE_SECRET_KEY=\n\n# @type=port @sensitive=false\nPORT=3000\n";
+const ON: &str = "[local]\nencrypt = true\n";
 
 #[test]
-fn set_encrypts_a_sensitive_value_and_run_hands_the_command_the_value_not_the_key() {
-    let d = Dir::new("set", &[(".env.schema", SCHEMA)]);
+fn with_encrypt_on_set_encrypts_and_run_hands_the_command_the_value_not_the_key() {
+    let d = Dir::new("set", &[(".env.schema", SCHEMA), (".penv/config.toml", ON)]);
     let set = d.penv(
         KEY,
         &["set", "STRIPE_SECRET_KEY"],
@@ -96,26 +98,33 @@ fn set_encrypts_a_sensitive_value_and_run_hands_the_command_the_value_not_the_ke
 }
 
 #[test]
-fn encrypt_false_in_config_writes_plain_text() {
-    let d = Dir::new(
-        "off",
-        &[
-            (".env.schema", SCHEMA),
-            (".penv/config.toml", "[local]\nencrypt = false\n"),
-        ],
-    );
-    let set = d.penv(
-        KEY,
-        &["set", "STRIPE_SECRET_KEY"],
-        Some(&format!("{SECRET}\n")),
-    );
-    assert_eq!(set.status.code(), Some(0), "{}", text(&set));
-    assert_eq!(d.read(".env").trim(), format!("STRIPE_SECRET_KEY={SECRET}"));
+fn with_no_setting_or_encrypt_false_set_writes_plain_text() {
+    for config in [None, Some("[local]\nencrypt = false\n")] {
+        let mut files = vec![(".env.schema", SCHEMA)];
+        if let Some(c) = config {
+            files.push((".penv/config.toml", c));
+        }
+        let d = Dir::new(if config.is_some() { "off" } else { "default" }, &files);
+        let set = d.penv(
+            KEY,
+            &["set", "STRIPE_SECRET_KEY"],
+            Some(&format!("{SECRET}\n")),
+        );
+        assert_eq!(set.status.code(), Some(0), "{}", text(&set));
+        assert_eq!(
+            d.read(".env").trim(),
+            format!("STRIPE_SECRET_KEY={SECRET}"),
+            "{config:?}"
+        );
+    }
 }
 
 #[test]
 fn a_value_encrypted_with_another_key_stops_the_run_and_names_the_key_not_the_value() {
-    let d = Dir::new("other", &[(".env.schema", SCHEMA)]);
+    let d = Dir::new(
+        "other",
+        &[(".env.schema", SCHEMA), (".penv/config.toml", ON)],
+    );
     d.penv(
         OTHER,
         &["set", "STRIPE_SECRET_KEY"],
@@ -132,7 +141,7 @@ fn a_value_encrypted_with_another_key_stops_the_run_and_names_the_key_not_the_va
 }
 
 #[test]
-fn encrypt_and_decrypt_convert_the_files_sensitive_keys_only_and_an_agent_cannot_decrypt() {
+fn encrypt_and_decrypt_convert_the_files_switch_the_setting_and_an_agent_cannot_decrypt() {
     let d = Dir::new(
         "convert",
         &[
@@ -156,6 +165,16 @@ fn encrypt_and_decrypt_convert_the_files_sensitive_keys_only_and_an_agent_cannot
         d.read(".env.local").starts_with("UNDECLARED=enc:v1:"),
         "an undeclared key counts as sensitive"
     );
+    assert!(
+        d.read(".penv/config.toml").contains("encrypt = true"),
+        "encrypt turns the setting on"
+    );
+    let later = d.penv(KEY, &["set", "LATER_SECRET"], Some("later_value_1234\n"));
+    assert_eq!(later.status.code(), Some(0), "{}", text(&later));
+    assert!(
+        d.read(".env").contains("LATER_SECRET=enc:v1:"),
+        "and set follows it"
+    );
 
     let refused = d.penv(KEY, &["--agent", "decrypt"], None);
     assert_ne!(refused.status.code(), Some(0));
@@ -170,9 +189,15 @@ fn encrypt_and_decrypt_convert_the_files_sensitive_keys_only_and_an_agent_cannot
     assert_eq!(dec.status.code(), Some(0), "{}", text(&dec));
     assert_eq!(
         d.read(".env"),
-        format!("# keep me\nSTRIPE_SECRET_KEY={SECRET}\nPORT=3000\n")
+        format!(
+            "# keep me\nSTRIPE_SECRET_KEY={SECRET}\nPORT=3000\nLATER_SECRET=later_value_1234\n"
+        )
     );
     assert_eq!(d.read(".env.local"), "UNDECLARED=value_1234\n");
+    assert!(
+        d.read(".penv/config.toml").contains("encrypt = false"),
+        "decrypt turns it off"
+    );
 }
 
 #[test]
@@ -183,8 +208,9 @@ fn init_writes_every_setting_with_its_meaning_and_keeps_what_a_config_already_sa
     let config = fresh.read(".penv/config.toml");
     for line in [
         "preload = true",
-        "encrypt = true",
-        "# false: penv writes values in plain text",
+        "encrypt = false",
+        "# true: they write enc:v1:",
+        "# false: penv set, penv pull and random() write values in plain text",
         "prefixes = []",
         "version = 1",
     ] {
@@ -208,7 +234,7 @@ fn init_writes_every_setting_with_its_meaning_and_keeps_what_a_config_already_sa
         "{config}"
     );
     assert!(
-        config.contains("encrypt = true"),
+        config.contains("encrypt = false"),
         "a missing setting is added: {config}"
     );
     assert_eq!(config.matches("preload =").count(), 1, "{config}");

@@ -25,12 +25,15 @@ version = {version}
 preload = true
 
 [local]
-# Encrypt sensitive values penv writes to .env files (penv set, penv pull,
-# random()) with a key in this machine's keychain; penv decrypts them when it
-# reads. A tool that reads .env itself (docker compose, a framework started
-# without penv run) sees enc:v1:... instead of the value.
-# false: penv writes values in plain text. penv decrypt converts files back.
-encrypt = true
+# Whether penv encrypts the sensitive values it writes to .env files.
+# false: penv set, penv pull and random() write values in plain text, readable
+# by any tool that reads .env itself.
+# true: they write enc:v1:... with a key kept in this machine's keychain, and
+# penv decrypts when it reads. A tool that reads .env itself (docker compose, a
+# framework started without penv run) then sees enc:v1:... instead of the value.
+# penv encrypt turns this on and converts existing values; penv decrypt turns it
+# off and converts them back.
+encrypt = false
 
 [public]
 # Prefixes that ship a key to the browser, beyond the frameworks' own
@@ -229,13 +232,26 @@ impl Config {
     }
 
     /// `[local] encrypt`: sensitive values penv writes to .env files are
-    /// encrypted. Absent means true.
+    /// encrypted. Absent means false.
     pub fn encrypt(&self) -> bool {
         self.table
             .get("local")
             .and_then(|t| t.get("encrypt"))
             .and_then(|v| v.as_bool())
-            .unwrap_or(true)
+            .unwrap_or(false)
+    }
+
+    pub fn set_encrypt(&mut self, on: bool) {
+        let section = self
+            .table
+            .entry("local")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !section.is_table() {
+            *section = toml::Value::Table(toml::Table::new());
+        }
+        if let Some(table) = section.as_table_mut() {
+            table.insert("encrypt".into(), toml::Value::Boolean(on));
+        }
     }
 
     /// `[providers.<slug>] url`: where that provider's API is, when not its default.
