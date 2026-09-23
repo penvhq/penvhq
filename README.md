@@ -183,6 +183,7 @@ SESSION_SECRET=random(48)
 | Filters | `urlencode`, `base64`, `lower`, `upper`, `trim` |
 | Functions | `match`, `if`, `eq`, `not`, `and`, `or`, `fallback`, `concat`, `isEmpty`, `startsWith`, `endsWith`, `forEnv`, `ref` |
 | `random(N)` | generated on the first `penv run`, stored in `.env.local`, never pushed |
+| `penv()`, `penv(KEY)` | the key it sits on, or another key, in the current environment |
 | `penv(env/KEY)`, `penv(project/env/KEY)` | another environment's or project's value: from local files, or from penv.cloud after `penv push` writes the `@penv=` header |
 
 `match` with no matching case and no `_` case is an error.
@@ -432,6 +433,30 @@ Measured on one project against varlock 1.20.0 ([method and script](./docs/BENCH
 Also in penv: a static binary with no Node.js, and masking inside Python processes.
 
 A schema using `@assert`, `@rotate`, `match`, `random`, filters or `penv()` no longer loads in varlock. `penv check` lists which of these the schema uses.
+
+
+### penv.cloud from varlock
+
+[`@varlock/penv-plugin`](https://varlock.dev/plugins/penv/) reads penv.cloud from varlock with the same header and addresses, so one `.env.schema` runs under both tools:
+
+```dotenv
+# @plugin(@varlock/penv-plugin)
+# @penv=acme/api
+# @initPenv(environment=$APP_ENV, token=$PENV_TOKEN)
+# @currentEnv=$APP_ENV
+# ---
+
+# @type=penvToken
+PENV_TOKEN=
+
+DATABASE_URL=penv()
+PROD_DATABASE_URL=penv(production/DATABASE_URL)
+```
+
+```bash
+varlock run -- npm run dev    # through the plugin
+penv run -- npm run dev       # native; @plugin and @initPenv are ignored
+```
 
 ## Commands
 
