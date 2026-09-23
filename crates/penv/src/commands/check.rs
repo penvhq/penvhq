@@ -152,10 +152,7 @@ pub fn run(
             continue;
         }
         if key.ty.base == penv_schema::BaseType::Url {
-            notes.push(format!(
-                "{} is a URL with @hosts; a sealed run refuses it until penv's database proxy lands",
-                key.name
-            ));
+            continue;
         } else if !key.ty.constraints.iter().any(|(k, _)| {
             matches!(
                 k.as_str(),

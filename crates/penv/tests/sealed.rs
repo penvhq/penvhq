@@ -280,3 +280,127 @@ fn a_wildcard_over_a_hosting_platform_is_refused() {
     assert!(schema.is_err());
     assert!(penv_schema::parse("# @hosts(\"*.acme.vercel.app\")\nK=\n").is_ok());
 }
+
+/// initdb and postgres, where the machine has them and is not root (initdb
+/// refuses root). GitHub's Ubuntu runners carry PostgreSQL.
+fn postgres_bin() -> Option<PathBuf> {
+    let euid = Command::new("id").arg("-u").output().ok()?;
+    if String::from_utf8_lossy(&euid.stdout).trim() == "0" {
+        return None;
+    }
+    let mut found: Vec<PathBuf> = std::fs::read_dir("/usr/lib/postgresql")
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join("bin"))
+        .filter(|p| p.join("initdb").is_file())
+        .collect();
+    found.sort();
+    found.pop()
+}
+
+#[test]
+fn a_sealed_postgres_url_logs_in_with_scram_while_the_command_holds_a_placeholder() {
+    let Some(bin) = postgres_bin() else {
+        return;
+    };
+    if !has_psql() {
+        return;
+    }
+    let dir = scratch("pg");
+    let data = dir.join("data");
+    let run = |cmd: &mut Command| {
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(Command::new(bin.join("initdb"))
+        .args(["-A", "trust", "-U", "postgres", "-D"])
+        .arg(&data));
+    std::fs::write(
+        data.join("pg_hba.conf"),
+        "local all all trust\nhost all postgres 127.0.0.1/32 trust\nhost all all 127.0.0.1/32 scram-sha-256\n",
+    )
+    .unwrap();
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut conf = std::fs::read_to_string(data.join("postgresql.conf")).unwrap();
+    conf.push_str(&format!("\nport = {port}\nlisten_addresses = '127.0.0.1'\nunix_socket_directories = '{}'\npassword_encryption = 'scram-sha-256'\n", data.display()));
+    std::fs::write(data.join("postgresql.conf"), conf).unwrap();
+    run(Command::new(bin.join("pg_ctl"))
+        .args(["-w", "-l"])
+        .arg(dir.join("log"))
+        .arg("-D")
+        .arg(&data)
+        .arg("start"));
+    let real = "Pg_REAL_0123456789_abcdefghij";
+    run(Command::new("psql")
+        .args([
+            "-h",
+            "127.0.0.1",
+            "-p",
+            &port.to_string(),
+            "-U",
+            "postgres",
+            "-c",
+        ])
+        .arg(format!("create user app password '{real}'")));
+
+    std::fs::write(
+        dir.join(".env.schema"),
+        "# @type=url @hosts=127.0.0.1\nDATABASE_URL=\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".env"),
+        format!("DATABASE_URL=postgres://app:{real}@127.0.0.1:{port}/postgres?sslmode=disable\n"),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--sealed",
+            "--",
+            "sh",
+            "-c",
+            "echo \"url=$DATABASE_URL\"; psql \"$DATABASE_URL\" -Atc 'select current_user'",
+        ])
+        .output()
+        .unwrap();
+    let stop = Command::new(bin.join("pg_ctl"))
+        .arg("-D")
+        .arg(&data)
+        .args(["-m", "immediate", "stop"])
+        .output();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !stdout.contains(real),
+        "the command never sees the password: {stdout}"
+    );
+    assert!(stdout.contains("url=postgres://app:penvph"), "{stdout}");
+    assert!(
+        stdout.lines().any(|l| l == "app"),
+        "logged in as app: {stdout}"
+    );
+    drop(stop);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn has_psql() -> bool {
+    Command::new("psql")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}

@@ -1383,6 +1383,7 @@ dependencies = [
  "cliclack",
  "comfy-table",
  "console",
+ "hmac",
  "penv-agent",
  "penv-cloud",
  "penv-dotenv",
@@ -1393,6 +1394,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "serde_json",
+ "sha2",
  "toml",
  "webpki-roots",
 ]

@@ -34,6 +34,7 @@ pub fn prepare(
     agent: bool,
 ) -> Result<Option<Seal>, CliError> {
     let mut sealed = Vec::new();
+    let mut databases = Vec::new();
     for key in schema.keys.iter().filter(|k| !k.hosts.is_empty()) {
         let Some(value) = values.get(&key.name).filter(|v| !v.is_empty()) else {
             continue;
@@ -49,17 +50,8 @@ pub fn prepare(
             ));
         }
         if key.ty.base == BaseType::Url {
-            return Err(refuse(
-                "sealed_database",
-                format!(
-                    "{} is a URL with @hosts. A database URL is sealed by penv's database proxy, which is not in this build.",
-                    key.name
-                ),
-                format!(
-                    "Remove @hosts from {} for now; its value reaches the command as it is.",
-                    key.name
-                ),
-            ));
+            databases.push((key, value.clone()));
+            continue;
         }
         let mut failed = None;
         let placeholder = penv_schema::placeholder::placeholder(&key.ty, &mut |n| {
@@ -95,19 +87,37 @@ pub fn prepare(
             hosts: key.hosts.clone(),
         });
     }
-    if sealed.is_empty() {
+    if sealed.is_empty() && databases.is_empty() {
         return Ok(None);
     }
 
     let roots = extra_roots(env, agent)?;
+    let mut placeholders_db = Vec::new();
+    let mut summary_db = Vec::new();
+    for (key, value) in databases {
+        let (child_url, host) = database(key, &value, &roots)?;
+        summary_db.push(format!("{} (only to {host})", key.name));
+        placeholders_db.push((key.name.clone(), child_url));
+    }
+    if sealed.is_empty() {
+        crate::ui::warn(&format!(
+            "sealed: {} reach the command through penv's database proxy, with a placeholder password.",
+            summary_db.join(", ")
+        ));
+        return Ok(Some(Seal {
+            placeholders: placeholders_db,
+            env: Vec::new(),
+        }));
+    }
     let placeholders: Vec<(String, String)> = sealed
         .iter()
         .map(|s| (s.name.clone(), s.placeholder.clone()))
         .collect();
-    let summary: Vec<String> = sealed
+    let mut summary: Vec<String> = sealed
         .iter()
         .map(|s| format!("{} (only to {})", s.name, s.hosts.join(", ")))
         .collect();
+    summary.extend(summary_db);
     let proxy = Proxy::new(sealed, roots).map_err(|e| {
         refuse(
             "proxy_failed",
@@ -235,4 +245,134 @@ fn show(path: &Path) -> String {
 
 fn refuse(code: &'static str, message: String, fix: impl Into<String>) -> CliError {
     CliError::new(code, message, fix.into()).with_exit(Exit::Validation)
+}
+
+/// A sealed database URL: start the proxy for its scheme and return the URL
+/// the command gets, pointing at it with a placeholder password.
+fn database(
+    key: &penv_schema::Key,
+    value: &str,
+    roots: &[CertificateDer<'static>],
+) -> Result<(String, String), CliError> {
+    let Some(url) = super::url::parse(value) else {
+        return Err(refuse(
+            "cannot_seal",
+            format!(
+                "{} has @hosts, and its URL has no password to seal (or names several hosts).",
+                key.name
+            ),
+            format!(
+                "Put the password in the URL, or remove @hosts from {}.",
+                key.name
+            ),
+        ));
+    };
+    if !penv_schema::placeholder::host_allowed(&key.hosts, &url.host) {
+        return Err(refuse(
+            "cannot_seal",
+            format!(
+                "{}'s URL points at {}, which its @hosts does not name.",
+                key.name, url.host
+            ),
+            format!("Add {} to @hosts on {}.", url.host, key.name),
+        ));
+    }
+    let placeholder = format!(
+        "penvph{}",
+        penv_cloud::b64::encode(&penv_cloud::random_bytes(24).map_err(|e| refuse(
+            "random_unavailable",
+            e,
+            "Try again."
+        ))?)
+        .replace(['+', '/', '='], "")
+    );
+    let failed = |e: String| {
+        refuse(
+            "proxy_failed",
+            format!("the database proxy for {} could not start: {e}.", key.name),
+            "Try again.",
+        )
+    };
+    match url.scheme.as_str() {
+        "postgres" | "postgresql" => {
+            let mode = super::url::query(&url.rest, "sslmode").unwrap_or_else(|| "prefer".into());
+            let tls = match mode.as_str() {
+                "disable" => super::postgres::Tls::Off,
+                "allow" | "prefer" => {
+                    super::postgres::Tls::Prefer(super::upstream::unverified().map_err(failed)?)
+                }
+                "require" => {
+                    super::postgres::Tls::Require(super::upstream::unverified().map_err(failed)?)
+                }
+                "verify-ca" | "verify-full" => {
+                    super::postgres::Tls::Verify(super::upstream::verified(roots).map_err(failed)?)
+                }
+                other => {
+                    return Err(refuse(
+                        "cannot_seal",
+                        format!(
+                            "{}'s URL has sslmode={other}, which penv does not know.",
+                            key.name
+                        ),
+                        "Use disable, prefer, require, verify-ca or verify-full.",
+                    ));
+                }
+            };
+            let port = super::postgres::start(super::postgres::Target {
+                host: url.host.clone(),
+                port: url.port.unwrap_or(5432),
+                password: url.password.clone(),
+                placeholder: placeholder.clone(),
+                tls,
+            })
+            .map_err(|e| failed(e.to_string()))?;
+            // The loopback leg is plain and answered with a cleartext password
+            // request, so options that forbid that on the command's side go.
+            let mut rest = super::url::with_query(&url.rest, "sslmode", "disable");
+            if super::url::query(&rest, "channel_binding").is_some() {
+                rest = super::url::with_query(&rest, "channel_binding", "disable");
+            }
+            if super::url::query(&rest, "require_auth").is_some() {
+                rest = super::url::with_query(&rest, "require_auth", "password");
+            }
+            let child = format!(
+                "{}://{}:{}@127.0.0.1:{port}{rest}",
+                url.scheme,
+                super::url::encode(&url.user),
+                placeholder
+            );
+            Ok((child, url.host))
+        }
+        "redis" | "rediss" => {
+            let tls = if url.scheme == "rediss" {
+                Some(super::upstream::verified(roots).map_err(failed)?)
+            } else {
+                None
+            };
+            let port = super::redis::start(super::redis::Target {
+                host: url.host.clone(),
+                port: url.port.unwrap_or(6379),
+                password: url.password.clone(),
+                placeholder: placeholder.clone(),
+                tls,
+            })
+            .map_err(|e| failed(e.to_string()))?;
+            // The command talks plain Redis to the loopback port.
+            let child = format!(
+                "redis://{}:{}@127.0.0.1:{port}{}",
+                super::url::encode(&url.user),
+                placeholder,
+                url.rest
+            );
+            Ok((child, url.host))
+        }
+        other => Err(refuse(
+            "cannot_seal",
+            format!(
+                "{} is a {other}:// URL; penv's database proxy speaks postgres:// and redis://.",
+                key.name
+            ),
+            format!("Remove @hosts from {}.", key.name),
+        )),
+    }
 }

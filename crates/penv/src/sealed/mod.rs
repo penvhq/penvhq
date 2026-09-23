@@ -3,8 +3,13 @@
 
 pub mod ca;
 pub mod http;
+pub mod postgres;
 pub mod proxy;
+pub mod redis;
 pub mod run;
+pub mod scram;
+pub mod upstream;
+pub mod url;
 
 /// Why a key looks like it signs requests rather than sending itself, from its
 /// name. A placeholder cannot stand in for such a key: the signature is made
