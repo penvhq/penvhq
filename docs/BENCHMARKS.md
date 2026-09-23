@@ -22,7 +22,7 @@ penv 1.0.0-beta.1 release build, varlock 1.20.0 from npm and as its standalone b
 | Validate (`penv check`, `varlock load`) | 6.4 ms | 174 ms | 343 ms |
 | Scan a repository | 3.9 ms | 177 ms | 359 ms |
 | Peak memory, `run -- true` | 11 MB | 70 MB | 94 MB |
-| Binary | about 12 MB, static | 105 MB, bundles Node.js | the npm package on Node.js |
+| Binary | 12.7 MB, static (x86_64 Linux) | 105 MB, bundles Node.js | the npm package on Node.js |
 
 `penv check` also reads the repository's source for undeclared variables since 1.0.0-beta.2, which is the extra 2 ms over beta.1's 4.2 ms.
 
