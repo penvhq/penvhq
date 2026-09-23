@@ -41,6 +41,8 @@ complete -c penv -n '__fish_penv_at ""' -a 'logout' -d 'Sign out on this machine
 complete -c penv -n '__fish_penv_at ""' -a 'set' -d 'Save one value (typed hidden, never shown)'
 complete -c penv -n '__fish_penv_at ""' -a 'unset' -d 'Delete one value'
 complete -c penv -n '__fish_penv_at ""' -a 'ls' -d 'List your keys and show which ones have a value'
+complete -c penv -n '__fish_penv_at ""' -a 'encrypt' -d 'Encrypt the sensitive values in the .env files beside .env.schema'
+complete -c penv -n '__fish_penv_at ""' -a 'decrypt' -d 'Write the encrypted values in the .env files back in plain text'
 complete -c penv -n '__fish_penv_at ""' -a 'why' -d 'Say where a key'\''s value comes from and how penv treats it, never the value'
 complete -c penv -n '__fish_penv_at ""' -a 'check' -d 'Report schema problems and missing values'
 complete -c penv -n '__fish_penv_at ""' -a 'gen' -d 'Write the typed file for your language (ts, py, go, rust, php, java, csharp)'

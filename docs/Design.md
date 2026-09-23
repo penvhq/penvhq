@@ -65,6 +65,23 @@ Rules:
 - One concept, one name. No aliases. A decorator, type or constraint penv does not act on is a warning from `check`, never a parse failure, so any varlock schema parses; `@plugin` is named as varlock's.
 - Nearest `.env.schema` upward from the working directory wins. A monorepo holds one per app.
 
+### Settings
+
+`.penv/config.toml` is committed. `penv init` writes every setting at its default with a comment saying what the other value does, and on an existing file adds only what is missing; every later write (`gen`, `set` rotation dates) edits values in place and keeps comments and order.
+
+| Setting | Default | Other value |
+|---|---|---|
+| `[schema] version` | the current schema language | an older one, for an older penv |
+| `[run] preload` | `true` | `false`: only `run`'s output pipe masks; kept on for an agent |
+| `[local] encrypt` | `false` | `true`: `set`, `pull` and `random()` write `enc:v1:`; `penv encrypt` and `penv decrypt` switch it |
+| `[public] prefixes` | `[]` | extra prefixes that ship a key to the browser |
+| `[targets.<n>]` | written by `gen` | output and options per language |
+| `[providers.<slug>] url` | none | another root for that provider (never receives a token-type credential) |
+
+### Values at rest
+
+Off by default. With `[local] encrypt = true`, a sensitive value penv writes is `enc:v1:<base64>`: ChaCha20-Poly1305 (the cache's own sealing, `penv_cloud::cache::seal`), a fresh 96-bit nonce per write, the key name as associated data. The key is 32 random bytes per machine user: the OS keychain (item `local/local-key` under service `penv`), else `~/.config/penv/local.key` mode 600 with a warning when it is made, or `PENV_LOCAL_KEY`. Decryption happens in `source::layers`, the one place every command reads value files, so `run`, `ls`, `check`, `why` and `push` see values and nothing else changes; a value this machine cannot decrypt stops the command (`decrypt_failed`, exit 3) naming key and file. `penv run` removes `PENV_LOCAL_KEY` from the child. `penv encrypt` and `penv decrypt` convert the value files beside the schema and set `[local] encrypt` to match, sensitive keys only (an undeclared key counts as sensitive; a line that computes from other keys stays as written), editing lines in place; `decrypt` is refused for an agent. The key file fallback keeps values out of commits and casual reads, not away from a process running as the user.
+
 ### Values
 
 Value files layer in the order dotenv-flow, Next.js and Vite use, later files winning:
@@ -244,7 +261,7 @@ An agent session flips: JSON output, masking on, `reveal` sent through console a
 
 `reveal` under an agent creates an approval request carrying the key, this machine, the harness and the session, and exits 4 with the id, the console page and the expiry; the value is never in that answer. A person approves on the page, and `penv reveal KEY --approval <ID>` redeems it once, which is the audit row that names them both. A request nobody has answered yet is exit 4 again, a denial is exit 2, and an expired or spent id says to ask for a new one. Two asks for the same key in the same session reuse the one request rather than filling the console with duplicates. The routes are in [Cloud-API.md](./Cloud-API.md).
 
-`guard` writes what each harness enforces, from `.env.schema`, idempotently and additively. Guards are folders (`guards/<harness>/`) with a `guard.toml` (detect paths, files to merge, scope, and the hook response shape the harness expects) and templates; the binary knows no harness by name, and `penv hook <harness>` renders the deny response from the folder. Deny patterns are `.env` and `.env.*` (never `.env.schema`, which the hook allows by name), so a new environment file is covered without a list; the binary merges JSON or TOML fragments without ever weakening an existing rule. Ranked: Claude Code (`.claude/settings.json` deny rules in project scope, `sandbox.credentials` mask block printed for user scope, static-binary PreToolUse hook), Codex (permission profile denying `**/.env` and `**/.env.*`, `ignore_default_excludes=false`), Cursor (`.cursor/cli.json` deny, `.cursor/hooks.json` with `failClosed`), Amp (`amp.guardedFiles.allowlist: []`), Copilot CLI (permissions config), Gemini (`.gemini/settings.json` PreToolUse), Cline (`.clinerules/hooks/`), Windsurf (`.windsurf/hooks.json`). Native Windows has no Claude Code sandbox; `guard --check` says so.
+`guard` writes what each harness enforces, from `.env.schema`, idempotently and additively. Guards are folders (`guards/<harness>/`) with a `guard.toml` (detect paths, files to merge, scope, and the hook response shape the harness expects) and templates; the binary knows no harness by name, and `penv hook <harness>` renders the deny response from the folder. Deny patterns are `.env`, `.env.*` (never `.env.schema`, which the hook allows by name), so a new environment file is covered without a list, and penv's local key file (`~/.config/penv/local.key`; the hook matches a `penv/local.key` path anywhere, `%APPDATA%` included), which turns an encrypted `.env` back into plain text; the binary merges JSON or TOML fragments without ever weakening an existing rule. Ranked: Claude Code (`.claude/settings.json` deny rules in project scope, `sandbox.credentials` mask block printed for user scope, static-binary PreToolUse hook), Codex (permission profile denying `**/.env` and `**/.env.*`, `ignore_default_excludes=false`), Cursor (`.cursor/cli.json` deny, `.cursor/hooks.json` with `failClosed`), Amp (`amp.guardedFiles.allowlist: []`), Copilot CLI (permissions config), Gemini (`.gemini/settings.json` PreToolUse), Cline (`.clinerules/hooks/`), Windsurf (`.windsurf/hooks.json`). Native Windows has no Claude Code sandbox; `guard --check` says so.
 
 The hook binary is `penv` itself (`penv hook claude-code`), never a script needing an interpreter, because a missing interpreter fails open.
 

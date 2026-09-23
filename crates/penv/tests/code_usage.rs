@@ -17,6 +17,10 @@ fn workspace(files: &[(&str, &str)]) -> std::path::PathBuf {
 
 fn check(dir: &std::path::Path, extra: &[&str]) -> (i32, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(dir)
         .args(["--format", "text", "check"])
         .args(extra)

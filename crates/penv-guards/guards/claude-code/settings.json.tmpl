@@ -1,10 +1,10 @@
 {
   "permissions": {
-    "deny": ["Read(./.env)", "Read(./.env.*)"]
+    "deny": ["Read(./.env)", "Read(./.env.*)", "Read(~/.config/penv/local.key)"]
   },
   "sandbox": {
     "filesystem": {
-      "denyRead": ["./.env", "./.env.*"]
+      "denyRead": ["./.env", "./.env.*", "~/.config/penv/local.key"]
     }
   },
   "hooks": {

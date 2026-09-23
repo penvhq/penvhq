@@ -178,7 +178,10 @@ fn set_local(
     } else {
         String::new()
     };
-    let written = penv_dotenv::upsert(&existing, name, &value).map_err(|e| {
+    let sensitive = schema.get(name).map(|k| k.sensitive).unwrap_or(true);
+    let dir = schema_path.parent().unwrap_or(Path::new("."));
+    let stored = crate::localcrypt::stored(dir, name, &value, sensitive)?;
+    let written = penv_dotenv::upsert(&existing, name, &stored).map_err(|e| {
         CliError::new(
             "unwritable_value",
             e.to_string(),

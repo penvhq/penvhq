@@ -72,18 +72,27 @@ pub fn run(
     spinner.stop(&format!("Read {at}"));
 
     // One value the file cannot hold must not cost the rest of the pull.
-    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    let mut stored: Vec<(String, String)> = Vec::new();
     let mut left_out: Vec<String> = Vec::new();
     for key in &body.keys {
         let Some(value) = key.value.as_deref() else {
             continue;
         };
-        let pair = (key.name.as_str(), value);
-        match penv_dotenv::write(&[pair]) {
-            Ok(_) => pairs.push(pair),
+        match penv_dotenv::write(&[(key.name.as_str(), value)]) {
+            Ok(_) => {
+                let sensitive = schema.get(&key.name).map(|k| k.sensitive).unwrap_or(true);
+                stored.push((
+                    key.name.clone(),
+                    crate::localcrypt::stored(&dir, &key.name, value, sensitive)?,
+                ));
+            }
             Err(e) => left_out.push(e.to_string()),
         }
     }
+    let pairs: Vec<(&str, &str)> = stored
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     let contents = penv_dotenv::write(&pairs)
         .map_err(|e| CliError::new("unwritable_value", e.to_string(), "Run penv pull again."))?;
 

@@ -91,6 +91,10 @@ impl Workspace {
 
     fn spawn(&self, args: &[&str], payload: Option<&str>, tools: bool) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_penv"));
+        command.env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        );
         command
             .current_dir(&self.0)
             .args(args)

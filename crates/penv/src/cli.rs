@@ -17,7 +17,10 @@ pub const HELP: &str = "{about}
 Everyday
   run        Run a command with your secrets loaded into it
   ls         List your keys and show which ones have a value
-  why        Say where a key's value comes from, never the value
+    why        Say where a key's value comes from, never the value
+  encrypt    Encrypt the secrets in your .env files
+  decrypt    Write the .env files' secrets back in plain text
+
   set        Save one value (typed hidden, never shown)
   unset      Delete one value
   reveal     Show one value; an AI agent needs your approval first
@@ -197,6 +200,12 @@ pub enum Command {
         #[arg(long)]
         env: Option<String>,
     },
+
+    /// Encrypt the sensitive values in the .env files beside .env.schema
+    Encrypt,
+
+    /// Write the encrypted values in the .env files back in plain text
+    Decrypt,
 
     /// Say where a key's value comes from and how penv treats it, never the value
     Why {

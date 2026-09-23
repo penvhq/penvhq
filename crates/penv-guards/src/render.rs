@@ -122,20 +122,28 @@ mod tests {
     }
 
     #[test]
-    fn the_deny_patterns_are_the_two_the_design_names_and_never_a_list() {
+    fn the_deny_patterns_are_the_three_the_design_names_and_never_a_list() {
         let claude: Value = serde_json::from_str(&rendered("claude-code", 0)).unwrap();
         assert_eq!(
             claude["permissions"]["deny"],
-            json!(["Read(./.env)", "Read(./.env.*)"])
+            json!([
+                "Read(./.env)",
+                "Read(./.env.*)",
+                "Read(~/.config/penv/local.key)"
+            ])
         );
         assert_eq!(
             claude["sandbox"]["filesystem"]["denyRead"],
-            json!(["./.env", "./.env.*"])
+            json!(["./.env", "./.env.*", "~/.config/penv/local.key"])
         );
         let cursor: Value = serde_json::from_str(&rendered("cursor", 0)).unwrap();
         assert_eq!(
             cursor["permissions"]["deny"],
-            json!(["Read(.env)", "Read(.env.*)"])
+            json!([
+                "Read(.env)",
+                "Read(.env.*)",
+                "Read(~/.config/penv/local.key)"
+            ])
         );
         let codex: toml::Value = toml::from_str(&rendered("codex", 0)).unwrap();
         assert_eq!(
@@ -143,7 +151,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            2
+            3
         );
         for name in ["claude-code", "cursor", "codex", "copilot"] {
             let out = rendered(name, 0);

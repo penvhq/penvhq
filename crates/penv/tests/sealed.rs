@@ -150,6 +150,10 @@ fn a_sealed_command_holds_a_placeholder_and_the_allowed_host_gets_the_value_in_t
          curl -s http://127.0.0.1:{plain_port}/other -H \"Authorization: Bearer $STRIPE_SECRET_KEY\"; echo"
     );
     let out = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(&dir)
         .env("SSL_CERT_FILE", &trust)
         .env_remove("PENV_ENV")
@@ -227,6 +231,10 @@ fn a_key_whose_type_leaves_no_room_is_refused_before_the_command_starts() {
     .unwrap();
     std::fs::write(dir.join(".env"), "K=abcdefghij\n").unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(&dir)
         .args(["run", "--sealed", "--", "sh", "-c", "echo started"])
         .output()
@@ -254,6 +262,10 @@ fn a_signing_secret_with_hosts_fails_check_and_is_never_sealed() {
     )
     .unwrap();
     let check = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(&dir)
         .args(["--format", "text", "check"])
         .output()
@@ -265,6 +277,10 @@ fn a_signing_secret_with_hosts_fails_check_and_is_never_sealed() {
         String::from_utf8_lossy(&check.stdout)
     );
     let run = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(&dir)
         .args(["run", "--sealed", "--", "sh", "-c", "echo started"])
         .output()
@@ -362,6 +378,10 @@ fn a_sealed_postgres_url_logs_in_with_scram_while_the_command_holds_a_placeholde
     )
     .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .current_dir(&dir)
         .args([
             "run",

@@ -63,8 +63,9 @@ pub fn run(
     let mut config = crate::config::Config::load(cwd)?;
     if config.schema_version().is_none() {
         config.set_schema_version(i64::from(penv_schema::SCHEMA_VERSION));
-        config.save(cwd)?;
     }
+    config.fill_defaults();
+    config.save(cwd)?;
 
     let ignore_path = cwd.join(GITIGNORE_FILE);
     let existing = if ignore_path.is_file() {
@@ -339,8 +340,9 @@ fn keep_schema(out: &Output, cwd: &Path, schema_path: &Path) -> Result<Report, C
     let versioned = config.schema_version().is_none();
     if versioned {
         config.set_schema_version(i64::from(penv_schema::SCHEMA_VERSION));
-        config.save(cwd)?;
     }
+    config.fill_defaults();
+    config.save(cwd)?;
     let style = out.style();
     let mut lines = vec![format!(
         "{} {}; penv init --force writes it again from your .env",

@@ -178,8 +178,19 @@ pub fn touches_env_file(candidate: &str) -> bool {
         if name == ".env.schema" {
             return false;
         }
-        name == ".env" || name.starts_with(".env.") || glob_reaches_a_value_file(name)
+        name == ".env"
+            || name.starts_with(".env.")
+            || glob_reaches_a_value_file(name)
+            || is_penv_key_file(piece)
     })
+}
+
+/// penv's local encryption key, where it lives when the machine has no
+/// keychain: `~/.config/penv/local.key`, `%APPDATA%\\penv\\local.key`, or
+/// under `$XDG_CONFIG_HOME`. Read with it, an encrypted `.env` is plain text.
+fn is_penv_key_file(path: &str) -> bool {
+    let parts: Vec<&str> = path.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
+    matches!(parts.as_slice(), [.., dir, file] if dir.eq_ignore_ascii_case("penv") && file.eq_ignore_ascii_case("local.key"))
 }
 
 /// A pattern with two or more literal characters that matches `.env` or an
