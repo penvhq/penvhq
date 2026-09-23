@@ -9,6 +9,7 @@ pub mod error;
 pub mod fetch;
 pub mod keychain;
 pub mod signature;
+pub mod tls;
 
 pub use api::{
     AGENT_HEADER, Address, Api, Approval, Bearer, Challenge, CloudKey, DEFAULT_BASE_URL,
@@ -24,3 +25,11 @@ pub use credential::{
 pub use error::{ApiError, CloudError, Result};
 pub use fetch::sha256_hex;
 pub use keychain::{Keychain, Keyring, MemoryKeychain, NoKeychain};
+
+/// Bytes from the operating system's generator, for values penv generates
+/// (`random()` in a schema). The same source the credential and cache use.
+pub fn random_bytes(len: usize) -> std::result::Result<Vec<u8>, String> {
+    let mut bytes = vec![0u8; len];
+    getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes)
+}

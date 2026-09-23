@@ -159,7 +159,7 @@ fn the_run_row_says_what_run_does() {
         .iter()
         .map(|f| f["name"].as_str().unwrap())
         .collect();
-    assert_eq!(flags, ["env", "no-mask"]);
+    assert_eq!(flags, ["env", "no-mask", "no-preload"]);
 }
 
 #[test]

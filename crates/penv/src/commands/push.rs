@@ -6,11 +6,14 @@ use penv_schema::Schema;
 use serde_json::json;
 
 use crate::agent::detect_here;
-use crate::commands::cloud::{Cloud, address, environment, key_schema, note, project_name, refuse};
+use crate::commands::cloud::{
+    Cloud, address, key_schema, note, pick_environment, project_name, refuse,
+};
 use crate::env::Env;
 use crate::error::{CliError, Exit};
-use crate::files::{ENV_FILE, SCHEMA_FILE, read_file, show, write_file};
+use crate::files::{SCHEMA_FILE, read_file, show, write_file};
 use crate::output::{Output, Report};
+use crate::source;
 
 /// Move the local values to the cloud and take the file away. A schema with no
 /// header gets a project first.
@@ -36,29 +39,6 @@ pub fn run(
         )
         .with_exit(Exit::Auth));
     }
-    // Read the file before the server hears anything: an empty push must not create a project.
-    let env_path = dir.join(ENV_FILE);
-    let values = if env_path.is_file() {
-        penv_dotenv::read(&read_file(&env_path)?).values()
-    } else {
-        Default::default()
-    };
-    if !values.iter().any(|(_, value)| !value.is_empty()) {
-        return Err(CliError::new(
-            "nothing_to_push",
-            match env_path.is_file() {
-                true => format!("{} holds no values.", show(&env_path)),
-                false => format!(
-                    "{} does not exist, so there is nothing to push.",
-                    show(&env_path)
-                ),
-            },
-            "Write the values to .env first, or run penv set <KEY> to push one key.",
-        )
-        .with_exit(Exit::Validation));
-    }
-
-    let wanted = environment(env_flag, env);
     if let (true, Some(asked)) = (schema.is_cloud(), org_flag.filter(|v| !v.is_empty())) {
         let named = schema.org.as_deref().unwrap_or_default();
         if !named.eq_ignore_ascii_case(asked) {
@@ -71,8 +51,67 @@ pub fn run(
         }
     }
 
-    let cloud = Cloud::open(env, &detection)?;
-    let bearer = cloud.bearer(env, schema.org.as_deref())?;
+    // Nothing named and a person watching: they pick from the project's list,
+    // which takes the cloud. Otherwise the files are read before the server
+    // hears anything.
+    let named = source::named_environment(env_flag, env, &schema, &dir);
+    let asks = named.is_none() && schema.is_cloud() && super::interactive(out, env, false);
+    let mut opened = None;
+    let wanted = if asks {
+        let cloud = Cloud::open(env, &detection)?;
+        let bearer = cloud.bearer(env, schema.org.as_deref())?;
+        let wanted = pick_environment(&cloud, &bearer, &schema, &schema_path, env_flag, env, true)?;
+        opened = Some((cloud, bearer));
+        wanted
+    } else {
+        named.unwrap_or_else(|| source::DEFAULT_ENVIRONMENT.to_string())
+    };
+
+    // The shared layers are what gets pushed; `*.local` files stay on this machine.
+    // They are read before the server hears anything: an empty push must not create a project.
+    source::check_environment(&wanted)?;
+    let layers = source::layers(&dir, &penv_dotenv::shared(&wanted))?;
+    // A default is the schema's, not a value to store: only what a file wrote goes up.
+    let pushed: Vec<String> = layers
+        .raw
+        .iter()
+        // `random()` is this machine's own value: it is generated here, never sent.
+        .filter(|(_, raw)| !raw.text.is_empty() && !raw.text.trim_start().starts_with("random("))
+        .map(|(name, _)| name.clone())
+        .collect();
+    let read = layers.read.clone();
+    let (mut values, mut errors) = source::finish(&schema, layers.raw, env, &wanted);
+    // Only what is pushed has to compute; a default or a random() stays behind.
+    errors.retain(|e| pushed.contains(&e.key));
+    source::warn_unset(&errors);
+    if source::failed(&errors) {
+        return Err(source::unresolved(&errors));
+    }
+    values.retain(|name, _| pushed.contains(name));
+    if !values.iter().any(|(_, value)| !value.is_empty()) {
+        let files = penv_dotenv::shared(&wanted).join(" or ");
+        return Err(CliError::new(
+            "nothing_to_push",
+            match read.is_empty() {
+                false => format!(
+                    "{} hold(s) no values.",
+                    read.iter().map(|p| show(p)).collect::<Vec<_>>().join(", ")
+                ),
+                true => format!("there is no {files} for {wanted}, so there is nothing to push."),
+            },
+            format!("Write the values to {files} first, or run penv set <KEY> to push one key."),
+        )
+        .with_exit(Exit::Validation));
+    }
+
+    let (cloud, bearer) = match opened {
+        Some(pair) => pair,
+        None => {
+            let cloud = Cloud::open(env, &detection)?;
+            let bearer = cloud.bearer(env, schema.org.as_deref())?;
+            (cloud, bearer)
+        }
+    };
 
     let created = if schema.is_cloud() {
         ensure_environment(&cloud, &bearer, &address(&schema, &wanted)?)?;
@@ -96,7 +135,11 @@ pub fn run(
             .map_err(|e| refuse(e, None))?;
         schema.org = Some(org.clone());
         schema.project = Some(project.slug.clone());
-        write_file(&schema_path, &penv_schema::render(&schema))?;
+        let source = read_file(&schema_path)?;
+        write_file(
+            &schema_path,
+            &penv_schema::set_header(&source, &org, &project.slug),
+        )?;
         Some(format!("{org}/{}", project.slug))
     };
 
@@ -111,7 +154,11 @@ pub fn run(
         .map_err(|e| refuse(e, Some(&at)))?;
     spinner.stop(&format!("Sent to {at}"));
 
-    let removed = env_path.is_file() && std::fs::remove_file(&env_path).is_ok();
+    let removed: Vec<String> = read
+        .iter()
+        .filter(|path| std::fs::remove_file(path).is_ok())
+        .map(|path| show(path))
+        .collect();
 
     let style = out.style();
     let mut lines = Vec::new();
@@ -126,8 +173,8 @@ pub fn run(
     if result.pruned > 0 {
         lines.push(style.dim(&format!("pruned {}", result.pruned)));
     }
-    if removed {
-        lines.push(style.dim(&format!("removed {}", show(&env_path))));
+    if !removed.is_empty() {
+        lines.push(style.dim(&format!("removed {}", removed.join(", "))));
     }
     lines.push(style.dim(&format!("etag {}", result.etag)));
 
@@ -141,7 +188,7 @@ pub fn run(
             "unchanged": result.unchanged,
             "pruned": result.pruned,
             "etag": result.etag,
-            "removed": removed.then(|| show(&env_path)),
+            "removed": removed,
         }),
         lines.join("\n"),
     ))

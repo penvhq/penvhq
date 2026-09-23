@@ -14,6 +14,7 @@ mod pull;
 mod push;
 mod reveal;
 mod run;
+mod scan;
 mod set;
 mod state;
 mod upgrade;
@@ -23,12 +24,14 @@ use std::path::Path;
 use crate::cli::{Cli, Command, MachineCommand};
 use crate::env::Env;
 use crate::error::CliError;
-use crate::files::{SCHEMA_FILE, find_schema, read_file};
 use crate::manifest::manifest;
 use crate::output::{Output, Report};
 use penv_schema::Schema;
 
 pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report, CliError> {
+    if cli.agent {
+        crate::agent::flag_session();
+    }
     match &cli.command {
         None => state::run(out, cwd, env),
         Some(Command::Init {
@@ -48,12 +51,14 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
         Some(Command::Run {
             env: environment,
             no_mask,
+            no_preload,
             command,
         }) => run::run(
             out,
             cwd,
             environment.as_deref(),
             *no_mask,
+            *no_preload,
             command,
             env,
             cli.agent,
@@ -108,7 +113,10 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
         Some(Command::Machine {
             command: MachineCommand::Enroll { secret },
         }) => machine::enroll(out, cwd, secret, env),
-        Some(Command::Check { key }) => check::run(out, cwd, key.as_deref()),
+        Some(Command::Check {
+            key,
+            env: environment,
+        }) => check::run(out, cwd, key.as_deref(), environment.as_deref(), env),
         Some(Command::Ls { env: name }) => ls::run(out, cwd, name.as_deref(), env),
         Some(Command::Project { command }) => project::run(out, cwd, command, env, cli.agent),
         Some(Command::Env { project, command }) => {
@@ -137,6 +145,20 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             all,
             check,
         }) => guard::run(out, cwd, *check, *all, harness),
+        Some(Command::Scan {
+            paths,
+            staged,
+            install_hook,
+            env: environment,
+        }) => scan::run(
+            out,
+            cwd,
+            paths,
+            *staged,
+            *install_hook,
+            environment.as_deref(),
+            env,
+        ),
         Some(Command::Hook { harness }) => hook::run(harness, cwd),
         Some(Command::Upgrade { check }) => upgrade::run(out, *check),
         Some(Command::Completions { shell }) => completions(
@@ -157,35 +179,10 @@ pub fn interactive(out: &Output, env: &Env, agent_flag: bool) -> bool {
     tty && !out.is_json() && !agent_flag && !crate::agent::detect_here(env, tty).is_agent()
 }
 
-/// Load the nearest schema, reporting its diagnostics as one validation failure.
+/// Load the nearest schema with its imports, reporting its diagnostics as one
+/// validation failure.
 fn load_schema(cwd: &Path) -> Result<(std::path::PathBuf, Schema), CliError> {
-    let Some(path) = find_schema(cwd) else {
-        return Err(CliError::new(
-            "no_schema",
-            format!("no {SCHEMA_FILE} here or in any directory above."),
-            "Run penv init to write one from your .env.",
-        ));
-    };
-    let source = read_file(&path)?;
-    penv_schema::parse(&source)
-        .map(|schema| (path.clone(), schema))
-        .map_err(|diagnostics| {
-            let listed = diagnostics
-                .iter()
-                .map(|d| d.to_string())
-                .collect::<Vec<_>>()
-                .join("; ");
-            CliError::new(
-                "invalid_schema",
-                format!(
-                    "{} has {} problem(s): {listed}",
-                    crate::files::show(&path),
-                    diagnostics.len()
-                ),
-                "Run penv check for the list, fix the lines it names, then try again.",
-            )
-            .with_exit(crate::error::Exit::Validation)
-        })
+    crate::source::load(cwd)
 }
 
 /// A shell reads the script off stdout, and the install line redirects it into a

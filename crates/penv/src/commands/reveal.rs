@@ -26,8 +26,8 @@ pub fn run(
     let detection = detect_here(env, std::io::stdout().is_terminal());
     let policy = Policy::for_(&detection, agent_flag);
 
-    let (_, schema) = super::load_schema(cwd)?;
-    let at = address(&schema, &environment(env_flag, env))?;
+    let (schema_path, schema) = super::load_schema(cwd)?;
+    let at = address(&schema, &environment(env_flag, env, &schema, &schema_path))?;
     let cloud = Cloud::open(env, &detection)?;
     let bearer = cloud.bearer(env, schema.org.as_deref())?;
 

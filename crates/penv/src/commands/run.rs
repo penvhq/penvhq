@@ -7,25 +7,26 @@ use penv_agent::Policy;
 use penv_mask::Masker;
 use penv_schema::{Schema, Values, extras, validate};
 
+use crate::source;
+
 use crate::agent::detect_here;
 use crate::commands::cloud;
 use crate::env::Env;
 use crate::error::{CliError, Exit};
-use crate::files::{ENV_FILE, SCHEMA_FILE, find_schema, on_path, read_file, show};
+use crate::files::{ENV_FILE, SCHEMA_FILE, find_schema, on_path, show};
 use crate::output::{Output, Report};
 use crate::ui;
-
-/// The only environment local mode has. The rest live in the cloud.
-pub const DEFAULT_ENVIRONMENT: &str = "development";
 
 /// Validate, then hand the values to one child process and nothing else. The
 /// child's output is this command's output, so penv writes only to stderr and
 /// leaves with the child's exit code.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     out: &Output,
     cwd: &Path,
     environment: Option<&str>,
     no_mask: bool,
+    no_preload: bool,
     argv: &[String],
     process_env: &Env,
     agent_flag: bool,
@@ -38,7 +39,9 @@ pub fn run(
         ));
     }
     // The design has init fire when run meets a .env with no schema for it.
-    if find_schema(cwd).is_none() && cwd.join(ENV_FILE).is_file() {
+    // Any value file counts, the way every other loader reads them.
+    let found = crate::files::value_files(cwd);
+    if find_schema(cwd).is_none() && !found.is_empty() {
         // Mid-run is no place for a picker, so this takes the installed set.
         let inferred = super::init::run(
             out,
@@ -49,8 +52,9 @@ pub fn run(
             process_env,
             agent_flag,
         )?;
+        let read = found.iter().map(|p| show(p)).collect::<Vec<_>>().join(", ");
         ui::note(&format!(
-            "there was no {SCHEMA_FILE}, so penv init wrote one from {ENV_FILE}."
+            "there was no {SCHEMA_FILE}, so penv init wrote one from {read}."
         ));
         let _ = out.write(&inferred, &mut std::io::stderr());
     }
@@ -65,38 +69,32 @@ pub fn run(
     let agent = detection.is_agent() || agent_flag;
     let policy = Policy::for_(&detection, agent_flag);
 
-    // A header means the cloud; the local file only stands in while offline.
-    let fetched = if schema.is_cloud() {
-        let name = cloud::environment(environment, process_env);
-        match cloud_values(&schema, &name, process_env, &detection) {
-            Ok(values) => Some((name, values)),
-            Err(error) if error.code == "offline" && has_env => {
-                ui::warn(&format!(
-                    "the cloud could not be reached, so this run used the local {ENV_FILE}."
-                ));
-                None
-            }
-            Err(error) => return Err(error),
-        }
-    } else {
-        None
-    };
+    let environment = source::environment(environment, process_env, &schema, dir);
+    let mut fetcher = cloud::Fetcher::new(process_env, &detection);
+    let resolved = source::values_with(
+        &schema,
+        dir,
+        &environment,
+        process_env,
+        &mut fetcher,
+        source::Generate::Yes,
+    )?;
+    source::report(&resolved, dir);
+    for (file, how, keys) in source::exposed_secrets(&schema, &resolved) {
+        ui::warn(&source::exposure_message(&file, how, &keys));
+    }
+    if source::failed(&resolved.errors) {
+        return Err(source::unresolved(&resolved.errors));
+    }
+    let tainted = resolved.tainted.clone();
+    let failed_asserts = resolved.failed_asserts.clone();
+    let values = resolved.values;
 
-    let (environment, mut values) = match fetched {
-        Some(pair) => pair,
-        None => {
-            let name = resolve_environment(environment, process_env)?;
-            let values = if has_env {
-                penv_dotenv::read(&read_file(&env_path)?).values()
-            } else {
-                Values::new()
-            };
-            (name, values)
-        }
-    };
-    apply_defaults(&schema, &mut values);
-
-    let violations = validate(&schema, &values);
+    let mut violations = validate(&schema.for_environment(&environment), &values);
+    violations.extend(source::public_leaks(&schema, &tainted));
+    violations.extend(failed_asserts.iter().map(|(line, message)| {
+        penv_schema::Violation::new(&format!("@assert line {line}"), "assert", message.clone())
+    }));
     if !violations.is_empty() {
         let style = out.style();
         let text = violations
@@ -123,6 +121,18 @@ pub fn run(
         );
     }
 
+    if mask {
+        let short = source::too_short_to_mask(&schema, &tainted, &values);
+        if !short.is_empty() {
+            ui::warn(&format!(
+                "{} {} sensitive and shorter than {} characters, so it cannot be masked; mark it @sensitive=false or use a longer value.",
+                short.join(", "),
+                if short.len() == 1 { "is" } else { "are" },
+                penv_mask::MIN_SECRET_LEN
+            ));
+        }
+    }
+
     let drift = extras(&schema, &values);
     if !drift.is_empty() {
         ui::warn(&format!(
@@ -132,104 +142,118 @@ pub fn run(
     }
 
     let secrets = if mask {
-        masked_values(&schema, &values)
+        masked_values(&schema, &values, &tainted)
     } else {
         Vec::new()
     };
-    let code = spawn(argv, &values, &environment, secrets)?;
-    std::process::exit(code)
-}
-
-/// The values for the address the schema names, through the cache when this host
-/// has one. Design section 5 decides whether the server is asked at all.
-fn cloud_values(
-    schema: &Schema,
-    environment: &str,
-    process_env: &Env,
-    detection: &penv_agent::Detection,
-) -> Result<Values, CliError> {
-    let at = cloud::address(schema, environment)?;
-    let opened = cloud::Cloud::open(process_env, detection)?;
-    let bearer = opened.bearer(process_env, schema.org.as_deref())?;
-    let cache = opened.cache(&at, &bearer);
-    let spinner = ui::spinner(&format!("Reading {at}"));
-    let resolved = penv_cloud::cache::fetch(&opened.api, &bearer, &at, cache.as_ref(), opened.now)
-        .map_err(|e| cloud::refuse(e, Some(&at)))?;
-    spinner.stop(&format!("Read {at}"));
-
-    if resolved.offline_warning {
-        ui::warn(&format!(
-            "{at} could not be reached, so this run used the development values penv saved last time."
-        ));
-    }
-    if !resolved.body.skipped.is_empty() {
-        ui::warn(&format!(
-            "not passed to your command: {}. They have no stored value: never set, or generated by the cloud on demand. Set one with penv set <KEY>.",
-            resolved.body.skipped.join(", ")
-        ));
-    }
-
-    Ok(resolved
-        .body
-        .keys
+    let named: Vec<(String, String)> = values
         .iter()
-        .filter_map(|key| Some((key.name.clone(), key.value.clone()?)))
-        .collect())
-}
-
-/// Local mode has one environment. `--env`, else `PENV_ENV`, else development.
-pub(crate) fn resolve_environment(flag: Option<&str>, env: &Env) -> Result<String, CliError> {
-    let flag = flag.filter(|v| !v.is_empty());
-    let from_variable = flag.is_none();
-    let name = flag
-        .or_else(|| env.get("PENV_ENV").filter(|v| !v.is_empty()))
-        .unwrap_or(DEFAULT_ENVIRONMENT)
-        .to_string();
-    if name == DEFAULT_ENVIRONMENT {
-        return Ok(name);
+        .filter(|(name, value)| !value.is_empty() && source::is_sensitive(&schema, &tainted, name))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    // Coarse filesystem clocks: a build that finishes within the same tick
+    // still counts as after the start.
+    let started = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+    // The preload follows masking. Turning it off is a person's move, like
+    // --no-mask: an agent could otherwise start a server that echoes the
+    // environment and read the secret back over HTTP.
+    let wants_preload = !(no_preload && !agent && interactive)
+        && (agent
+            || crate::config::Config::load(dir)
+                .map(|c| c.preload())
+                .unwrap_or(true));
+    if no_preload && (agent || !interactive) {
+        ui::warn(
+            "--no-preload was ignored. It works only when you run penv yourself in a terminal, with no pipe and no AI agent.",
+        );
     }
-    let message = if from_variable {
-        format!("PENV_ENV is set to {name}, which is not a local environment.")
-    } else {
-        format!("{name} is not a local environment.")
-    };
-    Err(CliError::new("environment_refused", message, format!(
-        "Without the cloud, penv run only knows {DEFAULT_ENVIRONMENT}, read from {ENV_FILE}. Run penv push to link this project to the cloud and use other environments."
-    ))
-    .with_exit(Exit::EnvironmentRefused))
-}
-
-/// A key the file leaves empty takes the default written on its schema line.
-fn apply_defaults(schema: &Schema, values: &mut Values) {
-    for key in &schema.keys {
-        if let Some(default) = &key.default
-            && values.get(&key.name).is_none_or(String::is_empty)
-        {
-            values.insert(key.name.clone(), default.clone());
+    let injection = match (mask && wants_preload, crate::preload::files()) {
+        (true, Some(files)) => {
+            let names: Vec<String> = named.iter().map(|(n, _)| n.clone()).collect();
+            crate::preload::inject(
+                &files,
+                &names,
+                argv,
+                |name| {
+                    values
+                        .get(name)
+                        .cloned()
+                        .or_else(|| std::env::var(name).ok())
+                },
+                |program| crate::preload::deno_has_preload(program, &files),
+            )
         }
+        _ => crate::preload::Injection::default(),
+    };
+    let code = spawn(argv, &values, &environment, secrets, &injection)?;
+    std::process::exit(after_build(dir, started, code, &named))
+}
+
+/// After a successful run, look at what it wrote into browser output folders
+/// (`.next/static`, `dist`, `build`, ...). A secret there ships to every visitor,
+/// so the run fails with exit 3, naming file, line and key. Never the value.
+fn after_build(
+    dir: &Path,
+    started: std::time::SystemTime,
+    code: i32,
+    secrets: &[(String, String)],
+) -> i32 {
+    if code != 0 || secrets.is_empty() {
+        return code;
     }
+    let dirs = super::scan::client_output(dir);
+    let mut files = super::scan::changed_since(&dirs, started);
+    files.extend(super::scan::native_bundles_since(dir, started));
+    if files.is_empty() {
+        return code;
+    }
+    let found = super::scan::find(&files, secrets);
+    if found.is_empty() {
+        return code;
+    }
+    for (file, line, key) in &found {
+        let at = if *line == 0 {
+            show(file)
+        } else {
+            format!("{}:{line}", show(file))
+        };
+        ui::warn(&format!(
+            "{at} holds the value of {key}, and that file ships to the browser or the app."
+        ));
+    }
+    ui::warn(
+        "Remove the value from client code, rotate it if this build was deployed, and read it on the server.",
+    );
+    Exit::Validation as i32
 }
 
 /// Everything the child is handed except the keys the schema marks public. A key
-/// the schema never heard of is masked; `check` names it as drift.
-fn masked_values(schema: &Schema, values: &Values) -> Vec<String> {
+/// the schema never heard of is masked; `check` names it as drift. A public key
+/// computed from a sensitive one is masked too.
+fn masked_values(
+    schema: &Schema,
+    values: &Values,
+    tainted: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
     values
         .iter()
-        .filter(|(name, _)| schema.get(name).is_none_or(|key| key.sensitive))
+        .filter(|(name, _)| source::is_sensitive(schema, tainted, name))
         .map(|(_, value)| value)
         .filter(|value| !value.is_empty())
         .cloned()
         .collect()
 }
 
-/// Whether to mask, and whether `--no-mask` was ignored saying so. Turning
-/// masking off is a person's move: both ends must be a terminal and no agent.
-fn masking(policy: &Policy, no_mask: bool, agent: bool, interactive: bool) -> (bool, bool) {
+/// Whether to mask, and whether `--no-mask` was ignored saying so. Masking is on
+/// for every run, CI and a person's terminal included, because a log is copied
+/// further than anyone expects. Turning it off is a person's move: both ends
+/// must be a terminal and no agent.
+fn masking(_policy: &Policy, no_mask: bool, agent: bool, interactive: bool) -> (bool, bool) {
     if !no_mask {
-        return (policy.mask, false);
+        return (true, false);
     }
     if agent || !interactive {
-        return (policy.mask, true);
+        return (true, true);
     }
     (false, false)
 }
@@ -253,16 +277,40 @@ fn spawn(
     values: &Values,
     environment: &str,
     secrets: Vec<String>,
+    injection: &crate::preload::Injection,
 ) -> Result<i32, CliError> {
     let piped = !secrets.is_empty();
     let mut command = Command::new(program(&argv[0]));
-    command.args(&argv[1..]);
+    if injection.deno_args.is_empty() || argv.len() < 2 {
+        command.args(&argv[1..]);
+    } else {
+        command
+            .arg(&argv[1])
+            .args(&injection.deno_args)
+            .args(&argv[2..]);
+    }
     command.env("PENV_ENV", environment);
     for (key, value) in values {
         command.env(key, value);
     }
+    for (key, value) in &injection.env {
+        command.env(key, value);
+    }
     command.stdin(Stdio::inherit());
     if piped {
+        // A pipe makes the child think it is not on a terminal and drop its
+        // colours. When penv itself is on one, say so the way Node, Python and
+        // most CLIs read it, unless the environment already chose.
+        if std::io::stdout().is_terminal()
+            && std::env::var_os("NO_COLOR").is_none()
+            && !values.contains_key("NO_COLOR")
+        {
+            for (name, value) in [("FORCE_COLOR", "1"), ("CLICOLOR_FORCE", "1")] {
+                if std::env::var_os(name).is_none() && !values.contains_key(name) {
+                    command.env(name, value);
+                }
+            }
+        }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
     } else {
         command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
@@ -434,67 +482,27 @@ mod tests {
     }
 
     #[test]
-    fn the_environment_falls_back_from_the_flag_to_the_variable_to_development() {
-        assert_eq!(
-            resolve_environment(None, &env(&[])).unwrap(),
-            DEFAULT_ENVIRONMENT
-        );
-        assert_eq!(
-            resolve_environment(None, &env(&[("PENV_ENV", "development")])).unwrap(),
-            DEFAULT_ENVIRONMENT
-        );
-        assert_eq!(
-            resolve_environment(Some("development"), &env(&[("PENV_ENV", "staging")])).unwrap(),
-            DEFAULT_ENVIRONMENT
-        );
-        assert_eq!(
-            resolve_environment(None, &env(&[("PENV_ENV", "")])).unwrap(),
-            DEFAULT_ENVIRONMENT
-        );
-    }
-
-    #[test]
-    fn any_other_environment_is_refused_with_exit_six() {
-        for (flag, pairs) in [
-            (Some("production"), &[][..]),
-            (None, &[("PENV_ENV", "staging")][..]),
-        ] {
-            let error = resolve_environment(flag, &env(pairs)).unwrap_err();
-            assert_eq!(error.exit, Exit::EnvironmentRefused);
-            assert_eq!(error.code, "environment_refused");
-            assert!(error.fix.contains("cloud"));
-        }
-
-        let from_variable =
-            resolve_environment(None, &env(&[("PENV_ENV", "staging")])).unwrap_err();
-        assert!(
-            from_variable.message.contains("PENV_ENV"),
-            "the message must name where staging came from: {}",
-            from_variable.message
-        );
-        let from_flag = resolve_environment(Some("staging"), &env(&[])).unwrap_err();
-        assert!(
-            !from_flag.message.contains("PENV_ENV"),
-            "{}",
-            from_flag.message
-        );
-    }
-
-    #[test]
     fn defaults_fill_the_keys_the_file_left_empty() {
         let schema = schema(vec![
             key("PORT", Some("3000"), false),
             key("NODE_ENV", Some("development"), false),
             key("STRIPE_SECRET_KEY", None, true),
         ]);
-        let mut values: Values = [
-            ("NODE_ENV".to_string(), "test".to_string()),
-            ("STRIPE_SECRET_KEY".to_string(), String::new()),
+        let raw = [
+            (
+                "NODE_ENV".to_string(),
+                penv_schema::resolve::Raw::literal("test"),
+            ),
+            (
+                "STRIPE_SECRET_KEY".to_string(),
+                penv_schema::resolve::Raw::literal(""),
+            ),
         ]
         .into_iter()
         .collect();
 
-        apply_defaults(&schema, &mut values);
+        let (values, errors) = source::finish(&schema, raw, &env(&[]), source::DEFAULT_ENVIRONMENT);
+        assert!(errors.is_empty());
 
         assert_eq!(values.get("PORT").unwrap(), "3000");
         assert_eq!(values.get("NODE_ENV").unwrap(), "test");
@@ -518,7 +526,7 @@ mod tests {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
 
-        let masked = masked_values(&schema, &values);
+        let masked = masked_values(&schema, &values, &Default::default());
         assert!(
             masked.contains(&"left_over_FAKE".to_string()),
             "a key the schema never heard of must still be masked: {masked:?}"
@@ -545,7 +553,16 @@ mod tests {
         const INTERACTIVE: bool = true;
         const PIPED: bool = false;
 
-        assert_eq!(masking(&human, false, false, INTERACTIVE), (false, false));
+        assert_eq!(
+            masking(&human, false, false, INTERACTIVE),
+            (true, false),
+            "masking is on by default, for a person too"
+        );
+        assert_eq!(
+            masking(&human, false, false, PIPED),
+            (true, false),
+            "CI and pipes mask"
+        );
         assert_eq!(masking(&human, true, false, INTERACTIVE), (false, false));
         assert_eq!(
             masking(&agent, true, true, INTERACTIVE),

@@ -21,6 +21,7 @@ Everyday
   unset      Delete one value
   reveal     Show one value; an AI agent needs your approval first
   check      Find problems in .env.schema and missing values
+  scan       Find secret values committed to files
 
 Move values
   pull       Write a .env file from the cloud
@@ -124,6 +125,9 @@ pub enum Command {
         /// Show secrets in the command's output instead of hiding them
         #[arg(long)]
         no_mask: bool,
+        /// Do not load penv's masking into the command's runtime (Node, Bun, Deno, Python)
+        #[arg(long)]
+        no_preload: bool,
         /// The command to run
         #[arg(last = true, num_args = 1..)]
         command: Vec<String>,
@@ -190,6 +194,9 @@ pub enum Command {
     Check {
         /// Check one key instead of all of them
         key: Option<String>,
+        /// The environment to check
+        #[arg(long)]
+        env: Option<String>,
     },
 
     /// Write the typed file for your language (ts, py)
@@ -205,6 +212,21 @@ pub enum Command {
         /// Show what this target's options change instead of writing
         #[arg(long, requires = "target", conflicts_with_all = ["out", "check"])]
         options: bool,
+    },
+
+    /// Find secret values committed to files
+    Scan {
+        /// Files or folders to scan instead of what git would commit
+        paths: Vec<std::path::PathBuf>,
+        /// Scan only what is staged for the next commit
+        #[arg(long)]
+        staged: bool,
+        /// Write a git pre-commit hook that runs penv scan --staged
+        #[arg(long)]
+        install_hook: bool,
+        /// The environment whose values to look for
+        #[arg(long)]
+        env: Option<String>,
     },
 
     /// Write the harness rules that keep agents out of .env

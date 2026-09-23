@@ -59,6 +59,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('ls', 'ls', [CompletionResultType]::ParameterValue, 'List your keys and show which ones have a value')
             [CompletionResult]::new('check', 'check', [CompletionResultType]::ParameterValue, 'Report schema problems and missing values')
             [CompletionResult]::new('gen', 'gen', [CompletionResultType]::ParameterValue, 'Write the typed file for your language (ts, py)')
+            [CompletionResult]::new('scan', 'scan', [CompletionResultType]::ParameterValue, 'Find secret values committed to files')
             [CompletionResult]::new('guard', 'guard', [CompletionResultType]::ParameterValue, 'Write the harness rules that keep agents out of .env')
             [CompletionResult]::new('reveal', 'reveal', [CompletionResultType]::ParameterValue, 'Show one value; an AI agent needs your approval first')
             [CompletionResult]::new('project', 'project', [CompletionResultType]::ParameterValue, 'Your projects: ls, new, rename, rm')
@@ -87,6 +88,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
         'penv;run' {
             [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to read')
             [CompletionResult]::new('--no-mask', '--no-mask', [CompletionResultType]::ParameterValue, 'Show secrets in the command''s output instead of hiding them')
+            [CompletionResult]::new('--no-preload', '--no-preload', [CompletionResultType]::ParameterValue, 'Do not load penv''s masking into the command''s runtime (Node, Bun, Deno, Python)')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
@@ -144,6 +146,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             break
         }
         'penv;check' {
+            [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to check')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
@@ -153,6 +156,15 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterValue, 'Write here instead, relative to the repository root')
             [CompletionResult]::new('--check', '--check', [CompletionResultType]::ParameterValue, 'Compare with what is on disk instead of writing')
             [CompletionResult]::new('--options', '--options', [CompletionResultType]::ParameterValue, 'Show what this target''s options change instead of writing')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
+            [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')
+            break
+        }
+        'penv;scan' {
+            [CompletionResult]::new('--staged', '--staged', [CompletionResultType]::ParameterValue, 'Scan only what is staged for the next commit')
+            [CompletionResult]::new('--install-hook', '--install-hook', [CompletionResultType]::ParameterValue, 'Write a git pre-commit hook that runs penv scan --staged')
+            [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment whose values to look for')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')

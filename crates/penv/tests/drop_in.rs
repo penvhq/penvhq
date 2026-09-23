@@ -581,11 +581,11 @@ fn a_hook_that_has_nothing_to_refuse_says_nothing() {
 }
 
 #[test]
-fn bare_penv_says_the_state_and_nothing_about_credentials() {
+fn bare_penv_says_the_location_and_nothing_about_credentials() {
     let workspace = Workspace::new(&[(".env.schema", SCHEMA)]);
     let output = workspace.penv(&["--json"]);
     let report = json(&output);
-    assert_eq!(report["state"], "local");
+    assert_eq!(report["location"], "local");
     assert_eq!(report["next"], "penv check");
     assert!(report["policy"].is_null(), "{report}");
     assert!(!stdout(&output).contains("credentialTtlSecs"));

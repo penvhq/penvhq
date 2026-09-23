@@ -19,6 +19,23 @@ const ALGORITHM: &str = "AWS4-HMAC-SHA256";
 const BODY: &str = "Action=GetCallerIdentity&Version=2011-06-15";
 const CONTENT_TYPE: &str = "application/x-www-form-urlencoded; charset=utf-8";
 
+/// `AWS_REGION`, then `AWS_DEFAULT_REGION`, then us-east-1. A value that is not
+/// shaped like a region (letters, digits and dashes) is ignored: it becomes part
+/// of a host name, and `x.evil.test/#` must not.
+pub fn region(env: &BTreeMap<String, String>) -> String {
+    REGION_VARS
+        .iter()
+        .filter_map(|k| env.get(*k))
+        .find(|v| {
+            !v.is_empty()
+                && v.len() <= 32
+                && v.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_REGION.to_string())
+}
+
 /// The caller's own AWS identity, signed once and replayed by the server.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AwsIam {
@@ -50,11 +67,7 @@ impl AwsIam {
             access_key_id: at(ACCESS_KEY_VAR)?,
             secret_access_key: at(SECRET_KEY_VAR)?,
             session_token: at(SESSION_TOKEN_VAR),
-            region: REGION_VARS
-                .iter()
-                .copied()
-                .find_map(at)
-                .unwrap_or_else(|| DEFAULT_REGION.to_string()),
+            region: region(env),
         })
     }
 

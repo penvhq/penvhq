@@ -13,7 +13,7 @@ _penv() {
             -*) continue ;;
         esac
         case "${cmd:+$cmd }$word" in
-            init|run|push|pull|login|logout|set|unset|ls|check|gen|guard|reveal|project|"project ls"|"project new"|"project rename"|"project rm"|env|"env ls"|"env new"|"env rename"|"env copy"|"env rm"|machine|"machine enroll"|upgrade|completions|hook|schema|help) cmd="${cmd:+$cmd }$word" ;;
+            init|run|push|pull|login|logout|set|unset|ls|check|gen|scan|guard|reveal|project|"project ls"|"project new"|"project rename"|"project rm"|env|"env ls"|"env new"|"env rename"|"env copy"|"env rm"|machine|"machine enroll"|upgrade|completions|hook|schema|help) cmd="${cmd:+$cmd }$word" ;;
             *) break ;;
         esac
     done
@@ -32,9 +32,9 @@ _penv() {
     words=""
     system=""
     case "$cmd" in
-        "") words="init run push pull login logout set unset ls check gen guard reveal project env machine upgrade completions hook schema help --json --format --agent" ;;
+        "") words="init run push pull login logout set unset ls check gen scan guard reveal project env machine upgrade completions hook schema help --json --format --agent" ;;
         init) words="--force --guards --no-guards --output --json --format --agent" ;;
-        run) words="--env --no-mask --json --format --agent"; system=-c ;;
+        run) words="--env --no-mask --no-preload --json --format --agent"; system=-c ;;
         push) words="--env --org --prune --json --format --agent" ;;
         pull) words="--env --i-am-human --json --format --agent" ;;
         login) words="--json --format --agent" ;;
@@ -42,8 +42,9 @@ _penv() {
         set) words="--env --value --json --format --agent" ;;
         unset) words="--env --json --format --agent" ;;
         ls) words="--env --json --format --agent" ;;
-        check) words="--json --format --agent" ;;
+        check) words="--env --json --format --agent" ;;
         gen) words="--out --check --options --json --format --agent" ;;
+        scan) words="--staged --install-hook --env --json --format --agent" ;;
         guard) words="--all --check --json --format --agent" ;;
         reveal) words="--env --approval --json --format --agent" ;;
         project) words="ls new rename rm --json --format --agent" ;;

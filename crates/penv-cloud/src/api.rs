@@ -261,6 +261,9 @@ pub struct CloudKey {
     pub schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// When the value was last written. `@rotate` counts from it.
+    #[serde(default, rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 impl CloudKey {
@@ -438,6 +441,7 @@ pub struct Api {
 impl Api {
     pub fn new(base_url: &str) -> Result<Api> {
         let config = ureq::Agent::config_builder()
+            .tls_config(crate::tls::config())
             .max_redirects(0)
             .max_redirects_will_error(true)
             .http_status_as_error(false)
@@ -1192,8 +1196,10 @@ mod tests {
             version: Some(3),
             schema: Some(json!({ "type": "port" })),
             value: Some("3000".into()),
+            updated_at: Some("2026-09-22T10:00:00Z".into()),
         };
         let sent = key.to_write();
+        assert_eq!(sent.get("updatedAt"), None);
         assert_eq!(sent.get("kind"), None);
         assert_eq!(sent.get("version"), None);
         assert_eq!(sent["name"], "PORT");

@@ -110,6 +110,7 @@ impl Workspace {
             .env_remove("PENV_ENV")
             .env_remove("LOCALAPPDATA")
             .env_remove("XDG_CACHE_HOME")
+            .env_remove("SSL_CERT_FILE")
             .env_remove("HOME");
         // The suite itself may be running under an agent, and these tests decide
         // for themselves which sessions are one.
@@ -930,7 +931,7 @@ fn bare_penv_reports_cloud_without_saying_which_credential() {
     let output = workspace.run(&mock, &["--json"]);
 
     let report = json_of(&stdout(&output));
-    assert_eq!(report["state"], "cloud");
+    assert_eq!(report["location"], "cloud");
     assert_eq!(report["project"], format!("acme/{PROJECT}"));
     assert_eq!(report["credential"], true);
     assert_eq!(report["next"], "penv run");
@@ -1313,4 +1314,363 @@ fn a_pulled_env_file_is_readable_only_by_this_account() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+}
+
+// --- local files over the cloud ----------------------------------------------
+
+#[test]
+fn a_local_layer_wins_over_the_cloud_and_run_names_the_key_it_replaced() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".env.local", "PORT=5151\n"),
+    ]);
+    let output = workspace
+        .command(&mock)
+        .args(["--agent", "run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .expect("penv runs");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("5151"), "{}", stdout(&output));
+    let warned = stderr(&output);
+    assert!(
+        warned.contains("PORT (") && warned.contains(".env.local"),
+        "{warned}"
+    );
+    assert!(!warned.contains(SECRET) && !stdout(&output).contains(SECRET));
+}
+
+#[test]
+fn a_penv_reference_reads_another_environment_once_from_the_cloud() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let production = "/api/v1/envs/acme/api-gateway/production";
+    mock.on(
+        "GET",
+        production,
+        200,
+        &json!({ "keys": [ { "path": "", "name": "PORT", "kind": "static", "version": 4, "value": "8443" } ] })
+            .to_string(),
+    );
+    let schema = format!(
+        "# @penv=acme/{PROJECT} @schema=1\n\n# @type=string(startsWith=sk_)\nSTRIPE_SECRET_KEY=\n\n# @type=port @sensitive=false\nPORT=penv(production/PORT)\n"
+    );
+    let workspace = Workspace::new(&[(".env.schema", &schema)]);
+    let output = workspace
+        .command(&mock)
+        .args(["--agent", "run", "--"])
+        .args(SHELL)
+        .arg(if cfg!(windows) {
+            "echo %PORT%"
+        } else {
+            "echo $PORT"
+        })
+        .output()
+        .expect("penv runs");
+    // The development body sets PORT itself, which wins over the default.
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("3000"), "{}", stdout(&output));
+    assert!(
+        mock.hits("GET", production).is_empty(),
+        "a default that never applies is not fetched"
+    );
+}
+
+#[test]
+fn check_counts_rotation_from_the_cloud_write_time() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        ENVS,
+        200,
+        &json!({ "keys": [
+            { "path": "", "name": "STRIPE_SECRET_KEY", "kind": "static", "version": 2, "value": SECRET, "updatedAt": "2020-01-01T00:00:00Z" },
+            { "path": "", "name": "PORT", "kind": "static", "version": 1, "value": "3000" },
+        ] })
+        .to_string(),
+    );
+    let schema = format!(
+        "# @penv=acme/{PROJECT} @schema=1\n\n# @type=string(startsWith=sk_) @rotate=90d\nSTRIPE_SECRET_KEY=\n\n# @type=port @sensitive=false\nPORT=3000\n"
+    );
+    let workspace = Workspace::new(&[(".env.schema", &schema)]);
+    let output = workspace.run(&mock, &["--json", "check"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json_of(&stdout(&output));
+    assert_eq!(
+        report["rotation"][0]["due"], "2020-03-31T00:00:00Z",
+        "{report}"
+    );
+    assert_eq!(report["rotation"][0]["overdue"], true);
+    assert!(!stdout(&output).contains(SECRET));
+}
+
+#[test]
+fn a_computed_default_fetches_its_address_once_for_every_key_that_names_it() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        ENVS,
+        200,
+        &json!({ "keys": [ { "path": "", "name": "STRIPE_SECRET_KEY", "kind": "static", "version": 2, "value": SECRET } ] })
+            .to_string(),
+    );
+    let production = "/api/v1/envs/acme/api-gateway/production";
+    mock.on(
+        "GET",
+        production,
+        200,
+        &json!({ "keys": [ { "path": "", "name": "PORT", "kind": "static", "version": 4, "value": "8443" } ] })
+            .to_string(),
+    );
+    let schema = format!(
+        "# @penv=acme/{PROJECT} @schema=1\n\n# @type=string(startsWith=sk_)\nSTRIPE_SECRET_KEY=\n\n# @type=port @sensitive=false\nPORT=penv(production/PORT)\n\n# @type=port @sensitive=false\nPORT_TOO=penv(production/PORT)\n"
+    );
+    let workspace = Workspace::new(&[(".env.schema", &schema)]);
+    let output = workspace
+        .command(&mock)
+        .args(["--agent", "run", "--"])
+        .args(SHELL)
+        .arg(if cfg!(windows) {
+            "echo %PORT% %PORT_TOO%"
+        } else {
+            "echo $PORT $PORT_TOO"
+        })
+        .output()
+        .expect("penv runs");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("8443 8443"), "{}", stdout(&output));
+    assert_eq!(
+        mock.hits("GET", production).len(),
+        1,
+        "one read per address"
+    );
+}
+
+// --- AWS credentials for containers -------------------------------------------
+
+fn aws_ready(mock: &Mock) {
+    mock.on("GET", ENVS, 200, &values_body());
+    mock.on(
+        "POST",
+        "/api/v1/auth/aws",
+        200,
+        &json!({ "credential": "pcm_FAKE", "expiresIn": 900 }).to_string(),
+    );
+}
+
+fn without_token(workspace: &Workspace, mock: &Mock) -> Command {
+    let mut command = workspace.command(mock);
+    command.env_remove("PENV_TOKEN");
+    for name in [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_ROLE_ARN",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "CI_JOB_JWT_V2",
+        "ID_TOKEN",
+        "PENV_OIDC_TOKEN",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
+#[test]
+fn an_ecs_or_eks_pod_identity_container_proves_itself_with_its_endpoint_credentials() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "GET",
+        "/creds",
+        200,
+        &json!({ "AccessKeyId": "ASIACONTAINER", "SecretAccessKey": "s3cr3t", "Token": "t0k" })
+            .to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    std::fs::write(workspace.path().join("pod-token"), "pod-auth\n").unwrap();
+    let output = without_token(&workspace, &mock)
+        .env(
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            format!("{}/creds", mock.url()),
+        )
+        .env(
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+            workspace.path().join("pod-token"),
+        )
+        .args(["--agent", "run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        mock.last("GET", "/creds").header("authorization"),
+        Some("pod-auth")
+    );
+    let proof = mock.last("POST", "/api/v1/auth/aws").body;
+    assert!(proof.contains("ASIACONTAINER"), "{proof}");
+    assert!(
+        !proof.contains("s3cr3t"),
+        "the secret key signs, it is never sent"
+    );
+}
+
+#[test]
+fn a_container_uri_to_an_arbitrary_host_is_never_called() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let output = without_token(&workspace, &mock)
+        .env(
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "http://evil.invalid/creds",
+        )
+        .env("AWS_CONTAINER_AUTHORIZATION_TOKEN", "pod-auth")
+        .args(["--agent", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "no credential: {}",
+        stderr(&output)
+    );
+    assert!(mock.hits("POST", "/api/v1/auth/aws").is_empty());
+}
+
+#[test]
+fn an_eks_irsa_pod_trades_its_token_file_for_keys_then_proves_itself() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "POST",
+        "/",
+        200,
+        "<AssumeRoleWithWebIdentityResponse><AssumeRoleWithWebIdentityResult><Credentials><AccessKeyId>ASIAWEBID</AccessKeyId><SecretAccessKey>w3bs3cr3t</SecretAccessKey><SessionToken>st</SessionToken></Credentials></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>",
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    std::fs::write(workspace.path().join("sa-token"), "eyJ.pod.jwt\n").unwrap();
+    let output = without_token(&workspace, &mock)
+        .env(
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            workspace.path().join("sa-token"),
+        )
+        .env("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/app")
+        .env("AWS_ENDPOINT_URL_STS", mock.url())
+        .args(["--agent", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let sts = mock.last("POST", "/").body;
+    assert!(sts.contains("Action=AssumeRoleWithWebIdentity"), "{sts}");
+    assert!(
+        sts.contains("RoleArn=arn%3Aaws%3Aiam%3A%3A123456789012%3Arole%2Fapp"),
+        "{sts}"
+    );
+    assert!(sts.contains("WebIdentityToken=eyJ.pod.jwt"), "{sts}");
+    let proof = mock.last("POST", "/api/v1/auth/aws").body;
+    assert!(
+        proof.contains("ASIAWEBID") && !proof.contains("w3bs3cr3t"),
+        "{proof}"
+    );
+}
+
+#[test]
+fn a_refused_web_identity_says_why_without_echoing_the_token() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "POST",
+        "/",
+        403,
+        "<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>",
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    std::fs::write(workspace.path().join("sa-token"), "eyJ.secret.jwt").unwrap();
+    let output = without_token(&workspace, &mock)
+        .env(
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            workspace.path().join("sa-token"),
+        )
+        .env("AWS_ROLE_ARN", "arn:aws:iam::1:role/app")
+        .env("AWS_ENDPOINT_URL_STS", mock.url())
+        .args(["--agent", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_ne!(output.status.code(), Some(0));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("AccessDenied"), "{text}");
+    assert!(!text.contains("eyJ.secret.jwt"));
+}
+
+// --- which certificate authorities are trusted ---------------------------------
+
+#[test]
+fn a_ca_bundle_the_user_can_write_is_refused_for_an_agent_and_used_for_a_person() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let bundle = workspace.path().join("ca.pem");
+    let system = [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+    ]
+    .into_iter()
+    .find(|p| std::path::Path::new(p).is_file());
+    let Some(system) = system else {
+        return;
+    };
+    std::fs::copy(system, &bundle).unwrap();
+
+    let agent = workspace
+        .command(&mock)
+        .env("SSL_CERT_FILE", &bundle)
+        .args(["--agent", "run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert_ne!(agent.status.code(), Some(0));
+    let said = format!("{}{}", stdout(&agent), stderr(&agent));
+    assert!(said.contains("untrusted_ca_bundle"), "{said}");
+    assert!(
+        mock.hits("GET", ENVS).is_empty(),
+        "nothing is sent through a bundle an agent could have written"
+    );
+
+    let person = workspace
+        .command(&mock)
+        .env("SSL_CERT_FILE", &bundle)
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert_eq!(person.status.code(), Some(0), "{}", stderr(&person));
+
+    std::fs::write(&bundle, "not a certificate\n").unwrap();
+    let broken = workspace
+        .command(&mock)
+        .env("SSL_CERT_FILE", &bundle)
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .unwrap();
+    assert!(
+        stderr(&broken).contains("holds no PEM certificate")
+            || stdout(&broken).contains("holds no PEM certificate"),
+        "{} {}",
+        stdout(&broken),
+        stderr(&broken)
+    );
 }

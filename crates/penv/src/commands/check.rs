@@ -1,41 +1,48 @@
 use std::path::Path;
 
-use penv_schema::{Diagnostic, Values, Violation, extras, validate, validate_key};
+use penv_schema::{Diagnostic, Violation, extras, validate, validate_key};
 use serde_json::{Value, json};
 
 use crate::error::{CliError, Exit};
-use crate::files::{ENV_FILE, SCHEMA_FILE, find_schema, read_file, show};
+use std::io::IsTerminal;
+
+use crate::agent::detect_here;
+use crate::commands::cloud::Fetcher;
+use crate::env::Env;
+use crate::files::show;
 use crate::output::{Output, Report};
+use crate::source;
 
-/// Schema problems and missing values, for every key or for one. Both are the
-/// output, not an error, so they go to stdout and set exit 3.
-pub fn run(out: &Output, cwd: &Path, only: Option<&str>) -> Result<Report, CliError> {
-    let Some(schema_path) = find_schema(cwd) else {
-        return Err(CliError::new(
-            "no_schema",
-            format!("no {SCHEMA_FILE} here or in any directory above."),
-            "Run penv init to write one from your .env.",
-        ));
-    };
-    let source = read_file(&schema_path)?;
+/// Schema problems, missing values and values that could not be computed, for
+/// every key or for one. All three are the output, not an error, so they go to
+/// stdout and set exit 3. Schema warnings and rotation reminders never change the
+/// exit code.
+pub fn run(
+    out: &Output,
+    cwd: &Path,
+    only: Option<&str>,
+    env_flag: Option<&str>,
+    env: &Env,
+) -> Result<Report, CliError> {
     let style = out.style();
-
-    let schema = match penv_schema::parse(&source) {
+    let (schema_path, parsed) = source::parse(cwd)?;
+    let schema = match parsed {
         Ok(schema) => schema,
-        Err(diagnostics) => {
-            let text = diagnostics
+        Err(found) => {
+            let text = found
                 .iter()
-                .map(|d| {
+                .map(|(file, d)| {
                     format!(
                         "{} {}:{} {}",
                         style.red("fail"),
-                        show(&schema_path),
+                        show(file),
                         d.line,
                         d.message
                     )
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            let diagnostics: Vec<Diagnostic> = found.into_iter().map(|(_, d)| d).collect();
             return Ok(
                 Report::new(body(&schema_path, None, &diagnostics, &[], &[], &[]), text)
                     .with_exit(Exit::Validation),
@@ -44,16 +51,43 @@ pub fn run(out: &Output, cwd: &Path, only: Option<&str>) -> Result<Report, CliEr
     };
 
     let dir = schema_path.parent().unwrap_or(cwd);
-    let env_path = dir.join(ENV_FILE);
-    let (values, warnings) = if env_path.is_file() {
-        let env = penv_dotenv::read(&read_file(&env_path)?);
-        (env.values(), env.warnings)
-    } else {
-        (Values::new(), Vec::new())
+    let environment = source::environment(env_flag, env, &schema, dir);
+    let detection = detect_here(env, std::io::stdout().is_terminal());
+    let mut fetcher = Fetcher::new(env, &detection);
+    // CI often checks without a credential: the cloud is read when it can be,
+    // and the local files are checked when it cannot.
+    let mut notes: Vec<String> = Vec::new();
+    let resolved = match source::values(&schema, dir, &environment, env, &mut fetcher) {
+        Ok(resolved) => resolved,
+        Err(error) if schema.is_cloud() => {
+            notes.push(format!(
+                "the cloud was not read ({}), so this checked the local files",
+                error.message.trim_end_matches('.')
+            ));
+            let mut local = source::layers(dir, &penv_dotenv::cascade(&environment))?;
+            source::process_wins(&mut local, &schema, env, false);
+            let (values, errors) = source::finish(&schema, local.raw.clone(), env, &environment);
+            source::Resolved {
+                environment: environment.clone(),
+                values,
+                errors,
+                layers: local,
+                ..Default::default()
+            }
+        }
+        Err(error) => return Err(error),
     };
+    let values = &resolved.values;
+    let schema = schema.for_environment(&environment);
+    let file_warnings: Vec<penv_dotenv::Warning> = resolved
+        .layers
+        .warnings
+        .iter()
+        .map(|(_, w)| w.clone())
+        .collect();
 
-    let violations = match only {
-        None => validate(&schema, &values),
+    let mut violations = match only {
+        None => validate(&schema, values),
         Some(name) => {
             let key = schema.get(name).ok_or_else(|| {
                 CliError::new(
@@ -66,18 +100,89 @@ pub fn run(out: &Output, cwd: &Path, only: Option<&str>) -> Result<Report, CliEr
             validate_key(key, values.get(name).map(String::as_str))
         }
     };
+    for error in resolved.errors.iter().filter(|e| e.soft) {
+        if only.is_none_or(|name| name == error.key) {
+            notes.push(error.message.clone());
+        }
+    }
+    violations.extend(
+        source::public_leaks(&schema, &resolved.tainted)
+            .into_iter()
+            .filter(|v| only.is_none_or(|n| n == v.key)),
+    );
+    for (line, message) in &resolved.failed_asserts {
+        if only.is_none() {
+            violations.push(Violation::new(
+                &format!("@assert line {line}"),
+                "assert",
+                message.clone(),
+            ));
+        }
+    }
+    if only.is_none() {
+        for (file, how, keys) in source::exposed_secrets(&schema, &resolved) {
+            violations.push(Violation::new(
+                &show(&file),
+                "git",
+                source::exposure_message(&file, how, &keys),
+            ));
+        }
+    }
+    for key in source::too_short_to_mask(&schema, &resolved.tainted, values) {
+        notes.push(format!(
+            "{key} is sensitive and shorter than {} characters, so penv cannot mask it",
+            penv_mask::MIN_SECRET_LEN
+        ));
+    }
+    for key in &resolved.pending {
+        notes.push(format!(
+            "{key} is generated by the first penv run and kept in .env.local"
+        ));
+    }
+    for key in &resolved.tainted {
+        if schema.get(key).is_some_and(|k| !k.sensitive) {
+            notes.push(format!("{key} is built from a sensitive value, so penv masks it though it is marked @sensitive=false"));
+        }
+    }
+    let (config_violations, config_notes) =
+        bundler_configs(dir, &schema, &resolved.tainted, &resolved.layers.origin);
+    if only.is_none() {
+        violations.extend(config_violations);
+    }
+    notes.extend(config_notes);
+    if let Some(features) = penv_only(&schema_path) {
+        notes.push(format!(
+            "{} uses penv-only features ({features}); varlock will not load it",
+            show(&schema_path)
+        ));
+    }
+    for error in resolved.errors.iter().filter(|e| !e.soft) {
+        if only.is_none_or(|name| name == error.key) {
+            violations.push(Violation::new(
+                &error.key,
+                "computed",
+                error.message.clone(),
+            ));
+        }
+    }
 
     // Drift is a warning, not a violation: it never changes the exit code.
     let drift = match only {
         Some(_) => Vec::new(),
-        None => extras(&schema, &values),
+        None => extras(&schema, values),
     };
+
+    let rotation = rotation(&schema, dir, &environment, only, &mut fetcher, &mut notes);
+    let sources = resolved
+        .cloud
+        .clone()
+        .or_else(|| (!resolved.layers.is_empty()).then(|| resolved.layers.names()));
 
     let mut lines: Vec<String> = Vec::new();
     if violations.is_empty() {
         let checked = only.map_or(schema.keys.len(), |_| 1);
         lines.push(format!(
-            "{} {checked} key(s) in {}",
+            "{} {checked} key(s) in {} for {environment}",
             style.green("ok"),
             show(&schema_path)
         ));
@@ -87,33 +192,49 @@ pub fn run(out: &Output, cwd: &Path, only: Option<&str>) -> Result<Report, CliEr
             .iter()
             .map(|v| format!("{} {}", style.red("fail"), v.message)),
     );
-    lines.extend(drift.iter().map(|key| {
-        style.dim(&format!(
-            "drift {key} is in {} and not in {}; penv masks it but never validates it",
-            show(&env_path),
-            show(&schema_path)
-        ))
-    }));
-    lines.extend(warnings.iter().map(|w| {
+    lines.extend(schema.warnings.iter().map(|w| {
         style.dim(&format!(
             "note {}:{} {}",
-            show(&env_path),
+            show(&schema_path),
             w.line,
             w.message
         ))
     }));
-
-    let mut report = Report::new(
-        body(
-            &schema_path,
-            env_path.is_file().then(|| show(&env_path)),
-            &[],
-            &violations,
-            &warnings,
-            &drift,
-        ),
-        lines.join("\n"),
+    lines.extend(rotation.iter().map(|r| style.yellow(&r.text)));
+    lines.extend(drift.iter().map(|key| {
+        style.dim(&format!(
+            "drift {key} has a value and no block in {}; penv masks it but never validates it",
+            show(&schema_path)
+        ))
+    }));
+    lines.extend(
+        resolved
+            .layers
+            .warnings
+            .iter()
+            .map(|(file, w)| style.dim(&format!("note {}:{} {}", show(file), w.line, w.message))),
     );
+    lines.extend(notes.iter().map(|n| style.dim(&format!("note {n}"))));
+
+    let mut json = body(
+        &schema_path,
+        sources,
+        &[],
+        &violations,
+        &file_warnings,
+        &drift,
+    );
+    json["environment"] = json!(environment);
+    json["schemaWarnings"] = json!(
+        schema
+            .warnings
+            .iter()
+            .map(Diagnostic::to_json)
+            .collect::<Vec<_>>()
+    );
+    json["rotation"] = json!(rotation.iter().map(|r| r.json.clone()).collect::<Vec<_>>());
+    json["notes"] = json!(notes);
+    let mut report = Report::new(json, lines.join("\n"));
     if only.is_none() {
         // Guard coverage is part of a check; a stale guard is reported, never failed on.
         let guards = super::guard::run(out, cwd, true, false, &[])?;
@@ -163,5 +284,252 @@ pub(super) fn body(
             "code": "drift",
             "message": format!("{key} has a value with no block in the schema. penv masks it, and validates nothing about it. Add a block, or drop the key."),
         })).collect::<Vec<_>>(),
+    })
+}
+
+struct Reminder {
+    text: String,
+    json: Value,
+}
+
+/// `@rotate` reminders. The clock is the cloud's last write under a header and
+/// `.penv/config.toml` without one, so every clone on every machine agrees.
+fn rotation(
+    schema: &penv_schema::Schema,
+    dir: &Path,
+    environment: &str,
+    only: Option<&str>,
+    fetcher: &mut Fetcher,
+    notes: &mut Vec<String>,
+) -> Vec<Reminder> {
+    use penv_cloud::Clock as _;
+    use penv_schema::rotate::{Rotation, Span, instant, parse_instant, rotation as status};
+
+    let keys: Vec<_> = schema
+        .keys
+        .iter()
+        .filter(|k| k.rotate.is_some() && only.is_none_or(|n| n == k.name))
+        .collect();
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let now = penv_cloud::SystemClock.now();
+    let written: Vec<Option<u64>> = match (&schema.org, &schema.project) {
+        (Some(org), Some(project)) => {
+            let at = penv_cloud::api::Address::new(org, project, environment);
+            match fetcher.keys(&at) {
+                Ok(stored) => keys
+                    .iter()
+                    .map(|k| {
+                        stored
+                            .iter()
+                            .find(|s| s.name == k.name)
+                            .and_then(|s| s.updated_at.as_deref())
+                            .and_then(penv_cloud::clock::epoch_from_rfc3339)
+                    })
+                    .collect(),
+                Err(_) => {
+                    notes.push(format!("@rotate was not checked: {at} could not be read"));
+                    return Vec::new();
+                }
+            }
+        }
+        _ => {
+            let config = crate::config::Config::load(dir).unwrap_or_default();
+            keys.iter()
+                .map(|k| config.rotated(&k.name).and_then(parse_instant))
+                .collect()
+        }
+    };
+
+    let mut out = Vec::new();
+    for (key, written) in keys.iter().zip(written) {
+        let rotate = key.rotate.as_deref().unwrap_or_default();
+        let Some(span) = Span::parse(rotate) else {
+            continue;
+        };
+        let show_at = |t: u64| {
+            if span.is_sub_day() {
+                instant(t)
+            } else {
+                instant(t)[..10].to_string()
+            }
+        };
+        match status(span, written, now) {
+                        Rotation::Unrecorded => out.push(Reminder {
+                text: if schema.is_cloud() {
+                    format!(
+                        "rotate {} has @rotate={rotate}, and the cloud has not said when it was last written",
+                        key.name
+                    )
+                } else {
+                    format!(
+                        "rotate {} has @rotate={rotate} and no recorded write; penv set {} records one",
+                        key.name, key.name
+                    )
+                },
+                json: json!({ "key": key.name, "rotate": rotate, "recorded": false }),
+            }),
+            Rotation::Due { due, left } if left <= 0 => out.push(Reminder {
+                text: format!("rotate {} was due {}; rotate it, then penv set {}", key.name, show_at(due), key.name),
+                json: json!({ "key": key.name, "rotate": rotate, "recorded": true, "due": instant(due), "overdue": true }),
+            }),
+            Rotation::Due { due, .. } => out.push(Reminder {
+                text: format!("rotate {} by {}", key.name, show_at(due)),
+                json: json!({ "key": key.name, "rotate": rotate, "recorded": true, "due": instant(due), "overdue": false }),
+            }),
+        }
+    }
+    out
+}
+
+/// The penv-only features a schema file uses, which varlock rejects.
+fn penv_only(schema_path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(schema_path).ok()?;
+    let found: Vec<&str> = [
+        ("@rotate", "@rotate"),
+        ("@assert(", "@assert"),
+        ("random(", "random()"),
+        ("match(", "match()"),
+        ("penv(", "penv()"),
+        ("| urlencode", "filters"),
+        ("| base64", "filters"),
+        ("| lower", "filters"),
+        ("| upper", "filters"),
+        ("| trim", "filters"),
+    ]
+    .iter()
+    .filter(|(needle, _)| text.contains(needle))
+    .map(|(_, name)| *name)
+    .fold(Vec::new(), |mut acc, name| {
+        if !acc.contains(&name) {
+            acc.push(name);
+        }
+        acc
+    });
+    (!found.is_empty()).then(|| found.join(", "))
+}
+
+/// Config files that can send any variable to the client, whatever its prefix:
+/// Next.js `env`, Vite and webpack `define`, Expo `extra`, Nuxt
+/// `runtimeConfig.public`, Astro `astro:env`, Rsbuild and Rspack `define`.
+const BUNDLER_CONFIGS: [&str; 11] = [
+    "next.config",
+    "vite.config",
+    "nuxt.config",
+    "astro.config",
+    "svelte.config",
+    "webpack.config",
+    "rsbuild.config",
+    "rspack.config",
+    "app.config",
+    "babel.config",
+    ".babelrc",
+];
+
+/// Bundler setups that ship server keys to the client. Two are certain and fail
+/// `check`: `react-native-config`, which puts every key in `.env` into the app,
+/// and babel's inline-environment plugin, which inlines every variable at build.
+/// A config file that names a sensitive key is a note: it may only read it on
+/// the server. Parcel inlines what browser code names; the build scan covers it.
+fn bundler_configs(
+    dir: &Path,
+    schema: &penv_schema::Schema,
+    tainted: &std::collections::BTreeSet<String>,
+    origin: &std::collections::BTreeMap<String, std::path::PathBuf>,
+) -> (Vec<Violation>, Vec<String>) {
+    let sensitive: Vec<&str> = schema
+        .keys
+        .iter()
+        .map(|k| k.name.as_str())
+        .filter(|name| source::is_sensitive(schema, tainted, name))
+        .collect();
+    let mut violations = Vec::new();
+    let mut notes = Vec::new();
+    let package = std::fs::read_to_string(dir.join("package.json")).unwrap_or_default();
+    let depends = |name: &str| package.contains(&format!("\"{name}\""));
+
+    if depends("react-native-config") {
+        let in_dotenv: Vec<&str> = sensitive
+            .iter()
+            .copied()
+            .filter(|name| {
+                origin
+                    .get(*name)
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(".env"))
+            })
+            .collect();
+        if !in_dotenv.is_empty() {
+            violations.push(Violation::new(
+                "react-native-config",
+                "public",
+                format!(
+                    "react-native-config puts every key in .env into the app bundle, and these are sensitive: {}. Move them to penv.cloud or a server, or stop reading them from .env.",
+                    in_dotenv.join(", ")
+                ),
+            ));
+        }
+    }
+
+    let mut configs: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            BUNDLER_CONFIGS
+                .iter()
+                .any(|c| name == *c || name.starts_with(&format!("{c}.")))
+        })
+        .collect();
+    configs.sort();
+    let inline_plugin = "transform-inline-environment-variables";
+    if (depends(&format!("babel-plugin-{inline_plugin}"))
+        || package.contains(inline_plugin)
+        || configs
+            .iter()
+            .any(|c| std::fs::read_to_string(c).is_ok_and(|t| t.contains(inline_plugin))))
+        && !sensitive.is_empty()
+    {
+        violations.push(Violation::new(
+            "babel",
+            "public",
+            format!(
+                "babel's {inline_plugin} inlines every environment variable into the bundle, sensitive ones included: {}. Use its include list, or a public prefix.",
+                sensitive.join(", ")
+            ),
+        ));
+    }
+    for config in &configs {
+        let Ok(text) = std::fs::read_to_string(config) else {
+            continue;
+        };
+        let named: Vec<&str> = sensitive
+            .iter()
+            .copied()
+            .filter(|k| names(&text, k))
+            .collect();
+        if !named.is_empty() {
+            notes.push(format!(
+                "{} names {}: a value placed in Next.js env, a define, Expo extra or Nuxt runtimeConfig.public ships to the client",
+                show(config),
+                named.join(", ")
+            ));
+        }
+    }
+    if depends("parcel") {
+        notes.push("Parcel inlines every process.env value browser code names; penv run checks its output after the build".into());
+    }
+    (violations, notes)
+}
+
+/// True when `key` appears as a whole name in `text`.
+fn names(text: &str, key: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    text.match_indices(key).any(|(at, _)| {
+        !word(text[..at].chars().next_back()) && !word(text[at + key.len()..].chars().next())
     })
 }

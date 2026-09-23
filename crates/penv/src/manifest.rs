@@ -53,7 +53,7 @@ const META: &[Meta] = &[
         path: "run",
         implemented: true,
         exit_codes: &[0, 1, 3, 5, 6],
-        human_flags: &["no-mask"],
+        human_flags: &["no-mask", "no-preload"],
         env_flags: &[("env", "PENV_ENV")],
         arg_completes: &[("command", "command")],
         ..DEFAULT_META
@@ -113,12 +113,20 @@ const META: &[Meta] = &[
         path: "check",
         implemented: true,
         exit_codes: &[0, 1, 3],
+        env_flags: &[("env", "PENV_ENV")],
         ..DEFAULT_META
     },
     Meta {
         path: "gen",
         implemented: true,
         exit_codes: &[0, 1, 3],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "scan",
+        implemented: true,
+        exit_codes: &[0, 1, 3, 5],
+        env_flags: &[("env", "PENV_ENV")],
         ..DEFAULT_META
     },
     Meta {

@@ -40,6 +40,7 @@ impl Response {
 pub fn get(url: &str, accept: &str) -> Result<Response> {
     let url = checked_url(url)?;
     let config = ureq::Agent::config_builder()
+        .tls_config(crate::tls::config())
         .http_status_as_error(false)
         .https_only(true)
         .user_agent(format!("penv/{}", env!("CARGO_PKG_VERSION")))

@@ -62,6 +62,7 @@ GET  /api/v1/envs/{org}/{project}/{environment}     If-None-Match honoured
   -> 304
   -> 200 ETag + {
        "keys": [ { "path": "", "name": "DATABASE_URL", "kind": "static", "version": 3,
+                   "updatedAt": "2026-09-22T14:05:00Z",     not yet served; the CLI reads it for @rotate (Design section 8)
                    "schema": { <one key of the .env.schema JSON IR> },
                    "value": "..." } ],
        "skipped": [ "path/name" ]      dynamic keys and keys with no version; absent when empty

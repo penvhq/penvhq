@@ -6,6 +6,30 @@ pub const SCHEMA_FILE: &str = ".env.schema";
 pub const ENV_FILE: &str = ".env";
 pub const GITIGNORE_FILE: &str = ".gitignore";
 
+/// Every value file in `dir` (`.env`, `.env.local`, `.env.<env>`, ...), `.env`
+/// first and the rest in name order. The schema and example files are not values.
+pub fn value_files(dir: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(penv_dotenv::is_value_file)
+        })
+        .collect();
+    found.sort_by_key(|p| {
+        (
+            p.file_name() != Some(std::ffi::OsStr::new(ENV_FILE)),
+            p.clone(),
+        )
+    });
+    found
+}
+
 /// The nearest `.env.schema` at or above `start`. A monorepo holds one per app.
 pub fn find_schema(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|dir| {

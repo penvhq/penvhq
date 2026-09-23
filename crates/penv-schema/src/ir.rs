@@ -2,14 +2,21 @@ use std::fmt;
 
 use serde_json::{Value, json};
 
-/// Key prefixes that a bundler inlines into client code, so the value is public.
-pub const PUBLIC_PREFIXES: [&str; 6] = [
+/// Key prefixes a framework sends to the browser, so the value is public:
+/// Next.js, Vite (and Remix, SolidStart, TanStack Start on it), SvelteKit and
+/// Astro and Rsbuild, Expo, Nuxt's public runtime config, Create React App,
+/// Gatsby, Vue CLI, Storybook. `.penv/config.toml` `[public] prefixes` adds more,
+/// for a custom Vite `envPrefix`.
+pub const PUBLIC_PREFIXES: [&str; 9] = [
     "NEXT_PUBLIC_",
     "VITE_",
     "PUBLIC_",
     "EXPO_PUBLIC_",
     "NUXT_PUBLIC_",
     "REACT_APP_",
+    "GATSBY_",
+    "VUE_APP_",
+    "STORYBOOK_",
 ];
 
 pub fn is_public_prefixed(name: &str) -> bool {
@@ -28,14 +35,58 @@ pub fn is_valid_key_name(name: &str) -> bool {
 /// The grammar version this build writes and understands.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// `@defaultRequired`: `infer` makes a key required only when the schema gives it a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequiredDefault {
+    #[default]
+    Yes,
+    No,
+    Infer,
+}
+
+impl RequiredDefault {
+    pub fn to_json(self) -> Value {
+        match self {
+            RequiredDefault::Yes => Value::Bool(true),
+            RequiredDefault::No => Value::Bool(false),
+            RequiredDefault::Infer => Value::String("infer".into()),
+        }
+    }
+}
+
+/// `@assert(expression, "message")`: a check across keys, written in any block.
+/// The expression uses the value functions; the message is shown when it is false.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assert {
+    pub expr: String,
+    pub message: String,
+    pub line: u32,
+}
+
+/// `@import(path, KEY, ...)`: another schema's keys, all of them when none are named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    pub path: String,
+    pub keys: Vec<String>,
+    pub line: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     pub org: Option<String>,
     pub project: Option<String>,
     pub schema_version: u32,
     pub default_sensitive: bool,
-    pub default_required: bool,
+    pub default_required: RequiredDefault,
+    /// `@currentEnv=$KEY`: the key whose value names the environment.
+    pub current_env: Option<String>,
+    pub imports: Vec<Import>,
+    pub asserts: Vec<Assert>,
     pub keys: Vec<Key>,
+    /// Lines penv read past: varlock-only or unknown decorators, types and constraints.
+    pub warnings: Vec<Diagnostic>,
+    /// Public prefixes beyond [`PUBLIC_PREFIXES`], from `.penv/config.toml`.
+    pub public_prefixes: Vec<String>,
 }
 
 impl Default for Schema {
@@ -45,8 +96,13 @@ impl Default for Schema {
             project: None,
             schema_version: SCHEMA_VERSION,
             default_sensitive: true,
-            default_required: true,
+            default_required: RequiredDefault::Yes,
+            current_env: None,
+            imports: Vec::new(),
+            asserts: Vec::new(),
+            public_prefixes: Vec::new(),
             keys: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -54,6 +110,37 @@ impl Default for Schema {
 impl Schema {
     pub fn get(&self, name: &str) -> Option<&Key> {
         self.keys.iter().find(|k| k.name == name)
+    }
+
+    /// True when a framework sends this key to the browser.
+    pub fn is_public(&self, name: &str) -> bool {
+        is_public_prefixed(name)
+            || self
+                .public_prefixes
+                .iter()
+                .any(|p| name.starts_with(p.as_str()))
+    }
+
+    /// The prefix that makes this key public, for messages.
+    pub fn public_prefix(&self, name: &str) -> Option<String> {
+        PUBLIC_PREFIXES
+            .iter()
+            .map(|p| p.to_string())
+            .chain(self.public_prefixes.iter().cloned())
+            .filter(|p| name.starts_with(p.as_str()))
+            .max_by_key(String::len)
+    }
+
+    /// The schema as one environment sees it: `forEnv` requirements settled.
+    pub fn for_environment(&self, environment: &str) -> Schema {
+        let mut out = self.clone();
+        for key in &mut out.keys {
+            if let Some((envs, required)) = &key.required_in {
+                let listed = envs.iter().any(|e| e == environment);
+                key.required = if listed { *required } else { !*required };
+            }
+        }
+        out
     }
 
     /// True when the file names a cloud project.
@@ -67,7 +154,10 @@ impl Schema {
             "org": self.org,
             "project": self.project,
             "defaultSensitive": self.default_sensitive,
-            "defaultRequired": self.default_required,
+            "defaultRequired": self.default_required.to_json(),
+            "currentEnv": self.current_env,
+            "imports": self.imports.iter().map(|i| json!({ "path": i.path, "keys": i.keys })).collect::<Vec<_>>(),
+                        "asserts": self.asserts.iter().map(|a| json!({ "expr": a.expr, "message": a.message })).collect::<Vec<_>>(),
             "keys": self.keys.iter().map(Key::to_json).collect::<Vec<_>>(),
         })
     }
@@ -81,19 +171,22 @@ pub struct Key {
     pub required: bool,
     /// `@required` / `@optional` when written; `None` means required was inferred.
     pub required_decorator: Option<bool>,
+    /// `@required=forEnv(a, b)` (true) or `@optional=forEnv(a, b)` (false): the
+    /// environments the rule holds in. [`Schema::for_environment`] applies it.
+    pub required_in: Option<(Vec<String>, bool)>,
     pub sensitive: bool,
     /// `@sensitive` / `@sensitive=false` when written.
     pub sensitive_decorator: Option<bool>,
     pub default: Option<String>,
+    /// The default is a function call or holds `${KEY}`, resolved against the other values.
+    pub default_expr: bool,
     pub example: Option<String>,
     pub docs: Option<String>,
-    pub since: Option<String>,
     pub deprecated: Option<String>,
+    /// `@rotate`: how long a value may live before `check` reminds you to rotate it.
     pub rotate: Option<String>,
     /// The spec's `@dynamic` / `@static` pair: preserved, never acted on.
     pub dynamic: Option<bool>,
-    /// penv's own marker: the engine the cloud resolves the value from.
-    pub dynamic_from: Option<String>,
 }
 
 impl Key {
@@ -102,16 +195,16 @@ impl Key {
             "name": self.name,
             "description": self.description,
             "type": self.ty.to_json(),
-            "required": self.required,
+                        "required": self.required,
+            "requiredIn": self.required_in.as_ref().map(|(envs, required)| json!({ "environments": envs, "required": required })),
             "sensitive": self.sensitive,
             "default": self.default,
+            "defaultExpr": self.default_expr,
             "example": self.example,
             "docs": self.docs,
-            "since": self.since,
             "deprecated": self.deprecated,
             "rotate": self.rotate,
             "dynamic": self.dynamic,
-            "dynamicFrom": self.dynamic_from,
         })
     }
 }

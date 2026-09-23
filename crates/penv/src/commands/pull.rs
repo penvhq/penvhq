@@ -7,7 +7,7 @@ use penv_dotenv::ensure_ignored;
 use serde_json::json;
 
 use crate::agent::detect_here;
-use crate::commands::cloud::{Cloud, address, environment, link, refuse};
+use crate::commands::cloud::{Cloud, address, link, refuse};
 use crate::env::Env;
 use crate::error::{CliError, Exit};
 use crate::files::{ENV_FILE, GITIGNORE_FILE, read_file, show, write_file, write_private_file};
@@ -46,7 +46,17 @@ pub fn run(
         let may_ask = !detection.is_agent() && !agent_flag && std::io::stdin().is_terminal();
         link(&cloud, &bearer, &schema_path, &mut schema, may_ask)?;
     }
-    let at = address(&schema, &environment(env_flag, env))?;
+    let wanted = super::cloud::pick_environment(
+        &cloud,
+        &bearer,
+        &schema,
+        &schema_path,
+        env_flag,
+        env,
+        super::interactive(out, env, agent_flag),
+    )?;
+    crate::source::check_environment(&wanted)?;
+    let at = address(&schema, &wanted)?;
     let spinner = crate::ui::spinner(&format!("Reading {at}"));
     let Fetched::Body { body, .. } = cloud
         .api
@@ -77,7 +87,13 @@ pub fn run(
     let contents = penv_dotenv::write(&pairs)
         .map_err(|e| CliError::new("unwritable_value", e.to_string(), "Run penv pull again."))?;
 
-    let env_path = dir.join(ENV_FILE);
+    // Development is `.env`; every other environment is its own layer, which
+    // run and push read back.
+    let env_path = if wanted == crate::source::DEFAULT_ENVIRONMENT {
+        dir.join(ENV_FILE)
+    } else {
+        dir.join(format!(".env.{wanted}"))
+    };
     write_private_file(&env_path, &contents)?;
 
     let ignore_path = dir.join(GITIGNORE_FILE);

@@ -1,0 +1,26 @@
+#!/bin/sh
+# AWS Lambda exec wrapper. The managed Node, Python, Java, .NET and Ruby runtimes
+# run it as `penv-wrapper <runtime bootstrap> <args>` when the function sets
+# AWS_LAMBDA_EXEC_WRAPPER=/opt/penv-wrapper. penv resolves the environment
+# (PENV_ENV picks it), proves the function with its execution role, and starts
+# the runtime with the values injected and its output masked.
+set -eu
+
+# /tmp is the only writable path in Lambda, and it belongs to this function's
+# execution environment alone. penv keeps its preload there.
+if [ -z "${XDG_CACHE_HOME:-}" ]; then
+  XDG_CACHE_HOME=/tmp/.cache
+  export XDG_CACHE_HOME
+fi
+
+# The function's code is in LAMBDA_TASK_ROOT, and so is its .env.schema.
+cd "${LAMBDA_TASK_ROOT:-.}"
+
+# penv run writes a schema from .env when there is none. A function's package is
+# read-only and its schema is the contract, so a missing one stops the start.
+if [ ! -f .env.schema ]; then
+  echo "penv: no .env.schema in $(pwd). Ship it at the root of the function package." >&2
+  exit 78
+fi
+
+exec "${PENV_BIN:-/opt/bin/penv}" run -- "$@"

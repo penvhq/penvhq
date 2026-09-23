@@ -5,8 +5,10 @@ use penv_schema::render;
 use serde_json::json;
 
 use crate::env::Env;
-use crate::error::{CliError, Exit};
-use crate::files::{ENV_FILE, GITIGNORE_FILE, SCHEMA_FILE, read_file, show, write_file};
+use crate::error::CliError;
+use crate::files::{
+    ENV_FILE, GITIGNORE_FILE, SCHEMA_FILE, read_file, show, value_files, write_file,
+};
 use crate::output::{Output, Report, Style, table};
 use crate::prompt;
 
@@ -34,24 +36,35 @@ pub fn run(
 ) -> Result<Report, CliError> {
     let schema_path = cwd.join(SCHEMA_FILE);
     if schema_path.is_file() && !force {
-        return Err(CliError::new(
-            "schema_exists",
-            format!("{} already exists.", show(&schema_path)),
-            "Run penv check to validate it, or penv init --force to write it again.",
-        )
-        .with_exit(Exit::Validation));
+        return keep_schema(out, cwd, &schema_path);
     }
 
     // A first run with nothing to read still leaves a repository penv works in.
     let env_path = cwd.join(ENV_FILE);
-    let created_dotenv = !env_path.is_file();
+    let created_dotenv = value_files(cwd).is_empty();
     if created_dotenv {
         write_file(&env_path, "")?;
     }
 
-    let dotenv = read(&read_file(&env_path)?);
+    // Every value file feeds the draft, `.env` first, so a varlock or
+    // dotenv-flow folder keeps the keys only its `.env.production` holds.
+    let mut dotenv = penv_dotenv::Dotenv::default();
+    for path in value_files(cwd) {
+        for entry in read(&read_file(&path)?).entries {
+            if dotenv.get(&entry.key).is_none() {
+                dotenv.entries.push(entry);
+            }
+        }
+    }
     let schema = infer(&dotenv);
     write_file(&schema_path, &render(&schema))?;
+    // The schema version goes in the committed settings file, not the schema,
+    // so the schema stays loadable by varlock.
+    let mut config = crate::config::Config::load(cwd)?;
+    if config.schema_version().is_none() {
+        config.set_schema_version(i64::from(penv_schema::SCHEMA_VERSION));
+        config.save(cwd)?;
+    }
 
     let ignore_path = cwd.join(GITIGNORE_FILE);
     let existing = if ignore_path.is_file() {
@@ -306,6 +319,57 @@ fn unreadable_selection(word: &str, count: usize) -> CliError {
         format!("{word} is not one of the {count} harnesses listed."),
         "Answer with numbers such as 1 3, or all, or none, or press Enter to keep what is shown.",
     )
+}
+
+/// A folder whose schema was written first, by hand or by another tool: keep it,
+/// and still do the rest of what init does for a repository, which is keeping
+/// the value files out of git and recording the schema version.
+fn keep_schema(out: &Output, cwd: &Path, schema_path: &Path) -> Result<Report, CliError> {
+    let ignore_path = cwd.join(GITIGNORE_FILE);
+    let existing = if ignore_path.is_file() {
+        read_file(&ignore_path)?
+    } else {
+        String::new()
+    };
+    let update = ensure_ignored(&existing);
+    if update.changed() {
+        write_file(&ignore_path, &update.content)?;
+    }
+    let mut config = crate::config::Config::load(cwd)?;
+    let versioned = config.schema_version().is_none();
+    if versioned {
+        config.set_schema_version(i64::from(penv_schema::SCHEMA_VERSION));
+        config.save(cwd)?;
+    }
+    let style = out.style();
+    let mut lines = vec![format!(
+        "{} {}; penv init --force writes it again from your .env",
+        style.dim("kept"),
+        show(schema_path)
+    )];
+    if update.changed() {
+        lines.push(format!(
+            "added {} to {}",
+            update.added.join(", "),
+            show(&ignore_path)
+        ));
+    }
+    if versioned {
+        lines.push(style.dim(&format!(
+            "recorded the schema version in {}",
+            crate::config::CONFIG_FILE
+        )));
+    }
+    lines.push(format!("next: {}", style.bold("penv check")));
+    Ok(Report::new(
+        json!({
+            "schema": show(schema_path),
+            "kept": true,
+            "gitignore": update.added,
+            "next": "penv check",
+        }),
+        lines.join("\n"),
+    ))
 }
 
 #[cfg(test)]

@@ -1282,6 +1282,7 @@ dependencies = [
  "penv-schema",
  "penv-targets",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
