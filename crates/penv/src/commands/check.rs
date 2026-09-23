@@ -105,6 +105,11 @@ pub fn run(
             notes.push(error.message.clone());
         }
     }
+    violations.extend(
+        source::public_leaks(&schema, &resolved.tainted)
+            .into_iter()
+            .filter(|v| only.is_none_or(|n| n == v.key)),
+    );
     for (line, message) in &resolved.failed_asserts {
         if only.is_none() {
             violations.push(Violation::new(

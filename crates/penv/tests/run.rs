@@ -662,3 +662,162 @@ fn a_sensitive_value_too_short_to_mask_is_named_not_silently_shown() {
     );
     assert!(!stderr(&output).contains("123"));
 }
+
+// --- masking by default, browser safety, gen ---------------------------------
+
+#[test]
+fn masking_is_on_without_an_agent_and_no_mask_is_ignored_through_a_pipe() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let script = if cfg!(windows) {
+        "echo %STRIPE_SECRET_KEY%"
+    } else {
+        "echo $STRIPE_SECRET_KEY"
+    };
+    let plain = workspace.penv(&["run", "--", SHELL, SHELL_FLAG, script]);
+    assert!(
+        !stdout(&plain).contains(SECRET),
+        "a person's run masks too: {}",
+        stdout(&plain)
+    );
+    let asked = workspace.penv(&["run", "--no-mask", "--", SHELL, SHELL_FLAG, script]);
+    assert!(!stdout(&asked).contains(SECRET), "a pipe is not a person");
+    assert!(
+        stderr(&asked).contains("--no-mask was ignored"),
+        "{}",
+        stderr(&asked)
+    );
+}
+
+#[test]
+fn a_public_key_built_from_a_secret_stops_run_and_fails_check() {
+    let schema = format!(
+        "# @schema=1\n\n{KEYS}\n# @type=url\nNEXT_PUBLIC_CHECKOUT=https://pay.test/?k=${{STRIPE_SECRET_KEY}}\n"
+    );
+    let workspace = Workspace::new(&[
+        (".env.schema", &schema),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let output = workspace.run(&[], "echo ran");
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!stdout(&output).contains("ran"));
+    let check = stdout(&workspace.penv(&["check"]));
+    assert!(
+        check.contains("NEXT_PUBLIC_ prefix sends it to the browser"),
+        "{check}"
+    );
+    assert!(!check.contains(SECRET));
+}
+
+#[test]
+fn a_custom_public_prefix_from_config_is_public_and_refuses_sensitive() {
+    let workspace = Workspace::new(&[(".env.schema", "# @type=string\nAPP_PUBLIC_NAME=acme\n")]);
+    std::fs::create_dir_all(workspace.path().join(".penv")).unwrap();
+    std::fs::write(
+        workspace.path().join(".penv/config.toml"),
+        "[public]\nprefixes = [\"APP_PUBLIC_\"]\n",
+    )
+    .unwrap();
+    let listed = stdout(&workspace.penv(&["ls"]));
+    assert!(listed.contains("\"sensitive\": false"), "{listed}");
+    std::fs::write(
+        workspace.path().join(".env.schema"),
+        "# @type=string @sensitive\nAPP_PUBLIC_NAME=acme\n",
+    )
+    .unwrap();
+    let check = stdout(&workspace.penv(&["check"]));
+    assert!(check.contains("ships to the browser"), "{check}");
+}
+
+#[test]
+fn a_secret_written_into_browser_output_fails_the_run_that_built_it() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    std::fs::create_dir_all(workspace.path().join("dist")).unwrap();
+    std::fs::write(
+        workspace.path().join("dist/old.js"),
+        format!("var k='{SECRET}';"),
+    )
+    .unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(workspace.path().join("dist/old.js"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let clean = workspace.run(&[], "true");
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "old output is not this build's: {}",
+        stderr(&clean)
+    );
+
+    #[cfg(not(windows))]
+    {
+        let built = workspace.run(&[], "echo \"var k='$STRIPE_SECRET_KEY';\" > dist/app.js");
+        assert_eq!(built.status.code(), Some(3), "{}", stderr(&built));
+        assert!(
+            stderr(&built).contains("dist/app.js:1 holds the value of STRIPE_SECRET_KEY"),
+            "{}",
+            stderr(&built)
+        );
+        assert!(!stderr(&built).contains(SECRET));
+        let failed = workspace.run(&[], "exit 7");
+        assert_eq!(
+            failed.status.code(),
+            Some(7),
+            "a failed build keeps its own code"
+        );
+    }
+}
+
+#[test]
+fn gen_never_writes_a_computed_default_as_a_literal_and_splits_public_keys() {
+    let schema = "# @type=string\nDB_PASS=\n\n# @type=url @sensitive=false\nDATABASE_URL=postgres://app:${DB_PASS}@db/app\n\n# @type=number(isInt=true) @sensitive=false\nWORKERS=if(forEnv(production), 16, 2)\n\n# @type=string\nSESSION=random(32)\n\n# @type=url\nNEXT_PUBLIC_API=https://api.test\n";
+    let workspace = Workspace::new(&[
+        (".env.schema", schema),
+        ("package.json", "{}"),
+        ("tsconfig.json", "{}"),
+    ]);
+    let output = workspace.penv(&["gen", "ts", "--out", "env.ts"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let ts = std::fs::read_to_string(workspace.path().join("env.ts")).unwrap();
+    for literal in ["if(forEnv", "random(32)", "${DB_PASS}"] {
+        assert!(
+            !ts.contains(literal),
+            "{literal} leaked into generated code:\n{ts}"
+        );
+    }
+    let public = &ts[ts.find("export const publicEnv").expect("publicEnv")..];
+    let public = &public[..public.find("} as const;").unwrap()];
+    assert!(
+        public.contains("NEXT_PUBLIC_API: ") && !public.contains("DB_PASS"),
+        "{public}"
+    );
+}
+
+#[test]
+fn init_keeps_the_schema_version_in_config_and_a_newer_one_is_refused() {
+    let workspace = Workspace::new(&[(".env", "API_KEY=abc12345\n")]);
+    workspace.penv(&["init"]);
+    let schema = std::fs::read_to_string(workspace.path().join(".env.schema")).unwrap();
+    assert!(!schema.contains("@schema"), "{schema}");
+    let config = std::fs::read_to_string(workspace.path().join(".penv/config.toml")).unwrap();
+    assert!(
+        config.contains("[schema]") && config.contains("version = 1"),
+        "{config}"
+    );
+    std::fs::write(
+        workspace.path().join(".penv/config.toml"),
+        "[schema]\nversion = 9\n",
+    )
+    .unwrap();
+    let check = stdout(&workspace.penv(&["check"]));
+    assert!(check.contains("reads up to version 1"), "{check}");
+}

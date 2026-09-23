@@ -484,7 +484,13 @@ fn imports_and_the_current_env_round_trip() {
     let once = parse(source).unwrap();
     assert_eq!(once.imports[0].path, "../shared/.env.schema");
     assert_eq!(once.imports[0].keys, ["API_KEY", "API_URL"]);
-    assert_eq!(parse(&render(&once)).unwrap(), once);
+    let mut twice = parse(&render(&once)).unwrap();
+    twice.imports[0].line = once.imports[0].line;
+    assert_eq!(twice, once);
+    assert!(
+        !render(&once).contains("@schema"),
+        "version 1 lives in .penv/config.toml"
+    );
 }
 
 #[test]

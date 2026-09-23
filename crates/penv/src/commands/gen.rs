@@ -71,7 +71,8 @@ pub fn run(
     };
 
     let target = with_options(target, &settled.options);
-    let rendered = penv_targets::render(&target, &schema.to_json(), version()).map_err(refused)?;
+    let rendered = penv_targets::render(&target, &crate::source::gen_view(&schema), version())
+        .map_err(refused)?;
     if check {
         return verify(out, &dir, &roots, &target, &settled.path, &rendered);
     }
@@ -120,7 +121,7 @@ pub fn auto(
     interactive: bool,
 ) -> Result<Generated, CliError> {
     let roots = roots(dir);
-    let json = schema.to_json();
+    let json = crate::source::gen_view(schema);
     let style = out.style();
     let explicit = to.map(|path| inside(dir, path)).transpose()?;
 

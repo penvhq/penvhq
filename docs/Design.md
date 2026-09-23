@@ -15,7 +15,21 @@ penv is a secrets manager. The cloud (penv.cloud) is the store. The `penv` binar
 
 ## 2. Files in a repository
 
-Two things are committed: `.env.schema`, the contract, and the `.penv/` folder beside it, which holds settings every clone on every machine must agree on: `config.toml` (the `[rotation]` table today) and `targets/` (remembered `gen` output). Neither ever holds a value.
+Two things are committed: `.env.schema`, the contract, and the `.penv/` folder beside it, which holds settings every clone on every machine must agree on: `config.toml` and `targets/` (remembered `gen` output). Neither ever holds a value.
+
+```toml
+# .penv/config.toml
+[schema]
+version = 1                      # the schema language version; init writes it
+
+[public]
+prefixes = ["APP_PUBLIC_"]       # beyond the frameworks' own
+
+[rotation]
+STRIPE_SECRET_KEY = "2026-09-22T14:05:00Z"   # written by penv set in local mode
+```
+
+The version lives here and not in `.env.schema`, because varlock rejects `@schema`. An `@schema=N` line still reads; the config wins, and a version this build does not read is an error.
 
 ```dotenv
 # @penv=acme/api-gateway @schema=1
@@ -111,7 +125,7 @@ cloud   @penv header, credential in the keychain; value files present only when 
 |---|---|---|
 | `penv` | Prints the version, the location (`local` or `cloud`), the environment it resolves to, the value files that environment layers, and the one next command. Reads only; writes nothing | no args |
 | `init` | Reads every value file beside it, `.env` first, the rest adding keys the earlier ones lack (writing an empty `.env` only when there is no value file at all), writes `.env.schema`, gitignores `.env`, prints what it inferred. Every key is sensitive and required unless bundler-prefixed. A value is copied into the schema as a default only when the key is bundler-prefixed, or the value is a boolean, an integer, a lowercase word of letters, a lowercase slug of at most 32 characters whose segments are joined by `-`, `_` or `.` and where one segment is letters only and no segment carrying a digit runs past four characters (`us-east-1`, `gpt-4o`, `api.internal`, never `a3f9c2d4e5b6`), or a localhost URL with no userinfo and no query. A key named for what it holds keeps its value out however dull it reads and whatever prefix it carries, so `NEXT_PUBLIC_SUPABASE_ANON_KEY` is not copied either: the words are `AUTH`, `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `PASS`, `PWD`, `PW`, `CREDENTIAL`, `CRED`, `DSN`, `SALT`, `SEED` and `SIGNATURE`, each matching the word itself or a plural of it in `S` or `ES`; sensitivity still follows the prefix, since a bundler-prefixed value reaches the browser either way. At a terminal, with no agent, it offers a picker over every harness penv knows with the installed ones already chosen; `--guards <NAMES>` (trimmed, deduped, and none when it names nothing) and `--no-guards` decide it without a prompt, and every other run guards the installed set. It then generates for every target this repository uses, resolving the output the way `gen` does; `--output <PATH>` names the file instead, and only when one target applies | `run` finds any value file and no schema |
-| `run [--env E] -- cmd` | Validates, injects into the child only, masks child output when an agent is present | never |
+| `run [--env E] -- cmd` | Validates, injects into the child only, masks child output on every run, and after a successful run scans the browser output folders it wrote | never |
 | `push [--env E]` | Moves the shared layers for the environment (`.env`, `.env.<env>`) to the cloud, computed, defaults left out, then deletes those files. `*.local` stays. With nothing named and a person at a terminal, offers the project's environments | `init` when logged in, as an offer |
 | `pull [--env E]` | Writes `.env` for development, `.env.<env>` otherwise, so `push` and `run` read it back as the same layer. Same picker as `push` | never |
 | `login` / `logout` | Device-code sign in; credential in the OS keychain | `run`/`push` lack a credential and a human is at a TTY |
@@ -157,7 +171,20 @@ then: lay every local value file for the environment over the cloud values,
       warn naming each key replaced and the file it came from; compute; validate; exec
 ```
 
-Target: under 50ms to exec on a warm cache. Injection is into the child environment only. Output masking scrubs the child's stdout and stderr for every sensitive value, boundary-safe across chunk splits, plus base64 and JSON-escaped forms of each value. The masker's secret list is every value present in the resolved environment except keys the schema marks public; a `.env` key the schema does not list is masked and `check` names it as drift. Masking is on by default when an agent marker is present, and never TTY-gated in that case. `--no-mask` is a `human: true` flag honoured only when stdin and stdout are both terminals and no agent is detected.
+Target: under 50ms to exec on a warm cache. Injection is into the child environment only. Output masking scrubs the child's stdout and stderr for every sensitive value, boundary-safe across chunk splits, plus base64 and JSON-escaped forms of each value. The masker's secret list is every value present in the resolved environment except keys the schema marks public; a `.env` key the schema does not list is masked and `check` names it as drift. Masking is on for every run, a person's terminal and CI included, because a log is copied further than anyone expects. `--no-mask` is a `human: true` flag honoured only when stdin and stdout are both terminals and no agent is detected. Masking pipes the child's output, so when penv itself is on a terminal it sets `FORCE_COLOR=1` and `CLICOLOR_FORCE=1` for the child, unless `NO_COLOR` or either variable is already set, to keep colour. A sensitive value shorter than 4 characters cannot be masked; `run` names the key and `check` notes it.
+
+### Browser safety
+
+A key whose name starts with a public prefix is sent to the browser by its framework, so it is public: `NEXT_PUBLIC_` (Next.js), `VITE_` (Vite, and Remix, SolidStart and TanStack Start on it), `PUBLIC_` (SvelteKit, Astro, Rsbuild), `EXPO_PUBLIC_` (Expo), `NUXT_PUBLIC_` (Nuxt's public runtime config), `REACT_APP_` (Create React App), `GATSBY_` (Gatsby), `VUE_APP_` (Vue CLI), `STORYBOOK_` (Storybook). A custom Vite `envPrefix` or any other goes in `.penv/config.toml`:
+
+```toml
+[public]
+prefixes = ["APP_PUBLIC_"]
+```
+
+A public key defaults to `@sensitive=false`; marking one `@sensitive` is a schema error. A public key computed from a sensitive value (taint) fails `check` and stops `run` with exit 3, naming the key and prefix. A secret that only decides a public value (`NEXT_PUBLIC_MODE=if(startsWith($KEY, sk_live_), live, test)`) is allowed.
+
+Bundlers that inline any referenced variable (Parcel, a hand-written `define`) have no prefix to check, so the output is checked instead. After a run that exits 0, penv reads the files it wrote under `.next/static`, `out`, `dist`, `build`, `.output/public`, `.svelte-kit/output/client`, `storybook-static`, `.vercel/output/static`, and `public` when a Gatsby config is present. A sensitive value found there in any masked form turns the exit code into 3 and names file, line and key. Symbolic links are not followed and value files are skipped. `penv scan <dir>` runs the same check on demand.
 
 ## 6. Agents
 
@@ -183,6 +210,8 @@ targets/<name>/env.tmpl      minijinja template over the schema JSON
 ```
 
 Lookup order: `.penv/targets/<name>/` in the repo, `~/.penv/targets/<name>/`, built in (ts, py). Same layout in all three, and the order is read through rather than winner-takes-all: a folder holding only a `target.toml` inherits the template from the next place, and a field that file does not set is inherited the same way, key by key inside a table as well, so an override naming one `output` or one `[options]` knob keeps the `[types]` map, the other knobs, the `[check]` command and the template it was going to use anyway. A folder holding an `env.tmpl` and no `target.toml` overrides nothing and is refused as the typo it is. `Target.source` is where the `target.toml` came from, and `Target.output_source` is where the `output` field came from, which is not always the same folder.
+
+The template sees the schema JSON with three changes from `penv schema`: a computed default (`if(...)`, `random(32)`, `${KEY}`) is dropped and the key is required, because a literal fallback like `"random(48)"` would be a wrong value outside `penv run`; a key computed from a secret is `"sensitive": true`; each key carries `"public"`. The ts target exports `publicEnv` holding only public keys, each read by its literal name so a bundler can inline it; client code imports `publicEnv`, never `env`.
 
 ### Ask, never guess
 

@@ -49,6 +49,48 @@ impl Config {
         toml::to_string(&self.table).unwrap_or_default()
     }
 
+    /// `[schema] version`: the schema language version. It lives here, not in
+    /// `.env.schema`, because varlock rejects `@schema`.
+    pub fn schema_version(&self) -> Option<i64> {
+        self.table.get("schema")?.get("version")?.as_integer()
+    }
+
+    /// True when `[schema] version` is written at all, whatever its type.
+    pub fn has_schema_version(&self) -> bool {
+        self.table
+            .get("schema")
+            .and_then(|s| s.get("version"))
+            .is_some()
+    }
+
+    pub fn set_schema_version(&mut self, version: i64) {
+        let section = self
+            .table
+            .entry("schema")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !section.is_table() {
+            *section = toml::Value::Table(toml::Table::new());
+        }
+        if let Some(table) = section.as_table_mut() {
+            table.insert("version".into(), toml::Value::Integer(version));
+        }
+    }
+
+    /// `[public] prefixes`: prefixes beyond the frameworks' own that ship a key to
+    /// the browser, for a custom Vite `envPrefix` and the like.
+    pub fn public_prefixes(&self) -> Vec<String> {
+        self.table
+            .get("public")
+            .and_then(|t| t.get("prefixes"))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// `[rotation]`: the day each key was last written in local mode.
     pub fn rotated(&self, key: &str) -> Option<&str> {
         self.table.get("rotation")?.get(key)?.as_str()

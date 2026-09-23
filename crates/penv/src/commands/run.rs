@@ -86,6 +86,7 @@ pub fn run(
     let values = resolved.values;
 
     let mut violations = validate(&schema.for_environment(&environment), &values);
+    violations.extend(source::public_leaks(&schema, &tainted));
     violations.extend(failed_asserts.iter().map(|(line, message)| {
         penv_schema::Violation::new(&format!("@assert line {line}"), "assert", message.clone())
     }));
@@ -140,8 +141,49 @@ pub fn run(
     } else {
         Vec::new()
     };
+    let named: Vec<(String, String)> = values
+        .iter()
+        .filter(|(name, value)| !value.is_empty() && source::is_sensitive(&schema, &tainted, name))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    // Coarse filesystem clocks: a build that finishes within the same tick
+    // still counts as after the start.
+    let started = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
     let code = spawn(argv, &values, &environment, secrets)?;
-    std::process::exit(code)
+    std::process::exit(after_build(dir, started, code, &named))
+}
+
+/// After a successful run, look at what it wrote into browser output folders
+/// (`.next/static`, `dist`, `build`, ...). A secret there ships to every visitor,
+/// so the run fails with exit 3, naming file, line and key. Never the value.
+fn after_build(
+    dir: &Path,
+    started: std::time::SystemTime,
+    code: i32,
+    secrets: &[(String, String)],
+) -> i32 {
+    if code != 0 || secrets.is_empty() {
+        return code;
+    }
+    let dirs = super::scan::client_output(dir);
+    let files = super::scan::changed_since(&dirs, started);
+    if files.is_empty() {
+        return code;
+    }
+    let found = super::scan::find(&files, secrets);
+    if found.is_empty() {
+        return code;
+    }
+    for (file, line, key) in &found {
+        ui::warn(&format!(
+            "{}:{line} holds the value of {key}, and that folder ships to the browser.",
+            show(file)
+        ));
+    }
+    ui::warn(
+        "Remove the value from client code, rotate it if this build was deployed, and read it on the server.",
+    );
+    Exit::Validation as i32
 }
 
 /// Everything the child is handed except the keys the schema marks public. A key
@@ -161,14 +203,16 @@ fn masked_values(
         .collect()
 }
 
-/// Whether to mask, and whether `--no-mask` was ignored saying so. Turning
-/// masking off is a person's move: both ends must be a terminal and no agent.
-fn masking(policy: &Policy, no_mask: bool, agent: bool, interactive: bool) -> (bool, bool) {
+/// Whether to mask, and whether `--no-mask` was ignored saying so. Masking is on
+/// for every run, CI and a person's terminal included, because a log is copied
+/// further than anyone expects. Turning it off is a person's move: both ends
+/// must be a terminal and no agent.
+fn masking(_policy: &Policy, no_mask: bool, agent: bool, interactive: bool) -> (bool, bool) {
     if !no_mask {
-        return (policy.mask, false);
+        return (true, false);
     }
     if agent || !interactive {
-        return (policy.mask, true);
+        return (true, true);
     }
     (false, false)
 }
@@ -202,6 +246,19 @@ fn spawn(
     }
     command.stdin(Stdio::inherit());
     if piped {
+        // A pipe makes the child think it is not on a terminal and drop its
+        // colours. When penv itself is on one, say so the way Node, Python and
+        // most CLIs read it, unless the environment already chose.
+        if std::io::stdout().is_terminal()
+            && std::env::var_os("NO_COLOR").is_none()
+            && !values.contains_key("NO_COLOR")
+        {
+            for (name, value) in [("FORCE_COLOR", "1"), ("CLICOLOR_FORCE", "1")] {
+                if std::env::var_os(name).is_none() && !values.contains_key(name) {
+                    command.env(name, value);
+                }
+            }
+        }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
     } else {
         command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
@@ -444,7 +501,16 @@ mod tests {
         const INTERACTIVE: bool = true;
         const PIPED: bool = false;
 
-        assert_eq!(masking(&human, false, false, INTERACTIVE), (false, false));
+        assert_eq!(
+            masking(&human, false, false, INTERACTIVE),
+            (true, false),
+            "masking is on by default, for a person too"
+        );
+        assert_eq!(
+            masking(&human, false, false, PIPED),
+            (true, false),
+            "CI and pipes mask"
+        );
         assert_eq!(masking(&human, true, false, INTERACTIVE), (false, false));
         assert_eq!(
             masking(&agent, true, true, INTERACTIVE),

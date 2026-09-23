@@ -63,6 +63,13 @@ pub fn run(
     }
     let schema = infer(&dotenv);
     write_file(&schema_path, &render(&schema))?;
+    // The schema version goes in the committed settings file, not the schema,
+    // so the schema stays loadable by varlock.
+    let mut config = crate::config::Config::load(cwd)?;
+    if config.schema_version().is_none() {
+        config.set_schema_version(i64::from(penv_schema::SCHEMA_VERSION));
+        config.save(cwd)?;
+    }
 
     let ignore_path = cwd.join(GITIGNORE_FILE);
     let existing = if ignore_path.is_file() {

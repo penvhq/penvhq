@@ -2,14 +2,21 @@ use std::fmt;
 
 use serde_json::{Value, json};
 
-/// Key prefixes that a bundler inlines into client code, so the value is public.
-pub const PUBLIC_PREFIXES: [&str; 6] = [
+/// Key prefixes a framework sends to the browser, so the value is public:
+/// Next.js, Vite (and Remix, SolidStart, TanStack Start on it), SvelteKit and
+/// Astro and Rsbuild, Expo, Nuxt's public runtime config, Create React App,
+/// Gatsby, Vue CLI, Storybook. `.penv/config.toml` `[public] prefixes` adds more,
+/// for a custom Vite `envPrefix`.
+pub const PUBLIC_PREFIXES: [&str; 9] = [
     "NEXT_PUBLIC_",
     "VITE_",
     "PUBLIC_",
     "EXPO_PUBLIC_",
     "NUXT_PUBLIC_",
     "REACT_APP_",
+    "GATSBY_",
+    "VUE_APP_",
+    "STORYBOOK_",
 ];
 
 pub fn is_public_prefixed(name: &str) -> bool {
@@ -78,6 +85,8 @@ pub struct Schema {
     pub keys: Vec<Key>,
     /// Lines penv read past: varlock-only or unknown decorators, types and constraints.
     pub warnings: Vec<Diagnostic>,
+    /// Public prefixes beyond [`PUBLIC_PREFIXES`], from `.penv/config.toml`.
+    pub public_prefixes: Vec<String>,
 }
 
 impl Default for Schema {
@@ -91,6 +100,7 @@ impl Default for Schema {
             current_env: None,
             imports: Vec::new(),
             asserts: Vec::new(),
+            public_prefixes: Vec::new(),
             keys: Vec::new(),
             warnings: Vec::new(),
         }
@@ -100,6 +110,25 @@ impl Default for Schema {
 impl Schema {
     pub fn get(&self, name: &str) -> Option<&Key> {
         self.keys.iter().find(|k| k.name == name)
+    }
+
+    /// True when a framework sends this key to the browser.
+    pub fn is_public(&self, name: &str) -> bool {
+        is_public_prefixed(name)
+            || self
+                .public_prefixes
+                .iter()
+                .any(|p| name.starts_with(p.as_str()))
+    }
+
+    /// The prefix that makes this key public, for messages.
+    pub fn public_prefix(&self, name: &str) -> Option<String> {
+        PUBLIC_PREFIXES
+            .iter()
+            .map(|p| p.to_string())
+            .chain(self.public_prefixes.iter().cloned())
+            .filter(|p| name.starts_with(p.as_str()))
+            .max_by_key(String::len)
     }
 
     /// The schema as one environment sees it: `forEnv` requirements settled.

@@ -29,7 +29,7 @@ pub fn parse(cwd: &Path) -> Result<(PathBuf, Result<Schema, Located>), CliError>
         ));
     };
     let mut chain = vec![canonical(&path)];
-    let parsed = parse_file(&path, &mut chain)?;
+    let parsed = parse_file(&path, &mut chain)?.and_then(|schema| with_config(&path, schema));
     Ok((path, parsed))
 }
 
@@ -114,6 +114,79 @@ fn parse_file(path: &Path, chain: &mut Vec<PathBuf>) -> Result<Result<Schema, Lo
         schema.warnings.extend(imported.warnings);
     }
     Ok(Ok(schema))
+}
+
+/// Apply `.penv/config.toml` beside the schema: its `[schema] version` wins over
+/// an `@schema` line, and a version this build does not read is an error.
+pub fn with_config(path: &Path, mut schema: Schema) -> Result<Schema, Located> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let config = match crate::config::Config::load(dir) {
+        Ok(config) => config,
+        Err(error) => {
+            return Err(vec![(
+                crate::config::Config::path(dir),
+                Diagnostic::new(1, 1, "invalid_config", error.message),
+            )]);
+        }
+    };
+    schema.public_prefixes = config.public_prefixes();
+    let mut found = Vec::new();
+    for key in &mut schema.keys {
+        let extra = schema
+            .public_prefixes
+            .iter()
+            .any(|p| key.name.starts_with(p.as_str()));
+        match (extra, key.sensitive_decorator) {
+            (true, None) => key.sensitive = false,
+            (true, Some(true)) => found.push((
+                path.to_path_buf(),
+                Diagnostic::new(
+                    1,
+                    1,
+                    "sensitive_public_key",
+                    format!(
+                        "{} carries a prefix .penv/config.toml marks public, so its value ships to the browser. Drop @sensitive or rename the key.",
+                        key.name
+                    ),
+                ),
+            )),
+            _ => {}
+        }
+    }
+    if !found.is_empty() {
+        return Err(found);
+    }
+    let written = config.has_schema_version();
+    let Some(version) = config.schema_version() else {
+        if written {
+            return Err(vec![(
+                crate::config::Config::path(dir),
+                Diagnostic::new(
+                    1,
+                    1,
+                    "unsupported_schema",
+                    "[schema] version takes a whole number, such as 1",
+                ),
+            )]);
+        }
+        return Ok(schema);
+    };
+    let supported = i64::from(penv_schema::SCHEMA_VERSION);
+    if version < 1 || version > supported {
+        return Err(vec![(
+            crate::config::Config::path(dir),
+            Diagnostic::new(
+                1,
+                1,
+                "unsupported_schema",
+                format!(
+                    "[schema] version = {version}, and this penv reads up to version {supported}; run penv upgrade"
+                ),
+            ),
+        )]);
+    }
+    schema.schema_version = version as u32;
+    Ok(schema)
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -706,6 +779,57 @@ pub fn warn_unset(errors: &[ResolveError]) {
     for error in errors.iter().filter(|e| e.soft) {
         crate::ui::warn(&error.message);
     }
+}
+
+/// The schema as typed-code generators see it. A computed default is never
+/// written into generated code as a literal fallback (`"random(48)"`,
+/// `"if(...)"`): the key is read like one with no default, and required, because
+/// `penv run` always supplies it. A key computed from a secret is typed as one.
+/// Each key says whether a framework sends it to the browser.
+pub fn gen_view(schema: &Schema) -> serde_json::Value {
+    let mut raw = with_defaults(schema, BTreeMap::new());
+    raw.retain(|_, r| !(r.computed && r.text.trim_start().starts_with("random(")));
+    let resolution = resolve_full(&raw, &Values::new(), DEFAULT_ENVIRONMENT, &Values::new());
+    let hot = tainted(&resolution.deps, |name| {
+        schema.get(name).is_none_or(|k| k.sensitive)
+    });
+    let mut json = schema.to_json();
+    if let Some(keys) = json.get_mut("keys").and_then(|k| k.as_array_mut()) {
+        for key in keys {
+            let name = key["name"].as_str().unwrap_or_default().to_string();
+            if key["defaultExpr"] == serde_json::Value::Bool(true) {
+                key["default"] = serde_json::Value::Null;
+                key["required"] = serde_json::Value::Bool(true);
+            }
+            if hot.contains(&name) {
+                key["sensitive"] = serde_json::Value::Bool(true);
+            }
+            key["public"] = serde_json::Value::Bool(schema.is_public(&name));
+        }
+    }
+    json
+}
+
+/// Public keys whose value is computed from a secret: the prefix sends it to the
+/// browser, so the secret goes with it. Names only.
+pub fn public_leaks(
+    schema: &Schema,
+    tainted: &std::collections::BTreeSet<String>,
+) -> Vec<penv_schema::Violation> {
+    tainted
+        .iter()
+        .filter(|name| schema.is_public(name))
+        .map(|name| {
+            let prefix = schema.public_prefix(name).unwrap_or_default();
+            penv_schema::Violation::new(
+                name,
+                "public",
+                format!(
+                    "{name} is built from a sensitive value, and its {prefix} prefix sends it to the browser. Compute it on the server, or rename it without the prefix."
+                ),
+            )
+        })
+        .collect()
 }
 
 /// Sensitive keys whose value is too short for the masker to replace: shown as

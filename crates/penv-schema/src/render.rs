@@ -9,9 +9,15 @@ pub fn render(schema: &Schema) -> String {
     if let (Some(org), Some(project)) = (&schema.org, &schema.project) {
         let _ = write!(header, " @penv={org}/{project}");
     }
-    let _ = write!(header, " @schema={}", schema.schema_version);
-    out.push_str(&header);
-    out.push('\n');
+    // The version lives in `.penv/config.toml`; a file says it only when it is
+    // not the one penv writes, because varlock rejects `@schema`.
+    if schema.schema_version != crate::ir::SCHEMA_VERSION {
+        let _ = write!(header, " @schema={}", schema.schema_version);
+    }
+    if header != "#" {
+        out.push_str(&header);
+        out.push('\n');
+    }
     if !schema.default_sensitive {
         out.push_str("# @defaultSensitive=false\n");
     }
@@ -39,7 +45,8 @@ pub fn render(schema: &Schema) -> String {
         out.push('\n');
         out.push_str(&render_key(key));
     }
-    out
+    // No header line means no blank line before the first key.
+    out.trim_start_matches('\n').to_string()
 }
 
 /// One key's block, the way `render` writes it. `set` appends it to a file it
@@ -71,7 +78,8 @@ pub fn render_key(key: &Key) -> String {
         decorators.push(format!("@example={}", quote(v)));
     }
     if let Some(v) = &key.docs {
-        decorators.push(format!("@docs={}", quote(v)));
+        // varlock accepts only the call form.
+        decorators.push(format!("@docs({})", quote(v)));
     }
     if let Some(v) = &key.deprecated {
         if v.is_empty() {

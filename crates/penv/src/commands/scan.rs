@@ -105,6 +105,97 @@ pub fn run(
     })
 }
 
+/// Directories that frameworks write browser code into. Anything secret found
+/// here ships to every visitor. `public/` is Gatsby's output only when a Gatsby
+/// config sits beside it; elsewhere it is source.
+pub const CLIENT_OUTPUT: [&str; 8] = [
+    ".next/static",
+    "out",
+    "dist",
+    "build",
+    ".output/public",
+    ".svelte-kit/output/client",
+    "storybook-static",
+    ".vercel/output/static",
+];
+
+/// Client output directories under `dir` that exist.
+pub fn client_output(dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = CLIENT_OUTPUT
+        .iter()
+        .map(|d| dir.join(d))
+        .filter(|p| p.is_dir())
+        .collect();
+    let gatsby = ["gatsby-config.js", "gatsby-config.ts", "gatsby-config.mjs"]
+        .iter()
+        .any(|f| dir.join(f).is_file());
+    if gatsby && dir.join("public").is_dir() {
+        out.push(dir.join("public"));
+    }
+    out
+}
+
+/// Every place a secret value shows up in the files, in any form `run` masks:
+/// (file, line, key). One pass per file finds whether anything matches; only then
+/// is each key and line looked at.
+pub fn find(files: &[PathBuf], secrets: &[(String, String)]) -> Vec<(PathBuf, usize, String)> {
+    let values: Vec<String> = secrets.iter().map(|(_, v)| v.clone()).collect();
+    let mut found = Vec::new();
+    for file in files {
+        let Some(text) = read_text(file) else {
+            continue;
+        };
+        if !leaks_any(&values, &text) {
+            continue;
+        }
+        for (name, value) in secrets {
+            if !leaks(value, &text) {
+                continue;
+            }
+            for (index, line) in text.lines().enumerate() {
+                if leaks(value, line) {
+                    found.push((file.clone(), index + 1, name.clone()));
+                }
+            }
+        }
+    }
+    found
+}
+
+fn read_text(path: &Path) -> Option<String> {
+    if path.metadata().ok()?.len() > MAX_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Files under the directories changed at or after `since`, so a build scan
+/// looks at what this build wrote, not last week's output.
+pub fn changed_since(dirs: &[PathBuf], since: std::time::SystemTime) -> Vec<PathBuf> {
+    let mut all = Vec::new();
+    for dir in dirs {
+        walk(dir, &mut all);
+    }
+    all.retain(|p| {
+        p.metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t >= since)
+    });
+    all
+}
+
+fn leaks_any(values: &[String], text: &str) -> bool {
+    let mut masker = Masker::new(values.to_vec());
+    let mut masked = Vec::new();
+    masker.feed(text.as_bytes(), &mut masked);
+    masker.finish(&mut masked);
+    masked != text.as_bytes()
+}
+
 /// True when any form `run` would mask shows up in `text`.
 fn leaks(value: &str, text: &str) -> bool {
     let mut masker = Masker::new(vec![value.to_string()]);
@@ -157,9 +248,37 @@ fn candidates(cwd: &Path, paths: &[PathBuf], staged: bool) -> Result<Vec<PathBuf
         .collect())
 }
 
+/// Files under `path`. A symbolic link below the starting point is never
+/// followed: a link back up the tree would otherwise loop until the path is too
+/// long, and a link out of the folder is not part of it. Value files are where
+/// values belong, so they are left out.
 fn walk(path: &Path, out: &mut Vec<PathBuf>) {
-    if path.is_file() {
-        out.push(path.to_path_buf());
+    walk_at(path, out, 0);
+}
+
+fn walk_at(path: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    const MAX_FILES: usize = 200_000;
+    if out.len() >= MAX_FILES || depth > 64 {
+        return;
+    }
+    let Ok(meta) = (if depth == 0 {
+        path.metadata()
+    } else {
+        path.symlink_metadata()
+    }) else {
+        return;
+    };
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if meta.is_file() {
+        if !penv_dotenv::is_value_file(name) {
+            out.push(path.to_path_buf());
+        }
+        return;
+    }
+    if !meta.is_dir() {
         return;
     }
     let Ok(entries) = std::fs::read_dir(path) else {
@@ -171,7 +290,7 @@ fn walk(path: &Path, out: &mut Vec<PathBuf>) {
         if name == ".git" || name == "node_modules" || name == "target" {
             continue;
         }
-        walk(&p, out);
+        walk_at(&p, out, depth + 1);
     }
 }
 
