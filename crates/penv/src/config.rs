@@ -101,6 +101,24 @@ impl Config {
             .unwrap_or(true)
     }
 
+    /// `[targets.<name>]`: where `penv gen` writes and the options it uses.
+    pub fn target(&self, name: &str) -> Option<toml::Table> {
+        self.table.get("targets")?.get(name)?.as_table().cloned()
+    }
+
+    pub fn set_target(&mut self, name: &str, section: toml::Table) {
+        let targets = self
+            .table
+            .entry("targets")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !targets.is_table() {
+            *targets = toml::Value::Table(toml::Table::new());
+        }
+        if let Some(table) = targets.as_table_mut() {
+            table.insert(name.to_string(), toml::Value::Table(section));
+        }
+    }
+
     /// `[rotation]`: the day each key was last written in local mode.
     pub fn rotated(&self, key: &str) -> Option<&str> {
         self.table.get("rotation")?.get(key)?.as_str()

@@ -23,7 +23,8 @@ CI runs `fmt`, `clippy` and `test` on Linux, macOS and Windows. `--all-targets` 
 | Agent detection | `crates/penv-agent` |
 | Commands, files, processes, the preload | `crates/penv` |
 | penv.cloud API, credentials, TLS | `crates/penv-cloud` |
-| A language for `penv gen` | a folder in `crates/penv-targets/targets/<name>/`: `target.toml` and `env.tmpl` |
+| A language shipped with penv | a folder in `crates/penv-targets/targets/<name>/`: `target.toml` and `env.tmpl` |
+| A language for one repository | `[targets.<name>]` in `.penv/config.toml` and `.penv/<name>.tmpl`; no Rust |
 | A coding tool for `penv guard` | a folder in `crates/penv-guards/guards/<name>/` |
 | A cloud credential kind | one file in `crates/penv-cloud/src/credential/` and one line in `mod.rs` |
 

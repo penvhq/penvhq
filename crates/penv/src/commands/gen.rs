@@ -37,7 +37,7 @@ pub fn run(
     let Some(name) = name else {
         return Ok(list(out, &dir, &roots));
     };
-    let target = penv_targets::load(&Disk, &roots, name).map_err(refused)?;
+    let target = penv_targets::load(&tree(&roots), &roots, name).map_err(refused)?;
     if mode == Mode::Options {
         return Ok(knobs(out, &target));
     }
@@ -131,14 +131,16 @@ pub fn auto(
         notes: Vec::new(),
     };
     let mut wanted: Vec<Target> = Vec::new();
-    for found in penv_targets::available(&Disk, &roots) {
+    for found in penv_targets::available(&tree(&roots), &roots) {
         match found {
             Err(error) => generated.targets.push(json!({
                 "name": null,
                 "status": "skipped",
                 "reason": described(&error),
             })),
-            Ok(target) if penv_targets::detected(&Disk, &roots, &target) => wanted.push(target),
+            Ok(target) if penv_targets::detected(&tree(&roots), &roots, &target) => {
+                wanted.push(target)
+            }
             Ok(_) => {}
         }
     }
@@ -252,7 +254,7 @@ fn settle(
     flag: &str,
     style: &Style,
 ) -> Result<Outcome, CliError> {
-    let packages = penv_targets::candidates(&Disk, roots, target);
+    let packages = penv_targets::candidates(&tree(roots), roots, target);
     if explicit.is_none() && target.output_source == Source::Repo {
         return Ok(Outcome::Chosen(Settled {
             path: target.output.clone(),
@@ -286,7 +288,7 @@ fn settle(
 fn suggestions(roots: &Roots, target: &Target, packages: &[String]) -> Vec<String> {
     let found: Vec<String> = packages
         .iter()
-        .map(|package| penv_targets::layout_output(&Disk, roots, target, package))
+        .map(|package| penv_targets::layout_output(&tree(roots), roots, target, package))
         .collect();
     if found.is_empty() {
         vec![target.output.clone()]
@@ -337,7 +339,8 @@ fn ask_option(
     interactive: bool,
 ) -> Result<Option<OptionValue>, CliError> {
     let default = target.options.get(&suggest.option);
-    let Some(found) = penv_targets::suggested(&Disk, roots, suggest, package, interactive) else {
+    let Some(found) = penv_targets::suggested(&tree(roots), roots, suggest, package, interactive)
+    else {
         return Ok(None);
     };
     if Some(&found) == default {
@@ -491,31 +494,22 @@ fn put(
         write_file_making_parents(&path, rendered)?;
     }
 
-    let packages = penv_targets::candidates(&Disk, roots, target);
+    let packages = penv_targets::candidates(&tree(roots), roots, target);
     let package = penv_targets::package_of(&settled.path, &packages);
     let configs = target
         .paths_from
         .as_ref()
         .map(|file| configs(dir, &package, file))
         .unwrap_or_default();
-    let kept = format!(".penv/targets/{}/target.toml", target.name);
-    let remembered = remember(dir, target, &settled.path, &kept)?;
-    let note = remembered.as_ref().map(|_| {
-        format!(
-            "remembered {} in {}",
-            show(Path::new(&settled.path)),
-            show(Path::new(&kept))
-        )
-    });
-    // The knobs are named after every write, so the file that holds them is
-    // learned on first use rather than read about somewhere else.
-    let settings = (!target.knobs.is_empty() && dir.join(&kept).is_file()).then(|| {
-        format!(
-            "options in {}: {}",
-            show(Path::new(&kept)),
-            settings_of(target)
-        )
-    });
+    let kept = kept_label(&target.name);
+    let remembered = remember(dir, target, &settled.path)?;
+    let note = remembered
+        .as_ref()
+        .map(|_| format!("remembered {} in {kept}", show(Path::new(&settled.path))));
+    // The knobs are named after every write, so where they live is learned on
+    // first use rather than read about somewhere else.
+    let settings =
+        (!target.knobs.is_empty()).then(|| format!("options in {kept}: {}", settings_of(target)));
 
     Ok(Written {
         path,
@@ -527,24 +521,69 @@ fn put(
     })
 }
 
-/// The answer is kept as the override that says it, even when it is the built-in
-/// default, because it was answered and is never asked again. A folder penv did
-/// not write is left exactly as it is.
-fn remember(
-    dir: &Path,
-    target: &Target,
-    output: &str,
-    kept: &str,
-) -> Result<Option<PathBuf>, CliError> {
-    let path = dir.join(kept);
-    let body = penv_targets::override_body(&target.name, output, &target.effective());
-    let names: Vec<String> = target.knobs.iter().map(|knob| knob.name.clone()).collect();
-    match read_file(&path) {
-        Ok(existing) if existing == body => return Ok(None),
-        Ok(existing) if penv_targets::hand_written(&existing, &names) => return Ok(None),
-        _ => {}
+/// Every lookup of a target goes through `.penv/config.toml` and `.penv/<name>.tmpl`
+/// first, then any folder left from before.
+fn tree(roots: &Roots) -> penv_targets::Settled<'static> {
+    penv_targets::Settled::new(&Disk, &roots.repo)
+}
+
+/// Where a target's settings are kept, for messages.
+fn kept_label(name: &str) -> String {
+    format!("{} [targets.{name}]", penv_targets::CONFIG)
+}
+
+/// The answer is kept in `.penv/config.toml` as `[targets.<name>]`: the output
+/// path and every option at the value in effect, even the built-in default,
+/// because it was answered and is never asked again. Other fields a section
+/// holds (a new language's types, detect files, import line) are kept as they
+/// are. A `.penv/targets/<name>/` folder left from before is moved in: its
+/// fields into the section, its template to `.penv/<name>.tmpl`.
+fn remember(dir: &Path, target: &Target, output: &str) -> Result<Option<PathBuf>, CliError> {
+    let mut config = crate::config::Config::load(dir)?;
+    let before = config.render();
+    let legacy_dir = dir.join(".penv/targets").join(&target.name);
+    let legacy_toml = legacy_dir.join("target.toml");
+    let legacy_tmpl = legacy_dir.join("env.tmpl");
+
+    let mut section = config.target(&target.name).unwrap_or_default();
+    if let Ok(text) = read_file(&legacy_toml)
+        && let Ok(old) = text.parse::<toml::Table>()
+    {
+        for (field, value) in old {
+            if field != "name" {
+                section.entry(field).or_insert(value);
+            }
+        }
     }
-    write_file_making_parents(&path, &body)?;
+    section.insert("output".into(), toml::Value::String(output.to_string()));
+    let options: toml::Table = target
+        .effective()
+        .into_iter()
+        .map(|(knob, value)| (knob.name.clone(), value.clone()))
+        .collect();
+    if options.is_empty() {
+        section.remove("options");
+    } else {
+        section.insert("options".into(), toml::Value::Table(options));
+    }
+    config.set_target(&target.name, section);
+
+    let moved = legacy_toml.is_file() || legacy_tmpl.is_file();
+    if config.render() == before && !moved {
+        return Ok(None);
+    }
+    let path = config.save(dir)?;
+    if legacy_tmpl.is_file() {
+        let tmpl = dir.join(".penv").join(format!("{}.tmpl", target.name));
+        if !tmpl.exists() {
+            let body = read_file(&legacy_tmpl)?;
+            write_file_making_parents(&tmpl, &body)?;
+        }
+        let _ = std::fs::remove_file(&legacy_tmpl);
+    }
+    let _ = std::fs::remove_file(&legacy_toml);
+    let _ = std::fs::remove_dir(&legacy_dir);
+    let _ = std::fs::remove_dir(dir.join(".penv/targets"));
     Ok(Some(path))
 }
 
@@ -622,7 +661,7 @@ fn knobs(out: &Output, target: &Target) -> Report {
             ]
         })
         .collect();
-    let kept = format!(".penv/targets/{}/target.toml", target.name);
+    let kept = kept_label(&target.name);
     let text = if rows.is_empty() {
         style.dim(&format!("the {} target takes no options", target.name))
     } else {
@@ -633,7 +672,7 @@ fn knobs(out: &Output, target: &Target) -> Report {
                 &rows,
                 &style
             ),
-            style.dim(&format!("set them in {}", show(Path::new(&kept))))
+            style.dim(&format!("set them in {kept}"))
         )
     };
 
@@ -641,7 +680,7 @@ fn knobs(out: &Output, target: &Target) -> Report {
         json!({
             "target": target.name,
             "source": target.source.as_str(),
-            "remembered": show(Path::new(&kept)),
+                        "remembered": kept,
             "options": described_options(target),
         }),
         text,
@@ -693,7 +732,7 @@ fn settings_of(target: &Target) -> String {
 }
 
 fn list(out: &Output, dir: &Path, roots: &Roots) -> Report {
-    let found = penv_targets::available(&Disk, roots);
+    let found = penv_targets::available(&tree(roots), roots);
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut listed: Vec<Value> = Vec::new();
     for target in &found {
@@ -709,7 +748,7 @@ fn list(out: &Output, dir: &Path, roots: &Roots) -> Report {
                 listed.push(json!({ "status": "broken", "reason": described(error) }));
             }
             Ok(target) => {
-                let packages = penv_targets::candidates(&Disk, roots, target);
+                let packages = penv_targets::candidates(&tree(roots), roots, target);
                 rows.push(vec![
                     target.name.clone(),
                     target.source.as_str().to_string(),
@@ -782,7 +821,7 @@ fn verify(
         Ok(existing) if existing == rendered => "current",
         Ok(_) => "stale",
     };
-    let packages = penv_targets::candidates(&Disk, roots, target);
+    let packages = penv_targets::candidates(&tree(roots), roots, target);
     let package = dir.join(penv_targets::package_of(relative, &packages));
     let compiled = compile(target, rendered, &package);
 

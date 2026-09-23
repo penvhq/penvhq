@@ -284,7 +284,19 @@ Public keys are read by their literal name (`process.env.NEXT_PUBLIC_API_URL`), 
 
 A bundler configured to inline the whole environment (`define: { "process.env": … }`) copies every value into the bundle whatever penv generates; the build scan fails that build.
 
-`gen py` writes `penv_env.py`, on the standard library or with pydantic types. The output path is asked once and stored in `.penv/targets/` (commit it). `--out PATH` skips the prompt.
+`gen py` writes `penv_env.py`, on the standard library or with pydantic types. The output path is asked once and kept in `.penv/config.toml`, with the target's options (commit it). `--out PATH` skips the prompt.
+
+```toml
+# .penv/config.toml
+[targets.ts]
+output = "src/env.ts"
+
+[targets.ts.options]
+key_case = "upper"
+runtime = "node"
+```
+
+`.penv/<name>.tmpl` overrides a target's template. A language penv does not ship is a `[targets.<name>]` section with `output`, `detect` and `types`, plus `.penv/<name>.tmpl`. [Design, language targets](./docs/Design.md#7-language-targets).
 
 ## Coding Agents
 

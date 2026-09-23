@@ -36,6 +36,13 @@ const GO_TEMPLATE: &str =
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// The `[targets.<name>]` section of `.penv/config.toml`, where `gen` keeps its answers.
+fn section(workspace: &Workspace, name: &str) -> Option<toml::Table> {
+    let text = std::fs::read_to_string(workspace.path(".penv/config.toml")).ok()?;
+    let table: toml::Table = text.parse().ok()?;
+    table.get("targets")?.get(name)?.as_table().cloned()
+}
+
 struct Workspace(PathBuf);
 
 impl Workspace {
@@ -248,7 +255,7 @@ fn a_repository_of_two_packages_is_told_where_to_write_and_remembers_it() {
         report["generated"].as_array().unwrap().is_empty(),
         "{report}"
     );
-    assert!(!workspace.path(".penv/targets/ts/target.toml").exists());
+    assert!(section(&workspace, "ts").is_none());
 
     let told = workspace.penv(&["--json", "gen", "ts", "--out", "apps/web/src/env.ts"]);
     let written = json(&told);
@@ -258,14 +265,13 @@ fn a_repository_of_two_packages_is_told_where_to_write_and_remembers_it() {
         written["import"], "import { env } from \"@/env\"",
         "the package's own paths map already reaches the file: {written}"
     );
-    assert_eq!(
-        std::fs::read_to_string(workspace.path(".penv/targets/ts/target.toml"))
-            .expect("remembered"),
-        "name = \"ts\"\noutput = \"apps/web/src/env.ts\"\n\n[options]\n\
-         # penv: Property names in the exported object: the environment key, or its camel form. (upper|camel)\n\
-         key_case = \"upper\"\n\
-         # penv: Where values are read: node (process.env, then Deno.env or Netlify.env), vite (import.meta.env for public keys), deno (Deno.env.get), workers (cloudflare:workers bindings). (node|vite|deno|workers)\n\
-         runtime = \"node\"\n"
+    let ts = section(&workspace, "ts").expect("remembered in .penv/config.toml");
+    assert_eq!(ts["output"].as_str(), Some("apps/web/src/env.ts"));
+    assert_eq!(ts["options"]["key_case"].as_str(), Some("upper"));
+    assert_eq!(ts["options"]["runtime"].as_str(), Some("node"));
+    assert!(
+        !workspace.path(".penv/targets").exists(),
+        "no folder is written any more"
     );
 
     // The override carries the answers and nothing else, so the target still
@@ -327,7 +333,7 @@ fn a_path_outside_the_repository_is_refused_and_never_remembered() {
         let error: Value = serde_json::from_str(&stderr(&refused)).expect("a JSON error");
         assert_eq!(error["error"], "output_outside_repo", "{args:?}");
     }
-    assert!(!workspace.path(".penv/targets/ts/target.toml").exists());
+    assert!(section(&workspace, "ts").is_none());
 }
 
 #[test]
@@ -349,13 +355,9 @@ fn a_python_package_needs_nothing_but_a_requirements_file_to_be_offered() {
         "the standard library is the default: {source}"
     );
     assert!(source.contains("self.PORT: int"), "{source}");
-    assert_eq!(
-        std::fs::read_to_string(workspace.path(".penv/targets/py/target.toml"))
-            .expect("remembered"),
-        "name = \"py\"\noutput = \"service/penv_env.py\"\n\n[options]\n\
-         # penv: Pydantic types for urls and secrets; off keeps the output on the standard library. (false|true)\n\
-         pydantic = false\n"
-    );
+    let py = section(&workspace, "py").expect("remembered in .penv/config.toml");
+    assert_eq!(py["output"].as_str(), Some("service/penv_env.py"));
+    assert_eq!(py["options"]["pydantic"].as_bool(), Some(false));
 }
 
 #[test]
@@ -379,16 +381,8 @@ fn a_vite_package_reads_import_meta_and_the_choice_is_remembered() {
             && !source.contains("process.env.PORT"),
         "a server key is read by computed name only: {source}"
     );
-    let remembered = std::fs::read_to_string(workspace.path(".penv/targets/ts/target.toml"))
-        .expect("remembered");
-    assert_eq!(
-        remembered,
-        "name = \"ts\"\noutput = \"apps/web/src/env.ts\"\n\n[options]\n\
-         # penv: Property names in the exported object: the environment key, or its camel form. (upper|camel)\n\
-         key_case = \"upper\"\n\
-         # penv: Where values are read: node (process.env, then Deno.env or Netlify.env), vite (import.meta.env for public keys), deno (Deno.env.get), workers (cloudflare:workers bindings). (node|vite|deno|workers)\n\
-         runtime = \"vite\"\n"
-    );
+    let ts = section(&workspace, "ts").expect("remembered in .penv/config.toml");
+    assert_eq!(ts["options"]["runtime"].as_str(), Some("vite"));
     let again = stdout(&workspace.penv(&["--format", "text", "gen", "ts"]));
     assert!(
         again.contains("options in") && again.contains("runtime=vite"),
@@ -461,7 +455,7 @@ fn the_options_a_target_takes_are_findable_and_an_edited_one_is_kept() {
 
     // The remembered file is the one place the answers live, so an edit there is
     // what the next run renders through.
-    let kept = workspace.path(".penv/targets/ts/target.toml");
+    let kept = workspace.path(".penv/config.toml");
     let edited = std::fs::read_to_string(&kept)
         .expect("remembered")
         .replace("key_case = \"upper\"", "key_case = \"camel\"");
@@ -469,13 +463,76 @@ fn the_options_a_target_takes_are_findable_and_an_edited_one_is_kept() {
     workspace.penv(&["--json", "gen", "ts"]);
     let source = std::fs::read_to_string(workspace.path("src/env.ts")).expect("the file");
     assert!(
-        source.contains("port:") && !source.contains("PORT:"),
+        source.contains("get port()") && !source.contains("get PORT()"),
         "the edited key_case is what rendered: {source}"
     );
     assert_eq!(
-        std::fs::read_to_string(&kept).expect("remembered"),
-        edited,
-        "penv rewrites its own file with the answer that is in it"
+        section(&workspace, "ts").expect("kept")["options"]["key_case"].as_str(),
+        Some("camel"),
+        "the answer in config.toml is the one kept"
+    );
+}
+
+#[test]
+fn a_target_folder_from_before_is_moved_into_config_and_its_template_beside_it() {
+    let workspace = Workspace::new(&[
+        (".env", "PORT=3000\n"),
+        ("go.mod", "module example.com/app\n"),
+        (".penv/targets/go/target.toml", GO_TARGET),
+        (".penv/targets/go/env.tmpl", GO_TEMPLATE),
+    ]);
+    workspace.penv(&["--json", "init", "--no-guards"]);
+    let written = workspace.penv(&["--json", "gen", "go", "--out", "env.go"]);
+    assert_eq!(written.status.code(), Some(0), "{}", stderr(&written));
+    assert!(
+        std::fs::read_to_string(workspace.path("env.go"))
+            .unwrap()
+            .contains("// PORT int")
+    );
+    let go = section(&workspace, "go").expect("moved into .penv/config.toml");
+    assert_eq!(go["output"].as_str(), Some("env.go"));
+    assert_eq!(
+        go["types"]["port"].as_str(),
+        Some("int"),
+        "the language's own fields came along"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path(".penv/go.tmpl")).unwrap(),
+        GO_TEMPLATE
+    );
+    assert!(
+        !workspace.path(".penv/targets").exists(),
+        "the old folder is gone"
+    );
+
+    // And from config alone, it still renders.
+    std::fs::write(workspace.path("env.go"), "").unwrap();
+    let again = workspace.penv(&["--json", "gen", "go"]);
+    assert_eq!(again.status.code(), Some(0), "{}", stderr(&again));
+    assert!(
+        std::fs::read_to_string(workspace.path("env.go"))
+            .unwrap()
+            .contains("// PORT int")
+    );
+}
+
+#[test]
+fn a_template_beside_config_overrides_a_built_in_target() {
+    let workspace = Workspace::new(&[
+        (".env", "PORT=3000\n"),
+        ("package.json", "{}"),
+        ("tsconfig.json", "{}"),
+        (
+            ".penv/ts.tmpl",
+            "// custom {% for key in keys %}{{ key.name }} {% endfor %}\n",
+        ),
+    ]);
+    workspace.penv(&["--json", "init", "--no-guards"]);
+    let written = workspace.penv(&["--json", "gen", "ts", "--out", "src/env.ts"]);
+    assert_eq!(written.status.code(), Some(0), "{}", stderr(&written));
+    assert_eq!(
+        std::fs::read_to_string(workspace.path("src/env.ts")).unwrap(),
+        "// custom PORT "
     );
 }
 
