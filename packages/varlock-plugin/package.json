@@ -1,6 +1,6 @@
 {
   "name": "@penvhq/varlock-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "varlock plugin that loads secrets from penv.cloud",
   "type": "module",
   "homepage": "https://github.com/penvhq/penvhq/tree/main/packages/varlock-plugin#readme",
