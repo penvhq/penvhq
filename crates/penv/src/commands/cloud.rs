@@ -361,6 +361,15 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 format!("the cloud holds a value for {} but cannot decrypt it; the workspace's key may have been revoked or its KMS access removed.", if where_.is_empty() { "this key" } else { &where_ }),
                 "Check the workspace's encryption key in the console, or set the value again with penv set.",
             ),
+            (409, "redacted") => CliError::new(
+                "redacted",
+                format!("{} is write-only in penv-cloud, so its values go only to workload identities.", if where_.is_empty() { "that environment" } else { &where_ }),
+                format!(
+                    "Reveal is not available for a write-only environment. Read it where a workload identity (OIDC, AWS IAM or bound keypair) runs, or set the key for this machine in {}.",
+                    at.map(|a| format!(".env.{}.local", a.environment)).unwrap_or_else(|| ".env.<env>.local".to_string())
+                ),
+            )
+            .with_exit(Exit::EnvironmentRefused),
             (_, "name_invalid") => CliError::new(
                 "name_invalid",
                 "the cloud stores upper-case key names only: A-Z, 0-9 and _, not starting with a digit.",
@@ -596,10 +605,18 @@ impl<'a> Fetcher<'a> {
                 "{at} could not be reached, so this used the development values penv saved last time."
             ));
         }
-        if !resolved.body.skipped.is_empty() {
+        // A redacted key has a value; only a key with none is worth a warning.
+        let unset: Vec<&str> = resolved
+            .body
+            .skipped
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !is_redacted(&resolved.body.keys, name))
+            .collect();
+        if !unset.is_empty() {
             crate::ui::warn(&format!(
                 "no stored value in {at}: {}. Set one with penv set <KEY>.",
-                resolved.body.skipped.join(", ")
+                unset.join(", ")
             ));
         }
         self.read.push((label, resolved.body.keys.clone()));
@@ -613,6 +630,23 @@ impl<'a> Fetcher<'a> {
             .filter_map(|key| Some((key.name, key.value?)))
             .collect())
     }
+
+    /// The keys stored at `at` that this identity is not given: present, and
+    /// withheld because the environment is write-only.
+    pub fn redacted(&mut self, at: &Address) -> Result<Vec<String>, CliError> {
+        Ok(self
+            .keys(at)?
+            .into_iter()
+            .filter(|key| key.redacted)
+            .map(|key| key.name)
+            .collect())
+    }
+}
+
+/// Whether `skipped` (`path/name` or a bare name) is a key the server withheld.
+fn is_redacted(keys: &[penv_cloud::api::CloudKey], skipped: &str) -> bool {
+    keys.iter()
+        .any(|key| key.redacted && (key.address() == skipped || key.name == skipped))
 }
 
 /// A credential proved at most once per command, however many addresses ask.
@@ -666,11 +700,56 @@ mod tests {
             (409, "org_ambiguous", "more than one workspace answers"),
             (409, "undecryptable", "cannot decrypt it"),
             (400, "name_invalid", "upper-case key names only"),
+            (409, "redacted", "is write-only in penv-cloud"),
         ] {
             let error = refuse(ApiError::new(status, code).into(), Some(&at));
             assert_eq!(error.code, code);
             assert!(error.message.contains(says), "{code}: {}", error.message);
         }
+    }
+
+    #[test]
+    fn a_write_only_refusal_is_exit_six_and_says_reveal_is_not_available() {
+        let at = Address::new("acme", "api", "production");
+        let error = refuse(ApiError::new(409, "redacted").into(), Some(&at));
+        assert_eq!(error.exit, Exit::EnvironmentRefused);
+        assert!(
+            error.message.contains("acme/api/production"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.fix.contains("Reveal is not available"),
+            "{}",
+            error.fix
+        );
+
+        let unnamed = refuse(ApiError::new(409, "redacted").into(), None);
+        assert_eq!(unnamed.code, "redacted");
+        assert!(
+            unnamed.message.starts_with("that environment"),
+            "{}",
+            unnamed.message
+        );
+    }
+
+    #[test]
+    fn a_withheld_key_is_not_a_key_with_no_value() {
+        let keys = [
+            penv_cloud::api::CloudKey {
+                path: "db".into(),
+                name: "DB_PASSWORD".into(),
+                redacted: true,
+                ..Default::default()
+            },
+            penv_cloud::api::CloudKey {
+                name: "EMPTY".into(),
+                ..Default::default()
+            },
+        ];
+        assert!(is_redacted(&keys, "db/DB_PASSWORD"));
+        assert!(is_redacted(&keys, "DB_PASSWORD"));
+        assert!(!is_redacted(&keys, "EMPTY"));
     }
 
     #[test]

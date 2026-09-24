@@ -46,6 +46,28 @@ pub fn write(entries: &[(&str, &str)]) -> Result<String, WriteError> {
     Ok(out)
 }
 
+/// [`write`], then one `# penv:redacted KEY` line for each key penv-cloud
+/// holds and withheld. A comment, so no loader reads it as a value.
+pub fn write_redacted(entries: &[(&str, &str)], redacted: &[&str]) -> Result<String, WriteError> {
+    let mut out = write(entries)?;
+    let mut seen: Vec<&str> = entries.iter().map(|(key, _)| *key).collect();
+    for key in redacted {
+        if !is_valid_key_name(key) || *key != key.to_ascii_uppercase() {
+            return Err(WriteError::InvalidKey {
+                key: key.to_string(),
+            });
+        }
+        if seen.contains(key) {
+            return Err(WriteError::DuplicateKey {
+                key: key.to_string(),
+            });
+        }
+        seen.push(key);
+        let _ = writeln!(out, "{}{key}", crate::REDACTED_MARKER);
+    }
+    Ok(out)
+}
+
 /// Only `\n` inside double quotes is an escape every dialect reads back, so a
 /// value carrying a `"`, a `\`, a `$` or a function call goes in single quotes,
 /// where nothing is an escape or computed.
@@ -75,7 +97,7 @@ fn quote(key: &str, value: &str) -> Result<String, WriteError> {
 
 /// Set one key in an existing file, leaving every other line as written. A key
 /// the file sets more than once keeps one line, where it was last set. A key the
-/// file lacks is appended.
+/// file lacks is appended. A redacted marker for the key goes: the value replaces it.
 pub fn upsert(source: &str, key: &str, value: &str) -> Result<String, WriteError> {
     let line = write(&[(key, value)])?;
     let (mut lines, spans) = split_at_key(source, key);
@@ -96,7 +118,8 @@ pub fn upsert(source: &str, key: &str, value: &str) -> Result<String, WriteError
     Ok(join(lines))
 }
 
-/// Drop every line of one key. The file is returned unchanged when the key is absent.
+/// Drop every line of one key, its redacted marker included. The file is
+/// returned unchanged when the key is absent.
 pub fn remove(source: &str, key: &str) -> (String, bool) {
     let (mut lines, spans) = split_at_key(source, key);
     if spans.is_empty() {
@@ -117,12 +140,30 @@ fn split_at_key(source: &str, key: &str) -> (Vec<String>, Vec<(usize, usize)>) {
         .map(str::to_string)
         .filter(|_| !source.is_empty())
         .collect();
-    let spans = crate::read(source)
+    let every: Vec<(String, usize, usize)> = crate::read(source)
         .assignments
         .into_iter()
-        .filter(|(name, _, _)| name == key)
-        .map(|(_, first, last)| (first as usize - 1, (last as usize).min(lines.len())))
+        .map(|(name, first, last)| (name, first as usize - 1, (last as usize).min(lines.len())))
         .collect();
+    let mut spans: Vec<(usize, usize)> = every
+        .iter()
+        .filter(|(name, _, _)| name == key)
+        .map(|&(_, start, end)| (start, end))
+        .collect();
+    // A line inside some value is part of that value, whatever it reads like.
+    let inside = |i: usize| {
+        every
+            .iter()
+            .any(|&(_, start, end)| (start..end).contains(&i))
+    };
+    let markers: Vec<(usize, usize)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, line)| crate::redacted_marker(line.trim()) == Some(key) && !inside(*i))
+        .map(|(i, _)| (i, i + 1))
+        .collect();
+    spans.extend(markers);
+    spans.sort_unstable();
     (lines, spans)
 }
 
