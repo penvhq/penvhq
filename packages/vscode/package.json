@@ -16,8 +16,18 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["Programming Languages", "Linters"],
-  "keywords": ["penv", "env-spec", ".env.schema", "dotenv", "secrets", "varlock"],
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "penv",
+    "env-spec",
+    ".env.schema",
+    "dotenv",
+    "secrets",
+    "varlock"
+  ],
   "main": "./dist/extension.js",
   "activationEvents": [
     "workspaceContains:**/.env.schema",
@@ -63,7 +73,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "1.90.0",
-    "@vscode/test-electron": "^2.4.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.25.0",
     "ovsx": "^0.10.0",
