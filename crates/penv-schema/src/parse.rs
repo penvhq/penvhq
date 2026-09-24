@@ -877,7 +877,7 @@ fn unquote(v: &str) -> String {
 }
 
 /// `# ---`, or a labelled `# --- api ---`: a block boundary, the way varlock ends its header.
-fn is_divider(trimmed: &str) -> bool {
+pub(crate) fn is_divider(trimmed: &str) -> bool {
     trimmed
         .strip_prefix('#')
         .is_some_and(|rest| rest.trim_start().starts_with("---"))
