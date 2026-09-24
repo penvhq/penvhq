@@ -6,8 +6,8 @@ use crate::error::CliError;
 use crate::files::show;
 use crate::output::{Output, Report};
 use crate::upgrade::{
-    PUBLIC_KEYS, RELEASE_BASE, Swap, checked_keys, checked_signature, digest_in, is_newer,
-    latest_url, manager, pick, replace, resets_in, tag_of, triple,
+    Channel, PUBLIC_KEYS, RELEASE_BASE, Swap, checked_keys, checked_signature, compare, digest_in,
+    is_newer, manager, newest, pick, replace, resets_in, tag_of, triple,
 };
 use penv_cloud::fetch;
 
@@ -16,42 +16,77 @@ const INSTALL: &str = "Install from https://penv.cloud/install.";
 
 /// The published release is the source of truth: the raw binary for this target,
 /// its digest, and then the swap.
-pub fn run(out: &Output, check: bool) -> Result<Report, CliError> {
+pub fn run(out: &Output, channel: Option<&str>, check: bool) -> Result<Report, CliError> {
     let style = out.style();
+    let channel = Channel::parse(channel)?;
     // The host is answered before the network is, so --check refuses here too.
     let target = triple(std::env::consts::ARCH, std::env::consts::OS)?;
 
-    let url = latest_url(RELEASE_BASE);
-    let body = get(&url, "application/vnd.github+json")?;
-    let release: serde_json::Value =
-        serde_json::from_slice(&body).map_err(|e| unreadable(&url, &e.to_string()))?;
+    let url = channel.url(RELEASE_BASE);
+    let body = get(&url, "application/vnd.github+json").map_err(|e| match &channel {
+        Channel::Version(tag) if e.code == "no_release" => CliError::new(
+            "no_release",
+            format!("there is no published release {tag}."),
+            "Run penv upgrade --check to see the latest, or pick a version from the releases page.",
+        ),
+        _ => e,
+    })?;
+    let answered: serde_json::Value = serde_json::from_slice(&body).map_err(|e| match &channel {
+        // A penv.cloud that predates the channel answers with a page, not a release.
+        Channel::Latest => unreadable(&url, &e.to_string()),
+        _ => CliError::new(
+            "channel_unavailable",
+            format!("{url} does not answer for {} yet.", channel.name()),
+            "Run penv upgrade for the latest release, or install one version with PENV_VERSION and the installer.",
+        ),
+    })?;
+    let release = match channel {
+        Channel::Next => newest(&answered)
+            .cloned()
+            .ok_or_else(|| CliError::new("no_release", "no release is published yet.", INSTALL))?,
+        _ => answered,
+    };
     let tag = tag_of(&release)?;
     let latest = tag.trim_start_matches('v');
-    let behind = is_newer(tag, VERSION);
+    // A named version is installed whichever way it lies; a channel only moves forward.
+    let behind = match channel {
+        Channel::Version(_) => compare(tag, VERSION) != std::cmp::Ordering::Equal,
+        _ => is_newer(tag, VERSION),
+    };
+    let verb = if is_newer(tag, VERSION) {
+        "upgraded"
+    } else {
+        "installed"
+    };
 
     if check {
         // Naming a release to install would be advice this build cannot take.
         if behind {
             checked_keys(PUBLIC_KEYS)?;
         }
+        let command = match channel {
+            Channel::Latest => "penv upgrade".to_string(),
+            _ => format!("penv upgrade {}", channel.name()),
+        };
         let text = if behind {
             format!(
-                "penv {latest} is out\n{}",
-                style.dim(&format!("you are on {VERSION}; run penv upgrade"))
+                "penv {latest} is out on {}\n{}",
+                channel.name(),
+                style.dim(&format!("you are on {VERSION}; run {command}"))
             )
         } else {
-            format!("penv {VERSION} is current")
+            format!("penv {VERSION} is current on {}", channel.name())
         };
         return Ok(Report::new(
-            json!({ "current": !behind, "latest": tag }),
+            json!({ "current": !behind, "latest": tag, "channel": channel.name() }),
             text,
         ));
     }
 
     if !behind {
         return Ok(Report::new(
-            json!({ "current": true, "latest": tag }),
-            format!("penv {VERSION} is current"),
+            json!({ "current": true, "latest": tag, "channel": channel.name() }),
+            format!("penv {VERSION} is current on {}", channel.name()),
         ));
     }
 
@@ -107,6 +142,7 @@ pub fn run(out: &Output, check: bool) -> Result<Report, CliError> {
         json!({
             "from": VERSION,
             "to": latest,
+            "channel": channel.name(),
             "path": show(&path),
             "asset": picked.asset,
             "digest": "sha256",
@@ -114,7 +150,7 @@ pub fn run(out: &Output, check: bool) -> Result<Report, CliError> {
         }),
         format!(
             "{} penv {VERSION} to {latest}\n{}",
-            style.green("upgraded"),
+            style.green(verb),
             style.dim(&show(&path))
         ),
     ))

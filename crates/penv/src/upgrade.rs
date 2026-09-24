@@ -188,6 +188,78 @@ pub fn latest_url(base: &str) -> String {
     format!("{}/releases/latest", base.trim_end_matches('/'))
 }
 
+/// Which release `upgrade` reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Channel {
+    /// The newest plain release: what the installers give.
+    Latest,
+    /// The newest release of any kind, prereleases included.
+    Next,
+    /// Exactly this tag, older than what runs or not.
+    Version(String),
+}
+
+impl Channel {
+    /// `latest`, `next`, or a version with or without its leading `v`.
+    pub fn parse(arg: Option<&str>) -> Result<Channel, CliError> {
+        let Some(arg) = arg.map(str::trim) else {
+            return Ok(Channel::Latest);
+        };
+        match arg {
+            "latest" => return Ok(Channel::Latest),
+            "next" => return Ok(Channel::Next),
+            _ => {}
+        }
+        let version = arg.strip_prefix('v').unwrap_or(arg);
+        let plausible = version.starts_with(|c: char| c.is_ascii_digit())
+            && version
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+        if !plausible {
+            return Err(CliError::new(
+                "invalid_version",
+                format!("{arg:?} is not latest, next or a version."),
+                "Run penv upgrade, penv upgrade next, or penv upgrade 1.2.0.",
+            ));
+        }
+        Ok(Channel::Version(format!("v{version}")))
+    }
+
+    /// Where its release JSON is read: one release, or for `next` the list.
+    pub fn url(&self, base: &str) -> String {
+        let base = base.trim_end_matches('/');
+        match self {
+            Channel::Latest => latest_url(base),
+            Channel::Next => format!("{base}/releases"),
+            Channel::Version(tag) => format!("{base}/releases/tags/{tag}"),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Channel::Latest => "latest",
+            Channel::Next => "next",
+            Channel::Version(tag) => tag,
+        }
+    }
+}
+
+/// The newest published release in a list, by version rather than by date: a
+/// fix to an older line can be published after a newer prerelease.
+pub fn newest(releases: &Value) -> Option<&Value> {
+    releases
+        .as_array()?
+        .iter()
+        .filter(|r| r["draft"].as_bool() != Some(true))
+        .filter(|r| r["tag_name"].as_str().is_some_and(|t| !t.trim().is_empty()))
+        .max_by(|a, b| {
+            compare(
+                a["tag_name"].as_str().unwrap_or_default(),
+                b["tag_name"].as_str().unwrap_or_default(),
+            )
+        })
+}
+
 /// One asset, behind a redirect to the release that carries it.
 pub fn download_url(base: &str, tag: &str, asset: &str) -> String {
     format!(
@@ -793,6 +865,49 @@ mod tests {
         assert_eq!(resets_in(1_000_601, 1_000_000), Some("in 11m".to_string()));
         assert_eq!(resets_in(1_000_000, 1_000_000), None);
         assert_eq!(resets_in(999_000, 1_000_000), None);
+    }
+
+    #[test]
+    fn a_channel_is_latest_next_or_one_version() {
+        assert_eq!(Channel::parse(None).unwrap(), Channel::Latest);
+        assert_eq!(Channel::parse(Some("latest")).unwrap(), Channel::Latest);
+        assert_eq!(Channel::parse(Some("next")).unwrap(), Channel::Next);
+        for (arg, tag) in [
+            ("1.2.0", "v1.2.0"),
+            ("v1.2.0", "v1.2.0"),
+            ("1.3.0-beta.2", "v1.3.0-beta.2"),
+        ] {
+            assert_eq!(
+                Channel::parse(Some(arg)).unwrap(),
+                Channel::Version(tag.into())
+            );
+        }
+        for bad in ["", "beta", "v", "1.2/../x", "1.2 0", "stable"] {
+            assert_eq!(
+                Channel::parse(Some(bad)).unwrap_err().code,
+                "invalid_version",
+                "{bad}"
+            );
+        }
+        let base = "https://penv.test/";
+        assert_eq!(Channel::Next.url(base), "https://penv.test/releases");
+        assert_eq!(
+            Channel::Version("v1.2.0".into()).url(base),
+            "https://penv.test/releases/tags/v1.2.0"
+        );
+    }
+
+    #[test]
+    fn next_is_the_highest_version_published_not_the_last_one() {
+        let list = serde_json::json!([
+            { "tag_name": "v1.0.1", "draft": false },
+            { "tag_name": "v1.1.0-beta.2", "draft": false },
+            { "tag_name": "v1.1.0-beta.10", "draft": false },
+            { "tag_name": "v1.2.0", "draft": true },
+            { "tag_name": "", "draft": false }
+        ]);
+        assert_eq!(newest(&list).unwrap()["tag_name"], "v1.1.0-beta.10");
+        assert!(newest(&serde_json::json!([])).is_none());
     }
 
     #[test]
