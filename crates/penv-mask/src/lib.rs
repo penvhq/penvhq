@@ -42,6 +42,8 @@ pub struct Masker {
     by_first_byte: Vec<Vec<u32>>,
     longest: usize,
     held: Vec<u8>,
+    /// Bytes of `held` before this are already covered by a replacement.
+    masked_until: usize,
 }
 
 impl Masker {
@@ -76,6 +78,7 @@ impl Masker {
             by_first_byte,
             longest,
             held: Vec::new(),
+            masked_until: 0,
         }
     }
 
@@ -115,38 +118,22 @@ impl Masker {
             if !ending && index >= tail && self.partial_at(index) {
                 break;
             }
-            match self.match_at(index) {
-                (Some(pattern), consumed) => {
-                    let Some(end) = self.overlapped_end(index, index + consumed, ending) else {
-                        break;
-                    };
-                    out.extend_from_slice(&self.held[run..index]);
-                    out.extend_from_slice(&self.patterns[pattern].replacement);
-                    index = end;
-                    run = index;
-                }
-                (None, _) => index += 1,
+            let (pattern, consumed) = self.match_at(index);
+            if index < self.masked_until {
+                // Inside a masked run a match only lengthens it.
+                self.masked_until = self.masked_until.max(index + consumed);
+                run = index + 1;
+            } else if let Some(pattern) = pattern {
+                out.extend_from_slice(&self.held[run..index]);
+                out.extend_from_slice(&self.patterns[pattern].replacement);
+                self.masked_until = index + consumed;
+                run = index + 1;
             }
+            index += 1;
         }
         out.extend_from_slice(&self.held[run..index]);
         self.held.drain(..index);
-    }
-
-    /// Where a masked run ends once every pattern starting inside it is taken
-    /// in too, so an overlapping secret leaves nothing of itself behind. `None`
-    /// when one of them may still complete with bytes not yet read.
-    fn overlapped_end(&self, start: usize, mut end: usize, ending: bool) -> Option<usize> {
-        let mut at = start + 1;
-        while at < end {
-            if !ending && self.partial_at(at) {
-                return None;
-            }
-            if let (Some(_), consumed) = self.match_at(at) {
-                end = end.max(at + consumed);
-            }
-            at += 1;
-        }
-        Some(end)
+        self.masked_until = self.masked_until.saturating_sub(index);
     }
 
     /// The longest pattern that fits whole at this position, and what it ate.
@@ -342,4 +329,25 @@ fn json_escaped(value: &str, style: JsonStyle) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Masker;
+
+    #[test]
+    fn held_back_bytes_stay_under_twice_the_longest_pattern() {
+        let mut masker = Masker::new(vec!["aaaaaaaa".to_string(), "abababab".to_string()]);
+        let bound = masker.longest * 2;
+        let mut out = Vec::new();
+        let streams = ["a".repeat(1 << 20), "ab".repeat(1 << 19)];
+        for (stream, size) in streams.iter().zip([4096, 4093]) {
+            for chunk in stream.as_bytes().chunks(size) {
+                masker.feed(chunk, &mut out);
+                assert!(masker.held.len() <= bound, "{} held", masker.held.len());
+            }
+        }
+        masker.finish(&mut out);
+        assert!(masker.held.is_empty());
+    }
 }

@@ -303,3 +303,199 @@ fn a_secret_split_across_chunks_is_still_held_until_it_is_whole() {
         format!("user: sk{BLOCKS}\n")
     );
 }
+
+#[test]
+fn a_secret_that_ends_the_chunk_is_masked_at_once() {
+    // The hex form of the first starts with `7`; the raw form of both with `s`.
+    for secret in ["sk_test_FAKE0007", "sk_test_FAKE000s"] {
+        let mut masker = Masker::new(vec![secret.to_string()]);
+        let mut out = Vec::new();
+        masker.feed(format!("key={secret}").as_bytes(), &mut out);
+        assert_eq!(
+            String::from_utf8(out.clone()).unwrap(),
+            format!("key=sk{BLOCKS}")
+        );
+        masker.finish(&mut out);
+        assert_eq!(String::from_utf8(out).unwrap(), format!("key=sk{BLOCKS}"));
+    }
+}
+
+fn wrapped_base64(secret: &str) -> String {
+    b64(secret.as_bytes())
+        .as_bytes()
+        .chunks(4)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+/// Inputs built to trip a streaming scrubber, with what each must become.
+fn adversarial_cases() -> Vec<(Vec<&'static str>, String, String)> {
+    let b = BLOCKS;
+    vec![
+        (
+            vec!["abcdef00", "ef0011223"],
+            "xxabcdef0011223yy".into(),
+            format!("xxab{b}yy"),
+        ),
+        (
+            vec!["abcd0000", "0000efgh", "efghijkl"],
+            "<abcd0000efghijkl>".into(),
+            format!("<ab{b}>"),
+        ),
+        (
+            vec!["aaaaaaaa"],
+            format!("<{}>", "a".repeat(21)),
+            format!("<aa{b}>"),
+        ),
+        (
+            vec!["abababab"],
+            format!("x{}y", "ab".repeat(9)),
+            format!("xab{b}y"),
+        ),
+        (
+            vec!["sk_test_FAKE", "sk_test_FAKE0000"],
+            "a sk_test_FAKE0000 b sk_test_FAKE c".into(),
+            format!("a sk{b} b sk{b} c"),
+        ),
+        (
+            vec!["sk_test_FAKE0007"],
+            "key=sk_test_FAKE0007".into(),
+            format!("key=sk{b}"),
+        ),
+        (
+            vec!["sk_test_FAKE0000"],
+            format!("body\n{}\nend\n", wrapped_base64("sk_test_FAKE0000")),
+            format!("body\nsk{b}\nend\n"),
+        ),
+    ]
+}
+
+#[test]
+fn every_split_of_an_adversarial_input_masks_the_same() {
+    for (secrets, input, expected) in adversarial_cases() {
+        assert_eq!(one(&secrets, &input), expected, "one shot of {input:?}");
+        let bytes = input.as_bytes();
+        for i in 0..=bytes.len() {
+            for j in i..=bytes.len() {
+                let out = through(&secrets, &[&bytes[..i], &bytes[i..j], &bytes[j..]]);
+                assert_eq!(out, expected, "{input:?} split at {i} and {j}");
+            }
+        }
+        let singles: Vec<&[u8]> = bytes.chunks(1).collect();
+        assert_eq!(
+            through(&secrets, &singles),
+            expected,
+            "{input:?} byte by byte"
+        );
+    }
+}
+
+/// A fixed-seed xorshift, so a failure replays.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % n as u64) as usize
+    }
+}
+
+#[test]
+fn random_streams_split_at_random_mask_like_one_shot_and_leak_nothing() {
+    let secrets = [
+        "abcdef00",
+        "ef0011223",
+        "aaaaaaaa",
+        "abababab",
+        "sk_test_FAKE",
+        "sk_test_FAKE0007",
+    ];
+    let hex = |s: &str| -> String { s.bytes().map(|b| format!("{b:02x}")).collect() };
+    let mut pieces: Vec<String> = Vec::new();
+    for secret in secrets {
+        pieces.push(secret.to_string());
+        pieces.push(secret[..secret.len() / 2].to_string());
+        pieces.push(secret[secret.len() / 2..].to_string());
+        pieces.push(hex(secret));
+        pieces.push(b64(secret.as_bytes()));
+    }
+    for filler in ["a", "b", "0", "e", "f", "7", "s", " ", "\n", "=", "zz"] {
+        pieces.push(filler.to_string());
+    }
+
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    for round in 0..400 {
+        let mut input = String::new();
+        for _ in 0..rng.below(40) {
+            input.push_str(&pieces[rng.below(pieces.len())]);
+        }
+        let expected = one(&secrets, &input);
+
+        let bytes = input.as_bytes();
+        let mut chunks: Vec<&[u8]> = Vec::new();
+        let mut at = 0;
+        while at < bytes.len() {
+            let len = 1 + rng.below(12).min(bytes.len() - at - 1);
+            chunks.push(&bytes[at..at + len]);
+            at += len;
+        }
+        assert_eq!(
+            through(&secrets, &chunks),
+            expected,
+            "round {round}: {input:?}"
+        );
+
+        // What passed through untouched holds no form of any secret.
+        let mut passed = expected.clone();
+        for secret in secrets {
+            passed = passed.replace(&redaction(secret), "\0");
+        }
+        for secret in secrets {
+            for form in [
+                secret.to_string(),
+                hex(secret),
+                hex(secret).to_uppercase(),
+                b64(secret.as_bytes()),
+            ] {
+                assert!(
+                    !passed.contains(&form),
+                    "round {round}: {input:?} -> {expected:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_long_self_overlapping_stream_keeps_flowing_in_linear_time() {
+    let mut masker = Masker::new(vec!["aaaaaaaa".to_string(), "abababab".to_string()]);
+    let run = 1 << 19;
+    let input = format!("<{}\n{}>", "a".repeat(run), "ab".repeat(run / 2));
+    let break_at = run + 1;
+
+    let started = std::time::Instant::now();
+    let mut out = Vec::new();
+    for (n, chunk) in input.as_bytes().chunks(4096).enumerate() {
+        masker.feed(chunk, &mut out);
+        if n == 0 {
+            assert_eq!(
+                String::from_utf8(out.clone()).unwrap(),
+                format!("<aa{BLOCKS}")
+            );
+        }
+        if (n + 1) * 4096 > break_at {
+            assert!(out.contains(&b'\n'), "the break waits behind chunk {n}");
+        }
+    }
+    masker.finish(&mut out);
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        format!("<aa{BLOCKS}\nab{BLOCKS}>")
+    );
+    assert!(elapsed.as_secs_f64() < 1.0, "took {elapsed:?}");
+}
