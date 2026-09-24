@@ -118,7 +118,10 @@ pub fn read(input: &str) -> Dotenv {
         let key = name_part.trim();
         // The text before an = may be a line of some value, so it is named
         // only when it could not be.
-        if !is_plausible_key(key) {
+        // A base64 block's short last line ends in `=` padding, so it reads as a
+        // key with nothing after it.
+        let padding = value_part.trim().is_empty() && looks_encoded(key);
+        if !is_plausible_key(key) || padding {
             let message = if nameable(key) {
                 format!("{key:?} is not a usable key name and was skipped")
             } else {
@@ -183,9 +186,10 @@ pub fn read(input: &str) -> Dotenv {
 }
 
 /// A name a `.env` line can set. A line of base64 is a valid identifier too, so
-/// a long name, or a mixed-case run with digits and no underscore, is not one.
+/// a long mixed-case run with digits and no underscore is not one; a short one
+/// (`s3Bucket`, `oauth2ClientId`) is a name somebody typed.
 pub fn is_plausible_key(name: &str) -> bool {
-    is_valid_key_name(name) && name.len() <= 64 && !looks_encoded(name)
+    is_valid_key_name(name) && !(name.len() >= 20 && looks_encoded(name))
 }
 
 /// Short and plain enough to be a name someone typed, never key material.

@@ -145,7 +145,7 @@ dir=${PENV_INSTALL_DIR:-$HOME/.penv/bin}
 binary=$dir/penv$exe
 mkdir -p "$dir" || die "$dir could not be created."
 # Absolute, so the PATH line printed below works from any directory.
-dir=$(cd "$dir" && pwd) || die "$dir could not be entered."
+dir=$(CDPATH= cd -P -- "$dir" && pwd) || die "$dir could not be entered."
 # The install directory is created before the digest passes, and the binary is downloaded
 # into it so the rename is atomic and lands over a running penv; the temp file goes on
 # every exit path, so a refusal leaves the directory as it found it.

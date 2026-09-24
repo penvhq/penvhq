@@ -38,7 +38,8 @@ public sealed record Env(
     Secret? ToString_,
     Secret? None,
     string Greeting,
-    int Port)
+    int Port,
+    Secret? Clone_)
 {
     private static string? __PenvRaw(string name, string fallback, bool required, List<string> problems)
     {
@@ -118,6 +119,8 @@ public sealed record Env(
             if (int.TryParse(__penvRaw_port.Trim(), global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture, out var __penvN) && __penvN >= 1 && __penvN <= 65535) port = __penvN;
             else __penvProblems.Add("PORT" + " is not a port");
         }
+        var __penvRaw_clone = __PenvRaw("CLONE", "", false, __penvProblems);
+        var clone = __penvRaw_clone == null ? null : new Secret(__penvRaw_clone);
         if (__penvProblems.Count > 0)
         {
             throw new global::System.InvalidOperationException(string.Join("; ", __penvProblems));
@@ -139,6 +142,7 @@ public sealed record Env(
             toString,
             none,
             greeting!,
-            port!.Value);
+            port!.Value,
+            clone);
     }
 }

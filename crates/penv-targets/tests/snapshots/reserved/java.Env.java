@@ -25,7 +25,8 @@ public record Env(
         Secret toString_,
         Secret none,
         String greeting,
-        int port) {
+        int port,
+        Secret clone_) {
 
     /** A value that prints as [redacted]; {@code expose()} returns it. */
     public static final class Secret {
@@ -130,6 +131,8 @@ public record Env(
                 __penvProblems.add("PORT" + " is not a port");
             }
         }
+        String __penvRaw_clone = raw("CLONE", "", false, __penvProblems);
+        Secret clone_ = __penvRaw_clone == null ? null : new Secret(__penvRaw_clone);
         if (!__penvProblems.isEmpty()) {
             throw new IllegalStateException(String.join("; ", __penvProblems));
         }
@@ -150,6 +153,7 @@ public record Env(
                 toString_,
                 none,
                 greeting,
-                port);
+                port,
+                clone_);
     }
 }

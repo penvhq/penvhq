@@ -57,6 +57,7 @@ final class Env
         public readonly ?Secret $none,
         public readonly string $greeting,
         public readonly int $port,
+        public readonly ?Secret $clone,
     ) {
     }
 
@@ -126,6 +127,8 @@ final class Env
             $__penvN = filter_var($port, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]);
             $port = $__penvN === false ? $__penvBad('PORT', 'a port') : $__penvN;
         }
+        $clone = $__penvRaw('CLONE', '', false);
+        $clone = $clone === null ? null : new Secret($clone);
         if ($__penvProblems !== []) {
             throw new \RuntimeException(implode('; ', $__penvProblems));
         }
@@ -148,6 +151,7 @@ final class Env
             none: $none,
             greeting: $greeting,
             port: $port,
+            clone: $clone,
         );
     }
 }

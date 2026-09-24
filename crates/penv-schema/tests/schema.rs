@@ -805,6 +805,19 @@ fn render_keeps_the_provider() {
 }
 
 #[test]
+fn a_computed_default_a_bare_line_would_cut_survives_a_render() {
+    for line in [
+        r#"KEY="${HOST} # x""#,
+        r#"KEY=" ${HOST} ""#,
+        r#"KEY="a\\b \$HOME # c""#,
+    ] {
+        let schema = parse(&format!("# @type=string\n{line}\n")).unwrap();
+        let rendered = render(&schema);
+        assert_eq!(parse(&rendered).unwrap(), schema, "{line} -> {rendered}");
+    }
+}
+
+#[test]
 fn set_header_keeps_a_byte_order_mark_at_the_start() {
     let plain = "\u{feff}# @type=string\nA=\n";
     let linked = penv_schema::set_header(plain, "acme", "api");

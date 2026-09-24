@@ -166,6 +166,17 @@ fn merge_table(
             merge_table(slot, item, &at, blocked);
             continue;
         }
+        // `[[x]]` entries: penv's is added unless an equal one is already there.
+        if let (Some(slot), Some(items)) =
+            (slot.as_array_of_tables_mut(), item.as_array_of_tables())
+        {
+            for table in items.iter() {
+                if !slot.iter().any(|t| plain_table(t) == plain_table(table)) {
+                    slot.push(table.clone());
+                }
+            }
+            continue;
+        }
         match (slot.as_array_mut(), item.as_array()) {
             (Some(slot), Some(items)) => {
                 for value in items.iter() {
@@ -185,6 +196,14 @@ fn merge_table(
             }
         }
     }
+}
+
+/// A table without its layout, for comparing.
+fn plain_table(table: &toml_edit::Table) -> String {
+    let mut table = table.clone();
+    table.decor_mut().clear();
+    table.fmt();
+    table.to_string()
 }
 
 /// A value without the spacing and comments around it, for comparing.
@@ -469,6 +488,18 @@ mod tests {
         )
         .unwrap();
         assert!(same.blocked.is_empty());
+    }
+
+    #[test]
+    fn an_array_of_tables_is_unioned_and_an_equal_entry_is_current() {
+        let fragment = "[[hooks]]\nevent = \"pre\"\ncommand = \"penv hook x\"\n";
+        let rule = write(Format::Toml, Merge::AppendUnique);
+        let same = apply(&rule, Some(fragment), fragment).unwrap();
+        assert!(!same.changed && same.blocked.is_empty(), "{same:?}");
+        let other = "[[hooks]]\nevent = \"post\"\ncommand = \"mine\"\n";
+        let added = twice(&rule, Some(other), fragment);
+        assert!(added.blocked.is_empty(), "{added:?}");
+        assert!(added.content.contains("mine") && added.content.contains("penv hook x"));
     }
 
     #[test]

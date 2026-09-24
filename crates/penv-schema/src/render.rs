@@ -134,7 +134,14 @@ pub fn render_key(key: &Key) -> String {
 /// `$` is single-quoted, or backticked, so it stays literal.
 fn default_text(v: &str, computed: bool) -> String {
     if computed {
-        return v.to_string();
+        // Bare, a ` #` would start a comment and edge spaces would be trimmed;
+        // double quotes keep it whole and still computed.
+        let cut = v.contains(" #") || v.contains("\t#") || v.trim() != v;
+        return if cut {
+            format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+        } else {
+            v.to_string()
+        };
     }
     if crate::resolve::is_expression(v) {
         if !v.contains('\'') {

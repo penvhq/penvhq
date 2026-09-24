@@ -51,6 +51,7 @@ pub struct Env {
     pub none: Option<Secret>,
     pub greeting: String,
     pub port: u16,
+    pub clone: Option<Secret>,
 }
 
 impl Env {
@@ -116,6 +117,8 @@ impl Env {
         let greeting = Self::raw("GREETING", "Hi $name, from C:\\users", false, &mut __penv_problems);
         let port = Self::raw("PORT", "3000", false, &mut __penv_problems);
         let port = Self::parsed("PORT", "a port", port, |v| v.parse::<u16>().ok().filter(|p| *p > 0), &mut __penv_problems);
+        let clone = Self::raw("CLONE", "", false, &mut __penv_problems);
+        let clone = clone.map(Secret);
         if !__penv_problems.is_empty() {
             return Err(__penv_problems.join("; "));
         }
@@ -137,6 +140,7 @@ impl Env {
             none,
             greeting: greeting.unwrap_or_default(),
             port: port.unwrap_or_default(),
+            clone,
         })
     }
 }

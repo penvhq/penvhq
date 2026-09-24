@@ -60,6 +60,8 @@ type Env struct {
 	Greeting string
 
 	Port int
+
+	Clone *Secret
 }
 
 // Load reads and checks every variable. The error names each problem and never a value.
@@ -159,6 +161,10 @@ func Load() (*Env, error) {
 		} else {
 			bad("PORT", "a port")
 		}
+	}
+	if v, ok := raw("CLONE", "", false); ok {
+		s := Secret(v)
+		e.Clone = &s
 	}
 	if len(problems) > 0 {
 		return nil, errors.New(strings.Join(problems, "; "))

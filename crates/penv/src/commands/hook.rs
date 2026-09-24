@@ -121,11 +121,16 @@ fn walk(value: &Value, request: &mut Request) {
 fn fields(value: &Value, request: &mut Request) {
     for (name, child) in value.as_object().into_iter().flatten() {
         match (name.as_str(), child) {
-            ("command" | "cmd", Value::String(text)) if request.command.is_none() => {
+            // Windsurf's pre_run_command sends command_line.
+            ("command" | "cmd" | "command_line", Value::String(text))
+                if request.command.is_none() =>
+            {
                 request.command = Some(text.clone());
             }
             (
-                "file_path" | "filePath" | "absolute_path" | "path" | "file" | "pattern" | "glob",
+                "file_path" | "filePath" | "absolute_path" | "path" | "file" | "pattern" | "glob"
+                // Gemini's search_file_content and Cline's search_files name a glob.
+                | "include" | "file_pattern",
                 Value::String(text),
             ) => offer(request, text),
             // Gemini's read_many_files names several at once.

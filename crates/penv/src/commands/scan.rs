@@ -227,7 +227,7 @@ impl Finder {
     /// (line, key) for each hit in `bytes`: every line a value is on, or the
     /// first hit's line where the value spans lines.
     pub(crate) fn in_bytes(&mut self, bytes: &[u8]) -> Vec<(usize, String)> {
-        if self.all.is_pass_through() || first_hit(&mut self.all, bytes).is_none() {
+        if self.all.is_pass_through() || first_hit_in(&mut self.all, bytes).is_none() {
             return Vec::new();
         }
         let binary = bytes.contains(&0);
@@ -238,13 +238,13 @@ impl Finder {
         };
         let mut found = Vec::new();
         for (name, masker) in &mut self.each {
-            let Some(first) = first_hit(masker, bytes) else {
+            let Some(first) = first_hit_in(masker, bytes) else {
                 continue;
             };
             let before = found.len();
             if let Some(text) = text {
                 for (index, line) in text.lines().enumerate() {
-                    if first_hit(masker, line.as_bytes()).is_some() {
+                    if first_hit_in(masker, line.as_bytes()).is_some() {
                         found.push((index + 1, name.clone()));
                     }
                 }
@@ -260,6 +260,21 @@ impl Finder {
 /// The 1-based line where the masker first changes the stream, read in chunks
 /// so a file of any size costs one buffer. Until its first replacement a
 /// masker's output is its input, so the first difference is the hit.
+/// [`first_hit`] over bytes already in memory, in one pass: a line of a large
+/// file is checked this way, with no read buffer to fill each time.
+fn first_hit_in(masker: &mut Masker, bytes: &[u8]) -> Option<usize> {
+    let mut out = Vec::with_capacity(bytes.len());
+    masker.feed(bytes, &mut out);
+    masker.finish(&mut out);
+    if out == bytes {
+        return None;
+    }
+    let at = (0..out.len().min(bytes.len()))
+        .find(|&i| bytes[i] != out[i])
+        .unwrap_or(out.len().min(bytes.len()));
+    Some(1 + newlines(&bytes[..at]))
+}
+
 fn first_hit(masker: &mut Masker, mut from: impl Read) -> Option<usize> {
     let mut chunk = vec![0u8; 64 * 1024];
     let mut pending: Vec<u8> = Vec::new();
@@ -439,6 +454,9 @@ fn read_blobs(
         }
         each(path, &body[..size]);
     }
+    // Stopped early, git may still be writing, and the writer waiting on it.
+    drop(from);
+    let _ = child.kill();
     let _ = writer.join();
     let _ = child.wait();
     Ok(())
@@ -618,6 +636,8 @@ mod tests {
         let mut masker = Masker::new(vec![secret.to_string()]);
         assert_eq!(first_hit(&mut masker, text.as_bytes()), Some(20_001));
         assert_eq!(first_hit(&mut masker, &b"nothing here\n"[..]), None);
+        assert_eq!(first_hit_in(&mut masker, text.as_bytes()), Some(20_001));
+        assert_eq!(first_hit_in(&mut masker, b"nothing here\n"), None);
     }
 
     #[test]

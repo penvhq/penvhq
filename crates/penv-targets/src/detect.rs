@@ -11,8 +11,9 @@ const NEVER: [&str; 4] = ["node_modules", "dist", "build", "target"];
 /// How far under the repository root a package is looked for.
 const DEPTH: usize = 3;
 
-/// The directories detection looks in, each with the names of the files it
-/// holds: one walk of the repository, which every target is matched against.
+/// The directories detection looks in, each with the names of the files and
+/// directories it holds: one walk of the repository, which every target is
+/// matched against.
 #[derive(Debug, Clone, Default)]
 pub struct Scan {
     dirs: Vec<(String, Vec<String>)>,
@@ -27,7 +28,9 @@ impl Scan {
 
     fn walk(&mut self, tree: &dyn Tree, repo: &str, relative: &str, depth: usize) {
         let dir = under(repo, relative);
-        self.dirs.push((relative.to_string(), tree.files(&dir)));
+        let mut entries = tree.files(&dir);
+        entries.extend(tree.dirs(&dir));
+        self.dirs.push((relative.to_string(), entries));
         if depth == DEPTH {
             return;
         }
@@ -48,22 +51,28 @@ impl Scan {
     /// target's detect files, shallowest first. The empty string names the root,
     /// which comes last so a monorepo's Enter never lands on it.
     pub fn candidates(&self, target: &Target) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .dirs
-            .iter()
-            .filter(|(_, files)| {
-                target
-                    .detect
-                    .iter()
-                    .any(|want| match want.strip_prefix('*') {
-                        Some(suffix) => files
-                            .iter()
-                            .any(|name| name.ends_with(suffix) && name.len() > suffix.len()),
-                        None => files.contains(want),
+        let mut out: Vec<String> =
+            self.dirs
+                .iter()
+                .filter(|(dir, files)| {
+                    target.detect.iter().any(|want| {
+                        // `src/main.zig` names a file a level down, read from the walk.
+                        if let Some((sub, name)) = want.rsplit_once('/') {
+                            let path = output_path(dir, sub);
+                            return self.dirs.iter().any(|(d, entries)| {
+                                *d == path && entries.iter().any(|e| e == name)
+                            });
+                        }
+                        match want.strip_prefix('*') {
+                            Some(suffix) => files
+                                .iter()
+                                .any(|name| name.ends_with(suffix) && name.len() > suffix.len()),
+                            None => files.contains(want),
+                        }
                     })
-            })
-            .map(|(dir, _)| dir.clone())
-            .collect();
+                })
+                .map(|(dir, _)| dir.clone())
+                .collect();
         out.sort_by_key(|dir| (dir.is_empty(), dir.split('/').count(), dir.clone()));
         out
     }
@@ -267,6 +276,18 @@ mod tests {
         let found =
             Scan::new(&tree, &roots()).candidates(&target(&["package.json", "tsconfig.json"]));
         assert_eq!(found, ["apps/api", "apps/web"]);
+    }
+
+    #[test]
+    fn a_detect_entry_may_name_a_file_a_level_down_or_a_directory() {
+        let tree = Fake::default()
+            .with("/repo/tools/zig/src/main.zig")
+            .with("/repo/services/go/cmd/server/main.go")
+            .with("/repo/services/other/src/lib.rs");
+        let zig = Scan::new(&tree, &roots()).candidates(&target(&["src/main.zig"]));
+        assert_eq!(zig, ["tools/zig"]);
+        let go = Scan::new(&tree, &roots()).candidates(&target(&["cmd"]));
+        assert_eq!(go, ["services/go"]);
     }
 
     #[test]

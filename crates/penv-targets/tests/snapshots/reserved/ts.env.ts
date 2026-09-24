@@ -42,6 +42,7 @@ const read = (name: string): string | undefined => {
       read("TO_STRING"),
       read("None"),
       read("PORT"),
+      read("CLONE"),
     ].filter((v): v is string => typeof v === "string" && v.length >= 4);
   } catch {
     return;
@@ -174,6 +175,9 @@ export const env = {
   },
   get PORT() {
     return Number(given(read("PORT"), "3000"));
+  },
+  get CLONE() {
+    return read("CLONE") as string | undefined;
   },
 };
 

@@ -81,6 +81,18 @@ test("a SIGTERM sent to the launcher reaches penv, and penv's exit code is the a
   assert.equal(code, 7);
 });
 
+test("a SIGINT sent to the launcher alone reaches penv too", { skip: process.platform === "win32" }, async () => {
+  const entry = installed({ withBinary: true });
+  const script = "process.on('SIGINT', () => process.exit(8)); process.stdout.write('ready'); setInterval(() => {}, 1000)";
+  const launcher = spawn(process.execPath, [entry, "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+  await new Promise((ready) => launcher.stdout.once("data", ready));
+  launcher.kill("SIGINT");
+  const timer = setTimeout(() => launcher.kill("SIGKILL"), 5000);
+  const [code] = await new Promise((done) => launcher.on("exit", (c, s) => done([c, s])));
+  clearTimeout(timer);
+  assert.equal(code, 8);
+});
+
 test("a missing platform package names it and the installer that needs no npm", () => {
   const refused = run(installed({ withBinary: false }), ["--version"]);
   assert.equal(refused.status, 1);

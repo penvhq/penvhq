@@ -26,14 +26,22 @@ try {
 
 const child = spawn(binary, process.argv.slice(2), { stdio: "inherit" });
 
-// The terminal sends these to the whole process group, so penv already has them;
-// the launcher waits for its answer rather than dying first.
+// Passed on, so a signal sent to the launcher alone (kill, timeout, a CI cancel)
+// reaches penv; one the terminal also sent penv is not passed to its child twice.
+// Windows' kill ends a process outright, and its console sends Ctrl-C to both,
+// so there the launcher only waits.
+const windows = process.platform === "win32";
 const ignore = () => {};
-// Sent to the launcher alone (kill, timeout, a supervisor), so they are passed on.
-const forward = (signal) => () => child.kill(signal);
+const forward = (signal) => () => {
+  try {
+    child.kill(signal);
+  } catch {
+    // A signal this platform cannot send.
+  }
+};
 const handlers = [
-  ["SIGINT", ignore],
-  ["SIGQUIT", ignore],
+  ["SIGINT", windows ? ignore : forward("SIGINT")],
+  ["SIGQUIT", windows ? ignore : forward("SIGQUIT")],
   ["SIGTERM", forward("SIGTERM")],
   ["SIGHUP", forward("SIGHUP")],
 ];

@@ -77,6 +77,7 @@ class Env:
         self.None_: str | None = _raw("None", None, False, problems)
         self.GREETING: str = _raw("GREETING", "Hi $name, from C:\\users", False, problems)
         self.PORT: int = _parsed("PORT", _raw("PORT", "3000", False, problems), _port, "a port", problems)
+        self.CLONE: str | None = _raw("CLONE", None, False, problems)
         if problems:
             raise RuntimeError("; ".join(problems))
 

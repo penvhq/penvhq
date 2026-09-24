@@ -628,6 +628,27 @@ fn a_line_that_is_not_a_key_is_never_echoed() {
 }
 
 #[test]
+fn a_short_mixed_case_name_and_a_long_upper_one_are_still_keys() {
+    let long = format!("A{}", "_LONG".repeat(14));
+    let env = read(&format!(
+        "s3Bucket=b\napiV2Url=u\noauth2ClientId=c\n{long}=l\n"
+    ));
+    let keys: Vec<&str> = env.entries.iter().map(|e| e.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["s3Bucket", "apiV2Url", "oauth2ClientId", long.as_str()]
+    );
+    let written = penv_dotenv::upsert(&format!("{long}=l\n"), &long, "m").unwrap();
+    assert_eq!(
+        written,
+        format!("{long}=m\n"),
+        "set replaces the key in place"
+    );
+    let (removed, found) = penv_dotenv::remove(&written, &long);
+    assert!(found && removed.is_empty(), "unset finds it");
+}
+
+#[test]
 fn a_comment_where_the_value_would_start_is_a_comment() {
     let env = read("A_KEY= # the db password\nB_KEY=#literal\n");
     assert_eq!(env.get("A_KEY"), Some(""));

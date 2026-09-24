@@ -117,6 +117,10 @@ fn every_gemini_before_tool_payload_names_what_it_touches() {
             r#"{"pattern":"KEY","path":".env","include":"*"}"#,
         ),
         ("run_shell_command", r#"{"command":"cat .env"}"#),
+        (
+            "search_file_content",
+            r#"{"pattern":"KEY","include":".env*"}"#,
+        ),
     ] {
         let payload = format!(
             r#"{{"session_id":"s","hook_event_name":"BeforeTool","cwd":"/repo","tool_name":"{tool}","tool_input":{input}}}"#
@@ -129,6 +133,20 @@ fn every_gemini_before_tool_payload_names_what_it_touches() {
     }
     let fine = r#"{"hook_event_name":"BeforeTool","tool_name":"read_many_files","tool_input":{"paths":["README.md",".env.schema"]}}"#;
     assert_eq!(decide(&extract(Payload::Generic, fine)), Decision::Allow);
+}
+
+#[test]
+fn a_command_line_or_a_file_pattern_reaches_the_matcher() {
+    for payload in [
+        r#"{"agent_action_name":"pre_run_command","tool_info":{"command_line":"cat .env","cwd":"/repo"}}"#,
+        r#"{"tool":"search_files","parameters":{"path":".","regex":"KEY","file_pattern":".env*"}}"#,
+    ] {
+        assert_eq!(
+            decide(&extract(Payload::Generic, payload)),
+            Decision::Deny(READS_ENV),
+            "{payload}"
+        );
+    }
 }
 
 #[test]
