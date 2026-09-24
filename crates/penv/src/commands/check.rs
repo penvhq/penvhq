@@ -709,3 +709,43 @@ fn generated_files(dir: &Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+#[cfg(test)]
+mod reminder_tests {
+    use super::reminder;
+    use penv_schema::rotate::{Rotation, Span, parse_instant};
+
+    #[test]
+    fn every_rotate_sentence_check_and_the_editor_share() {
+        let days = Span::parse("90d").unwrap();
+        let hours = Span::parse("12h").unwrap();
+        let due = parse_instant("2026-03-31").unwrap();
+        let at = parse_instant("2026-03-31T12:00:00Z").unwrap();
+        assert_eq!(
+            reminder("K", "90d", days, &Rotation::Unrecorded, false),
+            "rotate K has @rotate=90d and no recorded write; penv set K records one"
+        );
+        assert_eq!(
+            reminder("K", "90d", days, &Rotation::Unrecorded, true),
+            "rotate K has @rotate=90d, and the cloud has not said when it was last written"
+        );
+        assert_eq!(
+            reminder("K", "90d", days, &Rotation::Due { due, left: 0 }, false),
+            "rotate K was due 2026-03-31; rotate it, then penv set K"
+        );
+        assert_eq!(
+            reminder("K", "90d", days, &Rotation::Due { due, left: 1 }, false),
+            "rotate K by 2026-03-31"
+        );
+        assert_eq!(
+            reminder(
+                "K",
+                "12h",
+                hours,
+                &Rotation::Due { due: at, left: 5 },
+                false
+            ),
+            "rotate K by 2026-03-31T12:00:00Z"
+        );
+    }
+}
