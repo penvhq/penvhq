@@ -1252,6 +1252,28 @@ fn pull_with_no_header_and_several_projects_lists_them_when_it_cannot_ask() {
 }
 
 #[test]
+fn i_am_human_from_an_agent_or_through_a_pipe_does_not_speak_for_a_person() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+
+    let flagged = workspace.run(&mock, &["--agent", "pull", "--i-am-human"]);
+    assert_eq!(flagged.status.code(), Some(2), "{}", stderr(&flagged));
+    assert_eq!(json_of(&stderr(&flagged))["error"], "agent_session");
+
+    let detected = workspace
+        .command(&mock)
+        .env("CLAUDECODE", "1")
+        .args(["--json", "pull", "--i-am-human"])
+        .output()
+        .expect("penv runs");
+    assert_eq!(detected.status.code(), Some(2), "{}", stderr(&detected));
+    assert_eq!(json_of(&stderr(&detected))["error"], "agent_session");
+    assert!(!workspace.path().join(".env").exists());
+    assert!(mock.hits("GET", ENVS).is_empty(), "it never asked");
+}
+
+#[test]
 fn pull_with_no_header_and_no_login_says_to_sign_in() {
     let mock = Mock::new();
     let workspace = Workspace::new(&[(".env.schema", &local_schema())]);

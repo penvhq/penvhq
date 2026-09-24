@@ -302,8 +302,8 @@ pub fn staged(current: &Path) -> PathBuf {
     beside(current, "new")
 }
 
-/// Where the running binary goes while the new one lands, since no platform
-/// renames reliably over a file it is executing.
+/// Where Windows moves the running binary while the new one lands, since it
+/// cannot rename over a file it is executing.
 pub fn retired(current: &Path) -> PathBuf {
     beside(current, "old")
 }
@@ -334,38 +334,45 @@ impl std::fmt::Display for Swap {
     }
 }
 
-/// Write the downloaded binary where the running one is. The running binary is
-/// retired first, since no platform can be relied on to rename over a file it is
-/// executing; Unix deletes the retired copy once the new one is in, and Windows
-/// leaves it for the next invocation to sweep.
+/// Write the downloaded binary where the running one is. Unix renames it over
+/// the running file in one step, so there is never a moment with no penv.
+/// Windows cannot rename over a file it is executing, so the running binary is
+/// retired first and left for the next invocation to sweep.
 pub fn replace(current: &Path, bytes: &[u8]) -> Result<(), Swap> {
+    std::fs::metadata(current).map_err(Swap::Kept)?;
     let staged = staged(current);
-    let retired = retired(current);
-    let _ = std::fs::remove_file(&retired);
-
     std::fs::write(&staged, bytes).map_err(Swap::Kept)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)) {
-            let _ = std::fs::remove_file(&staged);
-            return Err(Swap::Kept(e));
-        }
-    }
+    swap(current, &staged)
+}
 
-    if let Err(e) = std::fs::rename(current, &retired) {
-        let _ = std::fs::remove_file(&staged);
+#[cfg(unix)]
+fn swap(current: &Path, staged: &Path) -> Result<(), Swap> {
+    use std::os::unix::fs::PermissionsExt;
+    let landed = std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))
+        .and_then(|()| std::fs::rename(staged, current));
+    if let Err(e) = landed {
+        let _ = std::fs::remove_file(staged);
         return Err(Swap::Kept(e));
     }
-    if let Err(e) = std::fs::rename(&staged, current) {
-        let _ = std::fs::remove_file(&staged);
+    // A copy an older penv retired.
+    let _ = std::fs::remove_file(retired(current));
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn swap(current: &Path, staged: &Path) -> Result<(), Swap> {
+    let retired = retired(current);
+    let _ = std::fs::remove_file(&retired);
+    if let Err(e) = std::fs::rename(current, &retired) {
+        let _ = std::fs::remove_file(staged);
+        return Err(Swap::Kept(e));
+    }
+    if let Err(e) = std::fs::rename(staged, current) {
+        let _ = std::fs::remove_file(staged);
         return match std::fs::rename(&retired, current) {
             Ok(()) => Err(Swap::Kept(e)),
             Err(restore) => Err(Swap::Lost(restore)),
         };
-    }
-    if !cfg!(windows) {
-        let _ = std::fs::remove_file(&retired);
     }
     Ok(())
 }
@@ -682,6 +689,22 @@ mod tests {
                 "Unix has nothing to keep the retired binary for"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_swaps_in_one_rename_and_never_moves_the_running_binary_aside() {
+        let dir = workspace("atomic");
+        let current = dir.join("penv");
+        std::fs::write(&current, b"old binary").unwrap();
+        // A retired path nothing can be renamed onto: a two-step swap fails here.
+        std::fs::create_dir_all(retired(&current).join("busy")).unwrap();
+
+        replace(&current, b"new binary").unwrap();
+
+        assert_eq!(std::fs::read(&current).unwrap(), b"new binary");
+        assert!(!staged(&current).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

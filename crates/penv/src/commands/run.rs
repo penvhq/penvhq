@@ -79,7 +79,9 @@ pub fn run(
         source::Generate::Yes,
     )?;
     source::report(&resolved, dir);
-    for (file, how, keys) in source::exposed_secrets(&schema, &resolved) {
+    for (file, how, keys) in
+        source::exposed_secrets(&schema, &resolved.tainted, &resolved.layers.keys)
+    {
         ui::warn(&source::exposure_message(&file, how, &keys));
     }
     if source::failed(&resolved.errors) {
@@ -140,28 +142,42 @@ pub fn run(
         ));
     }
 
+    // penv's own credentials reach the child, which may be penv again, and are
+    // masked like any value.
+    let credentials: Vec<(String, String)> = CREDENTIAL_VARS
+        .iter()
+        .filter_map(|name| {
+            let value = process_env.get(name).filter(|v| !v.is_empty())?;
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect();
     let secrets = if mask {
-        masked_values(&schema, &values, &tainted)
+        let mut secrets = masked_values(&schema, &values, &tainted);
+        secrets.extend(credentials.iter().map(|(_, v)| v.clone()));
+        secrets
     } else {
         Vec::new()
     };
-    let named: Vec<(String, String)> = values
+    let mut named: Vec<(String, String)> = values
         .iter()
         .filter(|(name, value)| !value.is_empty() && source::is_sensitive(&schema, &tainted, name))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
+    for (name, value) in &credentials {
+        if !values.contains_key(name) {
+            named.push((name.clone(), value.clone()));
+        }
+    }
     // Coarse filesystem clocks: a build that finishes within the same tick
     // still counts as after the start.
     let started = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
     // The preload follows masking. Turning it off is a person's move, like
     // --no-mask: an agent could otherwise start a server that echoes the
     // environment and read the secret back over HTTP.
-    let wants_preload = !(no_preload && !agent && interactive)
-        && (agent
-            || crate::config::Config::load(dir)
-                .map(|c| c.preload())
-                .unwrap_or(true));
-    if no_preload && (agent || !interactive) {
+    let person = !agent && interactive;
+    let wants_preload =
+        !person || !(no_preload || crate::config::Config::load(dir).is_ok_and(|c| !c.preload()));
+    if no_preload && !person {
         ui::warn(
             "--no-preload was ignored. It works only when you run penv yourself in a terminal, with no pipe and no AI agent.",
         );
@@ -237,6 +253,9 @@ fn after_build(
     Exit::Validation as i32
 }
 
+/// The variables penv itself signs in with.
+const CREDENTIAL_VARS: [&str; 2] = [penv_cloud::TOKEN_VAR, "PENV_OIDC_TOKEN"];
+
 /// Everything the child is handed except the keys the schema marks public. A key
 /// the schema never heard of is masked; `check` names it as drift. A public key
 /// computed from a sensitive one is masked too.
@@ -300,66 +319,90 @@ fn spawn(
             .args(&argv[2..]);
     }
     command.env("PENV_ENV", environment);
-    // The key that decrypts value files stays with penv.
-    command.env_remove(crate::localcrypt::KEY_VAR);
-    command.env_remove(crate::bundle::KEY_VAR);
     for (key, value) in values {
         command.env(key, value);
     }
     for (key, value) in &injection.env {
         command.env(key, value);
     }
+    // The keys that decrypt value files stay with penv, even when a value file
+    // names them.
+    command.env_remove(crate::localcrypt::KEY_VAR);
+    command.env_remove(crate::bundle::KEY_VAR);
     command.stdin(Stdio::inherit());
     if piped {
         // A pipe makes the child think it is not on a terminal and drop its
         // colours. When penv itself is on one, say so the way Node, Python and
         // most CLIs read it, unless the environment already chose.
-        if std::io::stdout().is_terminal()
-            && std::env::var_os("NO_COLOR").is_none()
-            && !values.contains_key("NO_COLOR")
-        {
-            for (name, value) in [("FORCE_COLOR", "1"), ("CLICOLOR_FORCE", "1")] {
-                if std::env::var_os(name).is_none() && !values.contains_key(name) {
-                    command.env(name, value);
-                }
-            }
+        let chosen = |name: &str| {
+            values
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+        };
+        if std::io::stdout().is_terminal() && !colour_chosen(chosen) {
+            command.env("FORCE_COLOR", "1").env("CLICOLOR_FORCE", "1");
         }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
     } else {
         command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
     }
+
+    let forwarding = signals::forward();
     #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
-        command.pre_exec(sigint::default_in_child);
+        let installed = forwarding.clone();
+        command.pre_exec(move || signals::default_in_child(&installed));
     }
 
-    let mut child = command.spawn().map_err(|e| {
-        CliError::new(
-            "spawn_failed",
-            format!("{} could not be started: {e}.", argv[0]),
-            "Check the name of the command and that it is on PATH.",
-        )
-    })?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            signals::restore(forwarding);
+            return Err(CliError::new(
+                "spawn_failed",
+                format!("{} could not be started: {e}.", argv[0]),
+                "Check the name of the command and that it is on PATH.",
+            ));
+        }
+    };
+    signals::child_started(child.id());
 
-    let previous_sigint = sigint::ignore_in_parent();
-
+    let (done, finished) = std::sync::mpsc::channel();
     let mut pumps: Vec<JoinHandle<()>> = Vec::new();
     if piped {
         if let Some(pipe) = child.stdout.take() {
-            pumps.push(pump(pipe, std::io::stdout(), Masker::new(secrets.clone())));
+            pumps.push(pump(
+                pipe,
+                std::io::stdout(),
+                Masker::new(secrets.clone()),
+                done.clone(),
+            ));
         }
         if let Some(pipe) = child.stderr.take() {
-            pumps.push(pump(pipe, std::io::stderr(), Masker::new(secrets)));
+            pumps.push(pump(pipe, std::io::stderr(), Masker::new(secrets), done));
         }
     }
 
     let status = child.wait();
-    for pump in pumps {
-        let _ = pump.join();
+    signals::restore(forwarding);
+    // A grandchild the command left running (`server &`) can hold the pipes
+    // open forever; what it prints after a short drain is not this command's.
+    let deadline = std::time::Instant::now() + DRAIN;
+    let mut drained = 0;
+    while drained < pumps.len() {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if finished.recv_timeout(left).is_err() {
+            break;
+        }
+        drained += 1;
     }
-
-    sigint::restore(previous_sigint);
+    if drained == pumps.len() {
+        for pump in pumps {
+            let _ = pump.join();
+        }
+    }
 
     let status = status.map_err(|e| {
         CliError::new(
@@ -371,8 +414,26 @@ fn spawn(
     Ok(exit_code(&status))
 }
 
+/// How long output may keep arriving after the command itself has exited.
+const DRAIN: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Whether the environment already chose colour, so penv must not force it.
+/// An empty `NO_COLOR` is no choice, as `output` reads it.
+fn colour_chosen(get: impl Fn(&str) -> Option<String>) -> bool {
+    get("NO_COLOR").is_some_and(|v| !v.is_empty())
+        || get("FORCE_COLOR").is_some()
+        || get("CLICOLOR_FORCE").is_some()
+}
+
 /// One pipe, scrubbed as it arrives so a long-running child is not buffered.
-fn pump<R, W>(mut from: R, mut to: W, mut masker: Masker) -> JoinHandle<()>
+/// When the reader on the other side goes away, the pipe from the child is
+/// closed too, so the child learns it the way it would without penv.
+fn pump<R, W>(
+    mut from: R,
+    mut to: W,
+    mut masker: Masker,
+    done: std::sync::mpsc::Sender<()>,
+) -> JoinHandle<()>
 where
     R: Read + Send + 'static,
     W: Write + Send + 'static,
@@ -380,6 +441,7 @@ where
     std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
         let mut scrubbed = Vec::with_capacity(chunk.len());
+        let mut open = true;
         loop {
             let read = match from.read(&mut chunk) {
                 Ok(0) => break,
@@ -390,17 +452,21 @@ where
             };
             scrubbed.clear();
             masker.feed(&chunk[..read], &mut scrubbed);
-            if !scrubbed.is_empty() {
-                let _ = to.write_all(&scrubbed);
-                let _ = to.flush();
+            if !scrubbed.is_empty() && (to.write_all(&scrubbed).is_err() || to.flush().is_err()) {
+                open = false;
+                break;
             }
         }
-        scrubbed.clear();
-        masker.finish(&mut scrubbed);
-        if !scrubbed.is_empty() {
-            let _ = to.write_all(&scrubbed);
+        drop(from);
+        if open {
+            scrubbed.clear();
+            masker.finish(&mut scrubbed);
+            if !scrubbed.is_empty() {
+                let _ = to.write_all(&scrubbed);
+            }
+            let _ = to.flush();
         }
-        let _ = to.flush();
+        let _ = done.send(());
     })
 }
 
@@ -415,29 +481,87 @@ fn exit_code(status: &ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-/// Ctrl-C belongs to the child. penv must not die first and close the pipes it
-/// is still scrubbing.
+/// Signals belong to the child. penv must neither die first, closing the pipes
+/// it is still scrubbing and orphaning the child, nor swallow them, which is
+/// what a container's PID 1 does with a signal it has no handler for. One sent
+/// to penv is passed on; one the terminal sent reached the child's process
+/// group already.
 #[cfg(unix)]
-pub(crate) mod sigint {
+pub(crate) mod signals {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    const SIGHUP: i32 = 1;
     const SIGINT: i32 = 2;
+    const SIGQUIT: i32 = 3;
+    const SIGTERM: i32 = 15;
+    const FORWARDED: [i32; 4] = [SIGTERM, SIGINT, SIGHUP, SIGQUIT];
     const SIG_DFL: usize = 0;
     const SIG_IGN: usize = 1;
 
+    static CHILD: AtomicI32 = AtomicI32::new(0);
+
     unsafe extern "C" {
         fn signal(signum: i32, handler: usize) -> usize;
+        fn kill(pid: i32, sig: i32) -> i32;
+        fn raise(sig: i32) -> i32;
+        fn getpgrp() -> i32;
+        fn tcgetpgrp(fd: i32) -> i32;
     }
 
-    pub fn ignore_in_parent() -> usize {
-        unsafe { signal(SIGINT, SIG_IGN) }
+    // Only async-signal-safe calls in here.
+    extern "C" fn pass_on(sig: i32) {
+        let child = CHILD.load(Ordering::SeqCst);
+        if child <= 0 {
+            // No child yet or any more: the signal is penv's own.
+            unsafe {
+                signal(sig, SIG_DFL);
+                raise(sig);
+            }
+            return;
+        }
+        let group = unsafe { getpgrp() };
+        let from_terminal = sig != SIGTERM && (0..3).any(|fd| unsafe { tcgetpgrp(fd) } == group);
+        if !from_terminal {
+            unsafe { kill(child, sig) };
+        }
     }
 
-    pub fn restore(previous: usize) {
-        unsafe { signal(SIGINT, previous) };
+    /// The signals penv now handles, with what each had before. One this
+    /// process was started ignoring (`nohup`) stays ignored, for the child too.
+    #[derive(Clone)]
+    pub struct Forwarding(Vec<(i32, usize)>);
+
+    pub fn forward() -> Forwarding {
+        let handler = pass_on as extern "C" fn(i32) as usize;
+        let mut installed = Vec::new();
+        for sig in FORWARDED {
+            let previous = unsafe { signal(sig, handler) };
+            if previous == SIG_IGN {
+                unsafe { signal(sig, SIG_IGN) };
+            } else {
+                installed.push((sig, previous));
+            }
+        }
+        Forwarding(installed)
     }
 
-    /// Ignoring a signal survives exec, so the child is handed the default back.
-    pub fn default_in_child() -> std::io::Result<()> {
-        unsafe { signal(SIGINT, SIG_DFL) };
+    pub fn child_started(pid: u32) {
+        CHILD.store(pid as i32, Ordering::SeqCst);
+    }
+
+    pub fn restore(forwarding: Forwarding) {
+        CHILD.store(0, Ordering::SeqCst);
+        for (sig, previous) in forwarding.0 {
+            unsafe { signal(sig, previous) };
+        }
+    }
+
+    /// Between fork and exec the child still runs penv's handler, with no child
+    /// of its own to pass a signal to.
+    pub fn default_in_child(forwarding: &Forwarding) -> std::io::Result<()> {
+        for (sig, _) in &forwarding.0 {
+            unsafe { signal(*sig, SIG_DFL) };
+        }
         Ok(())
     }
 }
@@ -446,27 +570,37 @@ pub(crate) mod sigint {
 /// makes this process ignore CTRL_C_EVENT; the child, created before the call,
 /// keeps the default and still receives it from the console it shares.
 #[cfg(windows)]
-pub(crate) mod sigint {
+pub(crate) mod signals {
     unsafe extern "system" {
         fn SetConsoleCtrlHandler(handler: usize, add: i32) -> i32;
     }
 
-    pub fn ignore_in_parent() -> usize {
-        unsafe { SetConsoleCtrlHandler(0, 1) as usize }
+    pub struct Forwarding;
+
+    pub fn forward() -> Forwarding {
+        Forwarding
     }
 
-    pub fn restore(_previous: usize) {
+    pub fn child_started(_pid: u32) {
+        unsafe { SetConsoleCtrlHandler(0, 1) };
+    }
+
+    pub fn restore(_forwarding: Forwarding) {
         unsafe { SetConsoleCtrlHandler(0, 0) };
     }
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(crate) mod sigint {
-    pub fn ignore_in_parent() -> usize {
-        0
+pub(crate) mod signals {
+    pub struct Forwarding;
+
+    pub fn forward() -> Forwarding {
+        Forwarding
     }
 
-    pub fn restore(_previous: usize) {}
+    pub fn child_started(_pid: u32) {}
+
+    pub fn restore(_forwarding: Forwarding) {}
 }
 
 #[cfg(test)]
@@ -591,9 +725,32 @@ mod tests {
     }
 
     #[test]
-    fn the_parent_can_ignore_an_interrupt_and_put_it_back() {
-        let previous = sigint::ignore_in_parent();
-        sigint::restore(previous);
+    fn colour_is_forced_only_when_nothing_chose_it() {
+        let set = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        assert!(!colour_chosen(set(&[])));
+        assert!(
+            !colour_chosen(set(&[("NO_COLOR", "")])),
+            "an empty NO_COLOR is unset"
+        );
+        assert!(colour_chosen(set(&[("NO_COLOR", "1")])));
+        assert!(
+            colour_chosen(set(&[("FORCE_COLOR", "0")])),
+            "a FORCE_COLOR=0 must not be joined by CLICOLOR_FORCE=1"
+        );
+        assert!(colour_chosen(set(&[("CLICOLOR_FORCE", "0")])));
+    }
+
+    #[test]
+    fn the_parent_can_take_the_signals_and_put_them_back() {
+        let forwarding = signals::forward();
+        signals::restore(forwarding);
     }
 
     #[test]

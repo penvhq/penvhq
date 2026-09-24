@@ -82,39 +82,91 @@ def _penv_preload():
 
         logging.LogRecord.__init__ = penv_init
 
+        # A traceback a handler formats (record.exc_text, stack_info) carries
+        # the exception's text, which getMessage never sees.
+        format_exception = logging.Formatter.formatException
+        format_stack = logging.Formatter.formatStack
+
+        def penv_format_exception(self, ei):
+            text = format_exception(self, ei)
+            try:
+                return mask_text(text)
+            except Exception:
+                return text
+
+        def penv_format_stack(self, stack_info):
+            text = format_stack(self, stack_info)
+            try:
+                return mask_text(text)
+            except Exception:
+                return text
+
+        logging.Formatter.formatException = penv_format_exception
+        logging.Formatter.formatStack = penv_format_stack
+
         import socket
 
         class PenvServed(socket.socket):
-            """A connection the app accepted: what it sends goes to a client."""
+            """A connection the app accepted: what it sends goes to a client.
+            After a partial send the caller resends its own unmasked rest; the
+            masked rest goes instead, so a value the cut split stays masked."""
+
+            def _penv_masked(self, data):
+                data = bytes(data)
+                rest = getattr(self, "_penv_rest", None)
+                if rest is not None and rest[0] == data:
+                    return data, rest[1]
+                return data, mask_bytes(data)
+
+            def _penv_sent(self, data, masked, sent):
+                self._penv_rest = (data[sent:], masked[sent:]) if 0 <= sent < len(data) else None
+                return sent
 
             def send(self, data, *args):
-                return super().send(mask_bytes(data), *args)
+                data, masked = self._penv_masked(data)
+                return self._penv_sent(data, masked, super().send(masked, *args))
 
             def sendall(self, data, *args):
+                self._penv_rest = None
                 return super().sendall(mask_bytes(data), *args)
+
+            def sendto(self, data, *args):
+                data, masked = self._penv_masked(data)
+                return self._penv_sent(data, masked, super().sendto(masked, *args))
+
+            def sendmsg(self, buffers, *args):
+                data, masked = self._penv_masked(b"".join(bytes(b) for b in buffers))
+                return self._penv_sent(data, masked, super().sendmsg([masked], *args))
 
         accept = socket.socket.accept
 
         def penv_accept(self):
             conn, address = accept(self)
             try:
+                # The accepted connection's own timeout, which CPython sets from
+                # the default, not from the listening socket.
+                timeout = conn.gettimeout()
                 served = PenvServed(conn.family, conn.type, conn.proto, fileno=conn.detach())
-                served.settimeout(self.gettimeout())
+                served.settimeout(timeout)
                 return served, address
             except Exception:
                 return conn, address
 
         socket.socket.accept = penv_accept
 
-    # Hand over to the project's own sitecustomize, if it has one.
+    # Hand over to the project's own sitecustomize, if it has one. The import
+    # machinery takes this module back out of sys.modules once it finishes, so
+    # with no other one this module goes back in.
     sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != here]
-    sys.modules.pop("sitecustomize", None)
+    me = sys.modules.pop("sitecustomize", None)
     try:
         import sitecustomize  # noqa: F401
     except ImportError:
         pass
     finally:
         sys.path.insert(0, here)
+        if me is not None and "sitecustomize" not in sys.modules:
+            sys.modules["sitecustomize"] = me
 
 
 try:

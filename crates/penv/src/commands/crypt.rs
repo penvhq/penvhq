@@ -69,9 +69,10 @@ pub fn run(
             let sensitive = schema.get(&name).map(|k| k.sensitive).unwrap_or(true);
             let is_enc = crate::localcrypt::is_encrypted(&raw.text);
             let next = if encrypt && sensitive && !is_enc && !raw.text.is_empty() {
-                // A value that computes from others stays readable: it holds
-                // references, and the keys it names are encrypted themselves.
-                if raw.computed && raw.text.contains('$') {
+                // A value that computes stays as written: encrypted, it would
+                // decrypt to the expression as a literal. The keys it names are
+                // encrypted themselves.
+                if raw.computed && penv_schema::resolve::is_expression(&raw.text) {
                     continue;
                 }
                 crate::localcrypt::encrypt(&key, &name, &raw.text)?
