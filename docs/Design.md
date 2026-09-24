@@ -32,7 +32,7 @@ STRIPE_SECRET_KEY = "2026-09-22T14:05:00Z"   # written by penv set in local mode
 The version lives here and not in `.env.schema`, because varlock rejects `@schema`. An `@schema=N` line still reads; the config wins, and a version this build does not read is an error.
 
 ```dotenv
-# @penv=acme/api-gateway @schema=1
+# @penv=acme/api-gateway
 # @defaultSensitive=true
 
 # @type=url
