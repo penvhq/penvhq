@@ -38,6 +38,11 @@ pub fn run(
     if schema_path.is_file() && !force {
         return keep_schema(out, cwd, &schema_path);
     }
+    // Before anything is written, as penv guard refuses it: the harness would
+    // otherwise drop out of the chosen set without a word.
+    if !matches!(guards, Guards::None) {
+        super::guard::refuse_shadowing(cwd)?;
+    }
 
     // Refused here, an --output it cannot use leaves nothing half written.
     let plan = super::r#gen::plan(cwd, output)?;

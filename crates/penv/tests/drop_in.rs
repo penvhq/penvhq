@@ -611,6 +611,23 @@ fn a_committed_symlink_cannot_carry_an_output_out_of_the_repository() {
     let _ = std::fs::remove_dir_all(&outside);
 }
 
+#[cfg(unix)]
+#[test]
+fn init_writes_no_guard_through_a_committed_symlink() {
+    let outside = std::env::temp_dir().join(format!("penv-guard-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).unwrap();
+    let workspace = Workspace::new(&[(".env", "PORT=3000\n")]);
+    std::os::unix::fs::symlink(&outside, workspace.path(".claude")).unwrap();
+    let init = workspace.penv(&["--json", "init", "--guards", "claude-code"]);
+    assert_eq!(init.status.code(), Some(0), "{}", stderr(&init));
+    assert!(
+        std::fs::read_dir(&outside).unwrap().next().is_none(),
+        "a guard was written out of the repository"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 #[test]
 fn an_output_init_cannot_use_is_refused_before_anything_is_written() {
     let workspace = Workspace::new(&[

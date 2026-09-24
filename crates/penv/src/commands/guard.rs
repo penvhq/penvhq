@@ -144,7 +144,7 @@ pub fn run(
 
 /// A repository folder named after a built-in guard stops the run rather than
 /// quietly dropping that harness from the list.
-fn refuse_shadowing(dir: &Path) -> Result<(), CliError> {
+pub(crate) fn refuse_shadowing(dir: &Path) -> Result<(), CliError> {
     let roots = Roots::new(show(dir), home());
     for built_in in penv_guards::BUILT_IN {
         if let Err(error @ penv_guards::Error::Shadows { .. }) =
@@ -187,6 +187,10 @@ pub fn write_selected(dir: &Path, schema: &Value, names: &[String]) -> Vec<PathB
         }
         for entry in guard.project_writes() {
             let path = dir.join(&entry.path);
+            if let Err(error) = crate::files::within(dir, &path) {
+                crate::ui::warn(&error.message);
+                continue;
+            }
             let Ok(fragment) = render(&guard, entry, schema) else {
                 continue;
             };
