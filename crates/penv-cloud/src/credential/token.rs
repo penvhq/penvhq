@@ -41,6 +41,15 @@ impl Obtain for Token {
     fn obtain(&self, _api: &Api, _now: u64) -> Result<Bearer> {
         Ok(Bearer::new(self.0.clone()))
     }
+
+    fn identity(&self) -> Option<String> {
+        Some(identity(&self.0))
+    }
+}
+
+/// A bearer is its own identity, whether it came as a token or in hand.
+pub(crate) fn identity(token: &str) -> String {
+    format!("token:{token}")
 }
 
 #[cfg(test)]

@@ -5,8 +5,9 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Address, Api, Bearer, EnvBody, Fetched, Freshness};
+use crate::api::{Address, Api, EnvBody, Fetched, Freshness};
 use crate::b64;
+use crate::credential::Obtain;
 use crate::error::{CloudError, Result};
 use crate::fetch::sha256_hex;
 use crate::keychain::{self, Keychain};
@@ -55,8 +56,9 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// A stamp from the future is a clock that moved back, never fresh.
     pub fn fresh(&self, ttl: u64, now: u64) -> bool {
-        ttl > 0 && now.saturating_sub(self.fetched_at) < ttl
+        ttl > 0 && now >= self.fetched_at && now - self.fetched_at < ttl
     }
 }
 
@@ -89,17 +91,19 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// `None` where there is no keychain: the cache is off and every run is online.
+    /// `None` where there is no keychain, or the credential has no identity to
+    /// seal against without asking the network: the cache is off and every run
+    /// is online.
     pub fn open(
         dir: &Path,
         base_url: &str,
         address: &Address,
-        bearer: &Bearer,
+        credential: &dyn Obtain,
         store: &dyn Keychain,
     ) -> Result<Option<Cache>> {
-        if !store.usable() {
+        let Some(identity) = credential.identity().filter(|_| store.usable()) else {
             return Ok(None);
-        }
+        };
         let key = cache_key(store)?;
         let dir = dir_for(dir, base_url);
         let name = name_of(base_url, address);
@@ -108,7 +112,7 @@ impl Cache {
             stamp: dir.join(format!("{name}.warned")),
             key,
             address: address.clone(),
-            aad: aad_of(base_url, address, bearer),
+            aad: aad_of(base_url, address, &identity),
         }))
     }
 
@@ -145,7 +149,9 @@ impl Cache {
 
     /// Design section 5: fresh, else HEAD with the ETag, else GET; offline falls
     /// back to the cache in development only, and fails closed everywhere else.
-    pub fn revalidate(&self, api: &Api, bearer: &Bearer, now: u64) -> Result<Resolved> {
+    /// The credential is proved only once the server has to be asked, so a fresh
+    /// or offline answer costs no exchange.
+    pub fn revalidate(&self, api: &Api, credential: &dyn Obtain, now: u64) -> Result<Resolved> {
         let stored = self.read();
         if let Some(entry) = stored
             .as_ref()
@@ -154,7 +160,7 @@ impl Cache {
             return Ok(answer(entry.clone(), Source::Cache, false));
         }
 
-        match self.ask_server(api, bearer, stored.as_ref(), now) {
+        match self.ask_server(api, credential, stored.as_ref(), now) {
             Ok(resolved) => Ok(resolved),
             Err(error) if error.is_offline() => match stored {
                 Some(entry) if self.address.environment == DEV_ENVIRONMENT => {
@@ -169,10 +175,11 @@ impl Cache {
     fn ask_server(
         &self,
         api: &Api,
-        bearer: &Bearer,
+        credential: &dyn Obtain,
         stored: Option<&Entry>,
         now: u64,
     ) -> Result<Resolved> {
+        let bearer = &credential.obtain(api, now)?;
         let etag = stored.and_then(|entry| entry.etag.clone());
         if let (Some(etag), Some(stored)) = (&etag, stored)
             && api.env_head(bearer, &self.address, Some(etag))? == Freshness::Unchanged
@@ -223,14 +230,14 @@ impl Cache {
 /// The values for an address, with or without a cache to answer from.
 pub fn fetch(
     api: &Api,
-    bearer: &Bearer,
+    credential: &dyn Obtain,
     address: &Address,
     cache: Option<&Cache>,
     now: u64,
 ) -> Result<Resolved> {
     match cache {
-        Some(cache) => cache.revalidate(api, bearer, now),
-        None => match api.env_get(bearer, address, None, true)? {
+        Some(cache) => cache.revalidate(api, credential, now),
+        None => match api.env_get(&credential.obtain(api, now)?, address, None, true)? {
             Fetched::Body { etag, body } => Ok(Resolved {
                 body,
                 etag,
@@ -281,34 +288,50 @@ pub fn forget(dir: &Path, base_url: &str) {
 }
 
 /// The file name: one hash of the server and the address, so no path on disk
-/// names a project.
+/// names a project. The address is the encoded one, where no `/` inside a
+/// segment can pass for the line between two.
 fn name_of(base_url: &str, address: &Address) -> String {
-    sha256_hex(format!("{base_url}|{address}").as_bytes())
+    sha256_hex(format!("{base_url}|{}", address.path()).as_bytes())
 }
 
-/// The server, the address and the credential, bound into the ciphertext: a
-/// file cannot be moved between environments, and another credential on this
-/// host cannot open it.
-pub fn aad_of(base_url: &str, address: &Address, bearer: &Bearer) -> String {
+/// The server, the address and the credential's identity, bound into the
+/// ciphertext: a file cannot be moved between environments, and another
+/// credential on this host cannot open it.
+pub fn aad_of(base_url: &str, address: &Address, identity: &str) -> String {
     format!(
-        "{base_url}|{address}|{}",
-        sha256_hex(bearer.token.as_bytes())
+        "{base_url}|{}|{}",
+        address.path(),
+        sha256_hex(identity.as_bytes())
     )
 }
 
-/// A file only this account can read. Windows keeps the directory's own ACL,
-/// which is the user's profile and no one else.
+/// A file only this account can read, swapped in whole: a reader sees the old
+/// file or the new one, never half of one. Windows keeps the directory's own
+/// ACL, which is the user's profile and no one else.
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
+    let mut suffix = [0u8; 8];
+    getrandom::fill(&mut suffix).map_err(std::io::Error::other)?;
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.tmp", &sha256_hex(&suffix)[..16]));
+    let temp = PathBuf::from(name);
+
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)?.write_all(bytes)
+    let written = options
+        .open(&temp)
+        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
+        .and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 pub fn seal(key: &[u8; 32], aad: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
@@ -362,7 +385,7 @@ mod tests {
         aad_of(
             "https://penv.cloud",
             &Address::new("acme", "api", environment),
-            &Bearer::new(token),
+            token,
         )
     }
 
@@ -416,6 +439,43 @@ mod tests {
         assert!(entry.fresh(60, 1_059));
         assert!(!entry.fresh(60, 1_060));
         assert!(!entry.fresh(0, 1_000), "a zero TTL is never fresh");
+        assert!(
+            !entry.fresh(60, 999),
+            "an entry stamped after now is not fresh"
+        );
+        assert!(!entry.fresh(60, 0));
+    }
+
+    #[test]
+    fn a_slash_inside_a_segment_is_not_the_line_between_two() {
+        let one = Address::new("a", "b/c", "d");
+        let two = Address::new("a", "b", "c/d");
+        assert_ne!(
+            name_of("https://penv.cloud", &one),
+            name_of("https://penv.cloud", &two)
+        );
+        assert_ne!(
+            aad_of("https://penv.cloud", &one, "token:pck_FAKE"),
+            aad_of("https://penv.cloud", &two, "token:pck_FAKE")
+        );
+    }
+
+    #[test]
+    fn a_cached_entry_never_prints_its_values() {
+        let body: EnvBody = serde_json::from_str(
+            r#"{"keys":[{"name":"STRIPE_SECRET_KEY","value":"sk_test_FAKE0000"}]}"#,
+        )
+        .unwrap();
+        let entry = Entry {
+            etag: None,
+            fetched_at: 1_000,
+            body,
+        };
+        let resolved = answer(entry.clone(), Source::Cache, false);
+        for shown in [format!("{entry:?}"), format!("{resolved:?}")] {
+            assert!(!shown.contains("FAKE"), "{shown}");
+            assert!(shown.contains("STRIPE_SECRET_KEY"), "{shown}");
+        }
     }
 
     #[test]

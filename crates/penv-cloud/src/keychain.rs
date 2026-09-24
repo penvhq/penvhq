@@ -12,8 +12,6 @@ pub const USER: &str = "user";
 pub const CACHE_KEY: &str = "cache-key";
 /// The enrolled Ed25519 key, its credential id and its generation counter.
 pub const KEYPAIR: &str = "keypair";
-/// The key an enrolment made, held from before the request until the answer.
-pub const KEYPAIR_PENDING: &str = "keypair-pending";
 
 /// The account one item is stored under. Two servers never share a credential.
 pub fn account(base_url: &str, item: &str) -> String {
@@ -75,6 +73,61 @@ impl Keychain for Keyring {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(CloudError::Keychain(e.to_string())),
         }
+    }
+}
+
+/// A store that reads the cache key once per process, since every address a
+/// command reads asks for it. Every other item is read through each time.
+pub struct Remembering<K> {
+    inner: K,
+    cache_key: Mutex<Option<String>>,
+}
+
+impl<K: Keychain> Remembering<K> {
+    pub fn new(inner: K) -> Remembering<K> {
+        Remembering {
+            inner,
+            cache_key: Mutex::new(None),
+        }
+    }
+
+    fn remembered(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.cache_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl<K: Keychain> Keychain for Remembering<K> {
+    fn get(&self, item: &str) -> Result<Option<String>> {
+        if item != CACHE_KEY {
+            return self.inner.get(item);
+        }
+        let mut remembered = self.remembered();
+        if remembered.is_none() {
+            *remembered = self.inner.get(item)?;
+        }
+        Ok(remembered.clone())
+    }
+
+    fn set(&self, item: &str, value: &str) -> Result<()> {
+        self.inner.set(item, value)?;
+        if item == CACHE_KEY {
+            *self.remembered() = Some(value.to_string());
+        }
+        Ok(())
+    }
+
+    fn delete(&self, item: &str) -> Result<()> {
+        self.inner.delete(item)?;
+        if item == CACHE_KEY {
+            *self.remembered() = None;
+        }
+        Ok(())
+    }
+
+    fn usable(&self) -> bool {
+        self.inner.usable()
     }
 }
 
@@ -148,6 +201,50 @@ mod tests {
         assert_ne!(
             account("https://penv.cloud", USER),
             account("http://127.0.0.1:8080", USER)
+        );
+    }
+
+    /// Counts the reads that reach the store.
+    struct Counted(MemoryKeychain, Mutex<usize>);
+
+    impl Keychain for Counted {
+        fn get(&self, item: &str) -> Result<Option<String>> {
+            *self.1.lock().unwrap() += 1;
+            self.0.get(item)
+        }
+        fn set(&self, item: &str, value: &str) -> Result<()> {
+            self.0.set(item, value)
+        }
+        fn delete(&self, item: &str) -> Result<()> {
+            self.0.delete(item)
+        }
+    }
+
+    #[test]
+    fn the_cache_key_is_read_from_the_store_once_per_process() {
+        let inner = MemoryKeychain::new();
+        inner.set(CACHE_KEY, "key_FAKE").unwrap();
+        inner.set(USER, "pcu_FAKE").unwrap();
+        let store = Remembering::new(Counted(inner, Mutex::new(0)));
+        for _ in 0..3 {
+            assert_eq!(store.get(CACHE_KEY).unwrap().as_deref(), Some("key_FAKE"));
+        }
+        assert_eq!(*store.inner.1.lock().unwrap(), 1);
+        for _ in 0..2 {
+            store.get(USER).unwrap();
+        }
+        assert_eq!(
+            *store.inner.1.lock().unwrap(),
+            3,
+            "other items read through"
+        );
+
+        store.delete(CACHE_KEY).unwrap();
+        assert_eq!(store.get(CACHE_KEY).unwrap(), None, "a deleted key is gone");
+        store.set(CACHE_KEY, "key_NEW_FAKE").unwrap();
+        assert_eq!(
+            store.get(CACHE_KEY).unwrap().as_deref(),
+            Some("key_NEW_FAKE")
         );
     }
 

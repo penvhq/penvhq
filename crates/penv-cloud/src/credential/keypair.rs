@@ -1,4 +1,6 @@
 use std::fmt;
+use std::fs::File;
+use std::path::PathBuf;
 
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
@@ -45,30 +47,75 @@ impl Enrolled {
     }
 }
 
+/// The file parallel exchanges on one host queue on, in penv's cache folder.
+pub const LOCK_FILE: &str = "keypair.lock";
+
 /// An Ed25519 key bound to one machine identity, with a counter that makes a
 /// copied keychain visible to the server.
 pub struct BoundKeypair<'a> {
     store: &'a dyn Keychain,
     enrolled: Enrolled,
+    lock_dir: Option<PathBuf>,
 }
 
 impl<'a> BoundKeypair<'a> {
     pub fn new(store: &'a dyn Keychain, enrolled: Enrolled) -> BoundKeypair<'a> {
-        BoundKeypair { store, enrolled }
+        BoundKeypair {
+            store,
+            enrolled,
+            lock_dir: None,
+        }
     }
 
     pub fn from_keychain(store: &'a dyn Keychain) -> Result<Option<BoundKeypair<'a>>> {
-        let Some(stored) = store.get(keychain::KEYPAIR)? else {
-            return Ok(None);
-        };
-        let enrolled: Enrolled = serde_json::from_str(&stored)
-            .map_err(|e| CloudError::Credential(format!("the enrolled key is unreadable: {e}")))?;
-        Ok(Some(BoundKeypair { store, enrolled }))
+        Ok(stored(store)?.map(|enrolled| BoundKeypair::new(store, enrolled)))
+    }
+
+    /// Where exchanges queue, so two penv commands on this host never sign the
+    /// same generation: the second would be `409 cloned`, and the server revokes
+    /// the identity for it.
+    pub fn locked_in(mut self, dir: Option<PathBuf>) -> BoundKeypair<'a> {
+        self.lock_dir = dir;
+        self
     }
 
     pub fn credential_id(&self) -> &str {
         &self.enrolled.credential_id
     }
+
+    /// Held until dropped. A host with no cache folder has nowhere to queue.
+    fn lock(&self) -> Result<Option<File>> {
+        let Some(dir) = &self.lock_dir else {
+            return Ok(None);
+        };
+        let path = dir.join(LOCK_FILE);
+        let failed = |e: std::io::Error| {
+            CloudError::Credential(format!(
+                "the keypair lock {} could not be taken: {e}",
+                path.display()
+            ))
+        };
+        std::fs::create_dir_all(dir).map_err(failed)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(false).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path).map_err(failed)?;
+        file.lock().map_err(failed)?;
+        Ok(Some(file))
+    }
+}
+
+fn stored(store: &dyn Keychain) -> Result<Option<Enrolled>> {
+    let Some(stored) = store.get(keychain::KEYPAIR)? else {
+        return Ok(None);
+    };
+    serde_json::from_str(&stored)
+        .map(Some)
+        .map_err(|e| CloudError::Credential(format!("the enrolled key is unreadable: {e}")))
 }
 
 impl fmt::Debug for BoundKeypair<'_> {
@@ -81,19 +128,24 @@ impl fmt::Debug for BoundKeypair<'_> {
 
 impl Obtain for BoundKeypair<'_> {
     fn obtain(&self, api: &Api, now: u64) -> Result<Bearer> {
-        let challenge = api.keypair_challenge(&self.enrolled.credential_id)?;
+        let _queued = self.lock()?;
+        // Read again under the lock: a command ahead in the queue moved it on.
+        let enrolled = stored(self.store)?
+            .filter(|held| held.credential_id == self.enrolled.credential_id)
+            .unwrap_or_else(|| self.enrolled.clone());
+        let challenge = api.keypair_challenge(&enrolled.credential_id)?;
         let signature = sign_message(
-            &self.enrolled.key()?,
+            &enrolled.key()?,
             &message(
-                &self.enrolled.credential_id,
+                &enrolled.credential_id,
                 &challenge.nonce,
-                self.enrolled.generation,
+                enrolled.generation,
             ),
         );
         let grant = api.exchange_keypair(
-            &self.enrolled.credential_id,
+            &enrolled.credential_id,
             &challenge.nonce,
-            self.enrolled.generation,
+            enrolled.generation,
             &signature,
             now,
         )?;
@@ -101,52 +153,45 @@ impl Obtain for BoundKeypair<'_> {
         // re-enrolment, never a generation the server will read as a clone.
         remember(
             self.store,
-            keychain::KEYPAIR,
             &Enrolled {
                 generation: grant.generation,
-                ..self.enrolled.clone()
+                ..enrolled
             },
         )?;
         Ok(grant.bearer)
     }
+
+    /// The enrolment and its key, which every generation shares.
+    fn identity(&self) -> Option<String> {
+        Some(format!(
+            "keypair:{}:{}",
+            self.enrolled.credential_id, self.enrolled.secret
+        ))
+    }
 }
 
-/// Bind this host to a machine identity from a one-time secret. The private key
-/// is on disk before the public half is sent, so a lost answer leaves a pending
-/// item to clear rather than a key the server knows and this host does not.
+/// Bind this host to a machine identity from a one-time secret. The key is
+/// stored once the server has answered with the id it is filed under; a lost
+/// answer leaves nothing here, and the secret is spent either way.
 pub fn enroll(api: &Api, store: &dyn Keychain, secret: &str) -> Result<Enrolled> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes)
         .map_err(|e| CloudError::Credential(format!("no key could be generated: {e}")))?;
     let key = SigningKey::from_bytes(&bytes);
-    let pending = Enrolled {
-        credential_id: String::new(),
-        secret: b64::encode(&bytes),
-        generation: 0,
-    };
-    remember(store, keychain::KEYPAIR_PENDING, &pending)?;
-
-    let enrolment = match api.keypair_enroll(secret, &b64::encode(&public_key_der(&key))) {
-        Ok(enrolment) => enrolment,
-        Err(error) => {
-            let _ = store.delete(keychain::KEYPAIR_PENDING);
-            return Err(error);
-        }
-    };
+    let enrolment = api.keypair_enroll(secret, &b64::encode(&public_key_der(&key)))?;
     let enrolled = Enrolled {
         credential_id: enrolment.credential_id,
+        secret: b64::encode(&bytes),
         generation: enrolment.generation,
-        ..pending
     };
-    remember(store, keychain::KEYPAIR, &enrolled)?;
-    let _ = store.delete(keychain::KEYPAIR_PENDING);
+    remember(store, &enrolled)?;
     Ok(enrolled)
 }
 
-fn remember(store: &dyn Keychain, item: &str, enrolled: &Enrolled) -> Result<()> {
+fn remember(store: &dyn Keychain, enrolled: &Enrolled) -> Result<()> {
     let json = serde_json::to_string(enrolled)
         .map_err(|e| CloudError::Credential(format!("the key could not be stored: {e}")))?;
-    store.set(item, &json)
+    store.set(keychain::KEYPAIR, &json)
 }
 
 /// What the key signs, exactly.

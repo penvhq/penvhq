@@ -9,7 +9,7 @@ use crate::error::Result;
 pub const GITHUB_URL_VAR: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
 pub const GITHUB_TOKEN_VAR: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
 /// GitLab writes the token straight into the job.
-pub const GITLAB_VARS: [&str; 2] = ["CI_JOB_JWT_V2", "ID_TOKEN"];
+pub const GITLAB_VAR: &str = "ID_TOKEN";
 /// Any other platform, or a token minted by hand.
 pub const GENERIC_VAR: &str = "PENV_OIDC_TOKEN";
 
@@ -41,10 +41,8 @@ impl Oidc {
                 audience: audience.map(str::to_string),
             }));
         }
-        GITLAB_VARS
-            .iter()
-            .chain(std::iter::once(&GENERIC_VAR))
-            .copied()
+        [GITLAB_VAR, GENERIC_VAR]
+            .into_iter()
             .find_map(at)
             .map(|token| Oidc(Platform::Held(token.clone())))
     }
@@ -71,6 +69,14 @@ impl Obtain for Oidc {
             Platform::Held(token) => token.clone(),
         };
         api.exchange_oidc(&token, now)
+    }
+
+    /// A held token is the same for the whole job; GitHub's is fetched per run.
+    fn identity(&self) -> Option<String> {
+        match &self.0 {
+            Platform::GithubActions { .. } => None,
+            Platform::Held(token) => Some(format!("oidc:{token}")),
+        }
     }
 }
 
@@ -107,10 +113,15 @@ mod tests {
 
     #[test]
     fn gitlab_and_the_generic_variable_are_both_held_tokens() {
-        for var in ["CI_JOB_JWT_V2", "ID_TOKEN", GENERIC_VAR] {
+        for var in ["ID_TOKEN", GENERIC_VAR] {
             let found = Oidc::from_env(&env(&[(var, "jwt_FAKE")]), None).expect(var);
             assert!(matches!(found.0, Platform::Held(_)), "{var}");
         }
+    }
+
+    #[test]
+    fn only_the_variables_the_design_names_are_read() {
+        assert!(Oidc::from_env(&env(&[("CI_JOB_JWT_V2", "jwt_FAKE")]), None).is_none());
     }
 
     #[test]
