@@ -78,6 +78,9 @@ pub fn run(
         &mut fetcher,
         source::Generate::Yes,
     )?;
+    if let Some(refused) = source::withheld(&resolved) {
+        return Err(refused);
+    }
     source::report(&resolved, dir);
     for (file, how, keys) in
         source::exposed_secrets(&schema, &resolved.tainted, &resolved.layers.keys)

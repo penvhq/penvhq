@@ -19,7 +19,7 @@ pub const EXIT_CODES: [(i32, &str, &str); 7] = [
     (
         6,
         "environment_refused",
-        "this identity may not read that environment",
+        "this identity may not read that environment, or its values are write-only",
     ),
 ];
 

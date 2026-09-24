@@ -123,7 +123,7 @@ An environment name is letters, digits, `-`, `_` and inner dots, and never `loca
 
 `penv(address)` reads another environment's value: `penv()` (the key it sits on, the form `@penvhq/varlock-plugin` writes), `penv(KEY)`, `penv(env/KEY)`, `penv(project/env/KEY)`, `penv(org/project/env/KEY)`, with `@penv=` supplying what is left out. Under a header it reads the cloud, with this machine's files for that environment laid over it when it is the same project. Without one it reads that environment's files, and creates an empty `.env.<env>` (or `.env` for development) when there is none. Each address is read once per command.
 
-The files penv writes (from `pull`, `set`) are plain: UTF-8 without BOM, LF, `KEY=value`, upper snake case keys, no `export`, no spaces around `=`, quotes only when needed, a value holding `$` single-quoted so it reads back literally, no duplicates, no comments emitted. `set` and `unset` change their one key's lines and leave the rest of the file as written.
+The files penv writes (from `pull`, `set`) are plain: UTF-8 without BOM, LF, `KEY=value`, upper snake case keys, no `export`, no spaces around `=`, quotes only when needed, a value holding `$` single-quoted so it reads back literally, no duplicates, and one kind of comment only: the redacted marker `pull` writes (section 8, Write-only keys). `set` and `unset` change their one key's lines, that key's marker included, and leave the rest of the file as written.
 
 Quoting is the subset Node's `util.parseEnv` and dotenv both read back, and no more: **inside double quotes, `\n` is an escape and nothing else is**. That is how a multi-line value such as a PEM key sits on one line. So the writer folds `\r\n` into `\n`, double-quotes a value that breaks lines escaping those newlines, and refuses it outright when it also holds a `"`, a `\` or a carriage return of its own, because none of those has a portable escape. A value holding a `"` or a `\` and no line break is single-quoted, where nothing is an escape, and is refused when it also holds a `'`. A value goes bare only when it holds no whitespace at all, no `#`, no quote and no backslash; anything else in between is double-quoted with nothing to escape. The reader still decodes `\r`, `\t`, `\"` and `\\` so a file another tool wrote is read rather than mangled, and warns once per value, naming the line and the column and never the character.
 
@@ -144,7 +144,7 @@ cloud   @penv header, credential in the keychain; value files present only when 
 | `init` | When `.env.schema` already exists and `--force` is not given, keeps it and only adds the ignore lines and the schema version. Otherwise reads every value file beside it, `.env` first, the rest adding keys the earlier ones lack (writing an empty `.env` only when there is no value file at all), writes `.env.schema`, gitignores `.env`, prints what it inferred. Every key is sensitive and required unless bundler-prefixed. A value is copied into the schema as a default only when the key is bundler-prefixed, or the value is a boolean, an integer, a lowercase word of letters, a lowercase slug of at most 32 characters whose segments are joined by `-`, `_` or `.` and where one segment is letters only and no segment carrying a digit runs past four characters (`us-east-1`, `gpt-4o`, `api.internal`, never `a3f9c2d4e5b6`), or a localhost URL with no userinfo and no query. A key named for what it holds keeps its value out however dull it reads and whatever prefix it carries, so `NEXT_PUBLIC_SUPABASE_ANON_KEY` is not copied either: the words are `AUTH`, `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `PASS`, `PWD`, `PW`, `CREDENTIAL`, `CRED`, `DSN`, `SALT`, `SEED` and `SIGNATURE`, each matching the word itself or a plural of it in `S` or `ES`; sensitivity still follows the prefix, since a bundler-prefixed value reaches the browser either way. At a terminal, with no agent, it offers a picker over every harness penv knows with the installed ones already chosen; `--guards <NAMES>` (trimmed, deduped, and none when it names nothing) and `--no-guards` decide it without a prompt, and every other run guards the installed set. It then generates for every target this repository uses, resolving the output the way `gen` does; `--output <PATH>` names the file instead, and only when one target applies | `run` finds any value file and no schema |
 | `run [--env E] -- cmd` | Validates, injects into the child only, masks child output on every run, and after a successful run scans the browser output folders it wrote | never |
 | `push [--env E]` | Moves the shared layers for the environment (`.env`, `.env.<env>`) to the cloud, computed, defaults left out, then deletes those files. `*.local` stays. With nothing named and a person at a terminal, offers the project's environments | `init` when logged in, as an offer |
-| `pull [--env E]` | Writes `.env` for development, `.env.<env>` otherwise, so `push` and `run` read it back as the same layer. Same picker as `push` | never |
+| `pull [--env E]` | Writes `.env` for development, `.env.<env>` otherwise, so `push` and `run` read it back as the same layer. A key the cloud withholds is written as `# penv:redacted KEY`, never as a value. Same picker as `push` | never |
 | `login` / `logout` | Device-code sign in; credential in the OS keychain | `run`/`push` lack a credential and a human is at a TTY |
 | `set KEY` / `unset KEY` | Prompted or piped write, never echoed. Under a header it writes the cloud; without one it writes `.env` or `.env.<env>` and records the moment in `.penv/config.toml` when the key has `@rotate` | never |
 | `ls` | Names, types, presence; values masked; JSON when stdout is not a TTY | never |
@@ -168,7 +168,7 @@ Not commands: `env`/`use` (use `--env` or `PENV_ENV`, default `development`), `c
 - Human at a TTY: aligned text, no spinners in non-TTY, `NO_COLOR` and `CLICOLOR=0` honoured.
 - stdout not a TTY, or an agent marker present: JSON on stdout, one object; errors as JSON on stderr `{ "error": "<code>", "message": "...", "fix": "..." }`.
 - `--json` forces JSON; `--agent` forces JSON plus masking and is a parse error combined with any raw-value format.
-- Exit codes: 0 ok, 1 error, 2 auth, 3 validation, 4 confirmation required (JSON carries the exact replay command), 5 no credential, 6 environment refused. `help --json` publishes the table.
+- Exit codes: 0 ok, 1 error, 2 auth, 3 validation, 4 confirmation required (JSON carries the exact replay command), 5 no credential, 6 environment refused (`environment_refused`, or `redacted` when a key is write-only). `help --json` publishes the table.
 
 ### The manifest
 `penv help --json` emits every command with args, flags (`env` var alias, `default`, `human: true` for flags stripped under agent policy), the `values` an argument accepts where the list is fixed and the `completes` hint where the system answers instead, `revealsValues`, `requiresApproval`, and per-command exit codes, plus `schemaVersion`. The docs generator, completions and the agent skill consume it. Nothing about commands is hand-written twice. Every release carries it as the `manifest.json` asset, emitted by the binary that release ships, so a consumer reads one version's commands without installing that version.
@@ -357,6 +357,48 @@ Must verify:
 7. **A `pck_` machine token is a bearer on `GET /envs`.** The plugin sends it directly, with no exchange. Confirm it is accepted there, that `403` answers an environment outside its scope and `401` an expired or revoked token, with the `{ "error": ... }` bodies the API section lists.
 8. **No redirects on the API.** Both clients refuse a redirect instead of following it, so `/api/v1/*` must answer directly, with no trailing-slash or locale redirect in front of it. The app's proxy never session-gates `/api/v1/*` (checked in code); what the platform edge does in front of it still needs a live check.
 9. **`GET /envs` is JSON on every status.** An HTML error page from the platform in front of the app (timeouts, 5xx) reaches the client as "not JSON". Serve JSON bodies for errors the app itself does not produce, or document which statuses may carry HTML.
+
+### Write-only keys
+
+An environment penv-cloud marks write-only gives plaintext to workload identities only (OIDC, AWS IAM, bound keypair). A person's login and a static token get each key as `redacted`: present, value withheld ([Cloud-API, Write-only environments](./Cloud-API.md#write-only-environments)). Redacted is never missing: no command reports it missing or tells anyone to `penv set` it.
+
+| Command | A redacted key no layer supplies |
+|---|---|
+| `run`, `bundle` | refused before the child starts: `redacted`, exit 6 |
+| `pull` | the marker line below in place of a value; JSON `redacted` lists the names |
+| `check` | a note, not a failure; not validated |
+| `ls` | value `redacted` |
+| `why KEY` | state `redacted`, set in the cloud environment and withheld |
+| `reveal KEY` | refused: `redacted`, exit 6. The server answers `409 redacted` to `GET /secrets` and to an approval request too |
+
+The refusal names every such key and the environment:
+
+```json
+{ "error": "redacted",
+  "message": "DB_PASSWORD, STRIPE_KEY in production are write-only in penv-cloud.",
+  "fix": "Run it where a workload identity (OIDC, AWS IAM or bound keypair) reads the environment, or set them in .env.production.local." }
+```
+
+A value in any layer (the process environment, `.env.<env>.local`, any value file) wins over redaction on that machine. That is the override path.
+
+**The marker.** `pull` writes one line per redacted key after the values:
+
+```dotenv
+PORT=3000
+# penv:redacted DB_PASSWORD
+```
+
+It is a comment, so every dotenv loader skips it. The reader recognises exactly `# penv:redacted KEY`, with one space and a plausible key name; any other form is a plain comment. Pulling again rewrites the file and its markers. `set KEY` replaces the marker with the value; `unset KEY` removes both.
+
+In local mode (no `@penv=` header, so no cloud read) a marker is a layer: it stands at its file's place in the cascade. A value in the same file or a later one, or in the process environment, wins. Otherwise the key is redacted, and `run` refuses:
+
+```json
+{ "error": "redacted",
+  "message": "DB_PASSWORD in production is write-only in penv-cloud.",
+  "fix": "Set DB_PASSWORD in .env.production.local. penv-cloud keeps the production value write-only." }
+```
+
+Under a header the cloud decides what is withheld and markers are ignored; a deploy bundle ignores them too. `penv(env/KEY)` naming a redacted key is refused the same way.
 
 ### Deploying
 
