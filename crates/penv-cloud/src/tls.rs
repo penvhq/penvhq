@@ -34,6 +34,7 @@ pub fn configure(env: &BTreeMap<String, String>, agent: bool) -> Result<(), Stri
 }
 
 /// The places distributions keep their trust store.
+#[cfg_attr(not(unix), allow(dead_code))]
 const SYSTEM_BUNDLES: [&str; 4] = [
     "/etc/ssl/certs/ca-certificates.crt",
     "/etc/pki/tls/certs/ca-bundle.crt",
