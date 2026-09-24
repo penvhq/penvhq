@@ -1210,6 +1210,7 @@ fn setting_a_secret_in_a_fresh_repository_ignores_the_value_files_and_starts_the
 
 // --- the child's lifetime: signals, closed readers, left-behind processes ------
 
+#[cfg(unix)]
 /// `penv run -- sh -c <script>` with the pipes this test reads.
 fn spawned(workspace: &Workspace, script: &str) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_penv"))
@@ -1227,6 +1228,7 @@ fn spawned(workspace: &Workspace, script: &str) -> std::process::Child {
         .expect("penv runs")
 }
 
+#[cfg(unix)]
 /// The exit status, or `None` when penv is still running after `limit`.
 fn exited_within(
     child: &mut std::process::Child,
@@ -1244,6 +1246,7 @@ fn exited_within(
     None
 }
 
+#[cfg(unix)]
 fn masked_workspace() -> Workspace {
     Workspace::new(&[
         (".env.schema", &local_schema()),

@@ -978,6 +978,7 @@ fn scratch() -> Option<PathBuf> {
         let salt =
             std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now());
         let dir = base.join(format!("penv-gen-{}-{salt:016x}", std::process::id()));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
