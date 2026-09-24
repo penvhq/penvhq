@@ -138,6 +138,10 @@ def _penv_preload():
                 data, masked = self._penv_masked(b"".join(bytes(b) for b in buffers))
                 return self._penv_sent(data, masked, super().sendmsg([masked], *args))
 
+        # Windows sockets have no sendmsg; a wrapper would claim one that fails.
+        if not hasattr(socket.socket, "sendmsg"):
+            del PenvServed.sendmsg
+
         accept = socket.socket.accept
 
         def penv_accept(self):

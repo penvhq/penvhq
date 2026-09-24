@@ -1498,7 +1498,10 @@ fn scan_staged_reads_named_paths_from_the_index() {
     let named = workspace.penv(&["scan", "--staged", "src/"]);
     let text = stdout(&named);
     assert_eq!(named.status.code(), Some(3), "{text} {}", stderr(&named));
-    assert!(text.contains("src/app.js"), "{text}");
+    assert!(
+        text.contains("src/app.js") || text.contains("src\\\\app.js"),
+        "{text}"
+    );
     let clean = workspace.penv(&["scan", "--staged", "lib"]);
     assert_eq!(clean.status.code(), Some(0), "{}", stdout(&clean));
     assert!(
@@ -1597,7 +1600,10 @@ data = ("k=" + K).encode()
 while data:
     data = data[conn.send(data):]
 socket.socket.send = real_send
-conn.sendmsg([b"m=" + K[:5].encode(), K[5:].encode()])
+if hasattr(conn, "sendmsg"):
+    conn.sendmsg([b"m=" + K[:5].encode(), K[5:].encode()])
+else:
+    conn.sendall(("m=" + K).encode())
 want = 2 * (2 + len(K))
 got = b""
 c.settimeout(5)
@@ -1626,7 +1632,7 @@ fn the_python_preload_keeps_python_as_it_was_and_masks_every_way_out() {
         .env("PENV_SENSITIVE", "STRIPE_SECRET_KEY")
         .output()
         .unwrap();
-    let text = stdout(&output);
+    let text = stdout(&output).replace("\r\n", "\n");
     assert_eq!(
         text,
         "import ok\ntimeout None\nsent True\ntraceback True\n",
