@@ -37,8 +37,8 @@ POST /api/v1/auth/revoke            Bearer pcu_ or pck_, revokes itself; idempot
 Unauthenticated, IP limited. Each returns `201 { credential: "pck_...", expiresAt }` with a 15 minute lifetime capped by the trust's own expiry, or `401 { error: "expired" | "unauthorized" }`, or `503 { error: "unavailable" }` which means retry once.
 
 ```
-POST /api/v1/auth/oidc               { token }                       audience is the org id
-POST /api/v1/auth/aws                { method, url, body, headers }  a SigV4-signed STS GetCallerIdentity request
+POST /api/v1/auth/oidc               { token }                       audience is the org's slug or id
+POST /api/v1/auth/aws                { method, url, body, headers }  a SigV4-signed STS GetCallerIdentity request; x-penv-cloud-org (slug or id) must be among the signed headers
 POST /api/v1/auth/keypair/enroll     { secret: "pce_...", publicKey }  SPKI DER base64, Ed25519 -> 201 { credentialId, generation: 1 }
 POST /api/v1/auth/keypair/challenge  { credentialId } -> 200 { nonce }   valid 120 s
 POST /api/v1/auth/keypair            { credentialId, nonce, generation, signature } -> 201 { credential, expiresAt, generation }
@@ -140,7 +140,7 @@ GET  /api/v1/orgs/{org}/projects                    -> { projects: [{ slug, name
 POST /api/v1/orgs/{org}/projects                    body { name, environments: ["development"] } -> 201 ; requires project:create
 ```
 
-Slugs are derived from names server-side; an ambiguous address is refused, never guessed. `penv push` on a schema with no `@penv=` header creates the project from the directory name after printing what it will do, and writes the `slug` the 201 body returns into the header. Project creation over the plan limit answers `409 quota_exceeded`.
+Slugs are derived from names server-side; an ambiguous address is refused, never guessed. `penv push` on a schema with no `@penv=` header creates the project from the directory name after printing what it will do, and writes the `slug` the 201 body returns into the header. Project creation over the plan limit answers `409 quota_exceeded`, and a name another project in the workspace already answers to `409 ambiguous`. An OIDC or AWS exchange also answers `409 ambiguous` when two workspaces share the slug and both trust the identity. The CLI names the two by the call that got them: `project_taken` and `org_ambiguous`.
 
 ## Errors
 

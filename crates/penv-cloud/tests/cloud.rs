@@ -532,6 +532,37 @@ fn push_and_the_per_key_writes_speak_the_documented_shapes() {
 }
 
 #[test]
+fn an_ambiguous_answer_is_named_by_the_call_that_got_it() {
+    let mock = Mock::new();
+    let refused = &json!({ "error": "ambiguous" }).to_string();
+    mock.on("POST", "/api/v1/orgs/acme/projects", 409, refused);
+    mock.on("POST", "/api/v1/auth/oidc", 409, refused);
+    mock.on("POST", "/api/v1/auth/aws", 409, refused);
+    let api = api(&mock);
+    let code = |e: penv_cloud::CloudError| e.code().map(str::to_string);
+
+    let taken = api
+        .create_project(&Bearer::new("pcu_FAKE"), "acme", "API", &[])
+        .unwrap_err();
+    assert_eq!(code(taken).as_deref(), Some("project_taken"));
+    let oidc = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")]), Some("acme")).unwrap();
+    assert_eq!(
+        code(oidc.obtain(&api, NOW).unwrap_err()).as_deref(),
+        Some("org_ambiguous")
+    );
+    let aws = AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1").for_org(Some("acme"));
+    assert_eq!(
+        code(aws.obtain(&api, NOW).unwrap_err()).as_deref(),
+        Some("org_ambiguous")
+    );
+    assert_eq!(
+        mock.last("POST", "/api/v1/auth/aws").json()["headers"]["x-penv-cloud-org"],
+        "acme",
+        "the workspace travels, signed, with the AWS proof"
+    );
+}
+
+#[test]
 fn orgs_and_projects_are_read_and_created() {
     let mock = Mock::new();
     mock.on(

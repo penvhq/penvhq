@@ -26,6 +26,7 @@ pub struct AwsContainer {
     token: Option<String>,
     token_file: Option<String>,
     region: String,
+    org: Option<String>,
 }
 
 /// The host only: a full URI's path and query are the platform's, and may
@@ -39,6 +40,12 @@ impl fmt::Debug for AwsContainer {
 }
 
 impl AwsContainer {
+    /// The workspace the signed login names; see [`AwsIam::for_org`].
+    pub fn for_org(mut self, org: Option<&str>) -> AwsContainer {
+        self.org = org.map(str::to_string);
+        self
+    }
+
     /// The relative form wins, as in the AWS SDKs. A full URI is honoured only
     /// where the SDKs honour it: https, loopback, or the ECS and EKS link-local
     /// hosts, so a planted variable cannot send the authorization token anywhere.
@@ -55,6 +62,7 @@ impl AwsContainer {
             token: at(AUTH_TOKEN_VAR),
             token_file: at(AUTH_TOKEN_FILE_VAR),
             region: super::aws::region(env),
+            org: None,
         })
     }
 
@@ -84,12 +92,12 @@ impl AwsContainer {
             .map_err(|_| failed("answered something that is not credentials"))?;
         let field = |name: &str| body.get(name).and_then(|v| v.as_str()).map(str::to_string);
         match (field("AccessKeyId"), field("SecretAccessKey")) {
-            (Some(key), Some(secret)) => Ok(AwsIam::new(
-                key,
-                secret,
-                field("Token"),
-                self.region.clone(),
-            )),
+            (Some(key), Some(secret)) => {
+                Ok(
+                    AwsIam::new(key, secret, field("Token"), self.region.clone())
+                        .for_org(self.org.as_deref()),
+                )
+            }
             _ => Err(failed("answered without an access key")),
         }
     }

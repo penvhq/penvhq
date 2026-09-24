@@ -24,6 +24,7 @@ pub struct AwsWebIdentity {
     session_name: String,
     endpoint: String,
     region: String,
+    org: Option<String>,
 }
 
 impl fmt::Debug for AwsWebIdentity {
@@ -35,6 +36,12 @@ impl fmt::Debug for AwsWebIdentity {
 }
 
 impl AwsWebIdentity {
+    /// The workspace the signed login names; see [`AwsIam::for_org`].
+    pub fn for_org(mut self, org: Option<&str>) -> AwsWebIdentity {
+        self.org = org.map(str::to_string);
+        self
+    }
+
     pub fn from_env(env: &BTreeMap<String, String>) -> Option<AwsWebIdentity> {
         let at = |key: &str| env.get(key).filter(|v| !v.is_empty()).cloned();
         let region = super::aws::region(env);
@@ -46,6 +53,7 @@ impl AwsWebIdentity {
             session_name: at(SESSION_NAME_VAR).unwrap_or_else(|| "penv".to_string()),
             endpoint: endpoint.trim_end_matches('/').to_string(),
             region,
+            org: None,
         })
     }
 
@@ -76,12 +84,12 @@ impl AwsWebIdentity {
             return Err(failed(&format!("was refused: {code}")));
         }
         match (tag(&text, "AccessKeyId"), tag(&text, "SecretAccessKey")) {
-            (Some(key), Some(secret)) => Ok(AwsIam::new(
-                key,
-                secret,
-                tag(&text, "SessionToken"),
-                self.region.clone(),
-            )),
+            (Some(key), Some(secret)) => {
+                Ok(
+                    AwsIam::new(key, secret, tag(&text, "SessionToken"), self.region.clone())
+                        .for_org(self.org.as_deref()),
+                )
+            }
             _ => Err(failed("answered without an access key")),
         }
     }

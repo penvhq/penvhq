@@ -785,7 +785,8 @@ impl Api {
         let mut response = self.attempt(&url, || {
             self.authed(self.http.post(&url), bearer).send_json(&body)
         })?;
-        expect(&mut response, &[StatusCode::CREATED, StatusCode::OK])?;
+        expect(&mut response, &[StatusCode::CREATED, StatusCode::OK])
+            .map_err(|e| recoded(e, "ambiguous", "project_taken"))?;
         let answered: Value = read_json(&url, &mut response)?;
         let project = answered.get("project").unwrap_or(&answered);
         serde_json::from_value(project.clone()).map_err(|_| CloudError::Unreadable {
@@ -891,7 +892,8 @@ impl Api {
             self.stamp(self.http.post(&url))
                 .send_json(json!({ "token": token }))
         })?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])?;
+        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])
+            .map_err(|e| recoded(e, "ambiguous", "org_ambiguous"))?;
         bearer_from(&url, &mut response, now)
     }
 
@@ -899,7 +901,8 @@ impl Api {
         let url = self.url("/auth/aws");
         let mut response =
             self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(signed))?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])?;
+        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])
+            .map_err(|e| recoded(e, "ambiguous", "org_ambiguous"))?;
         bearer_from(&url, &mut response, now)
     }
 
@@ -1071,6 +1074,18 @@ fn send(
 /// Every 3xx but the 304 a conditional read expects.
 fn redirected(status: u16) -> bool {
     (300..400).contains(&status) && status != 304
+}
+
+/// The server answers `ambiguous` for a taken project name and for an org slug
+/// two workspaces share; the call that got it says which.
+fn recoded(error: CloudError, from: &str, to: &str) -> CloudError {
+    match error {
+        CloudError::Api(mut api) if api.code == from => {
+            api.code = to.to_string();
+            CloudError::Api(api)
+        }
+        other => other,
+    }
 }
 
 fn expect(response: &mut Response<Body>, ok: &[StatusCode]) -> Result<()> {
