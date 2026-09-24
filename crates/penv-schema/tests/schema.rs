@@ -672,3 +672,166 @@ fn hosts_refuses_a_repeat_and_more_than_thirty_two() {
         32
     );
 }
+
+#[test]
+fn an_assert_on_the_first_key_leaves_the_key_its_decorators() {
+    let schema = parse(
+        "# @type=port @required @assert(not(eq($PORT, 22)), \"PORT is the ssh port\")\nPORT=\n",
+    )
+    .unwrap();
+    let key = schema.get("PORT").unwrap();
+    assert_eq!(key.ty.base, BaseType::Port);
+    assert_eq!(key.required_decorator, Some(true));
+    assert_eq!(schema.asserts.len(), 1);
+    assert!(schema.warnings.is_empty(), "{:?}", schema.warnings);
+}
+
+#[test]
+fn a_comment_after_a_default_is_not_part_of_it() {
+    let schema = parse(
+        "# @type=port\nPORT=3000 # the port\n\n# @type=string\nHOST=\"a # b\" # quoted\n\n# @type=string\nTAG=v#1\n\n# @type=string\nHOME_DIR='$HOME' # literal\n",
+    )
+    .unwrap();
+    let default = |name: &str| schema.get(name).unwrap().default.clone();
+    assert_eq!(default("PORT").as_deref(), Some("3000"));
+    assert_eq!(default("HOST").as_deref(), Some("a # b"));
+    assert_eq!(default("TAG").as_deref(), Some("v#1"));
+    assert_eq!(default("HOME_DIR").as_deref(), Some("$HOME"));
+    assert!(!schema.get("HOME_DIR").unwrap().default_expr);
+}
+
+#[test]
+fn a_comment_after_the_decorators_ends_them() {
+    let schema = parse("# @type=string @required # set in CI\nA_KEY=x\n").unwrap();
+    assert_eq!(schema.get("A_KEY").unwrap().required_decorator, Some(true));
+    assert!(schema.warnings.is_empty(), "{:?}", schema.warnings);
+}
+
+#[test]
+fn a_backticked_default_is_literal() {
+    let schema = parse("# @type=string\nA_KEY=`${HOME} and $USER`\n").unwrap();
+    let key = schema.get("A_KEY").unwrap();
+    assert_eq!(key.default.as_deref(), Some("${HOME} and $USER"));
+    assert!(!key.default_expr);
+    assert_eq!(parse(&render(&schema)).unwrap(), schema);
+}
+
+#[test]
+fn call_form_values_are_unquoted_and_survive_round_trips() {
+    let schema = parse(
+        "# @type=string @docs(\"see the wiki\") @deprecated(\"use B_KEY\") @example(\"x y\")\nA_KEY=\n\n# @type=string @docs(\"say \\\"hi\\\" (now)\")\nB_KEY=\n",
+    )
+    .unwrap();
+    let a = schema.get("A_KEY").unwrap();
+    assert_eq!(a.docs.as_deref(), Some("see the wiki"));
+    assert_eq!(a.deprecated.as_deref(), Some("use B_KEY"));
+    assert_eq!(a.example.as_deref(), Some("x y"));
+    assert_eq!(
+        schema.get("B_KEY").unwrap().docs.as_deref(),
+        Some("say \"hi\" (now)")
+    );
+    let mut again = schema.clone();
+    for _ in 0..3 {
+        again = parse(&render(&again)).unwrap();
+    }
+    assert_eq!(again, schema);
+}
+
+#[test]
+fn a_quoted_enum_member_may_hold_an_equals_sign() {
+    let schema = parse("# @type=enum(\"a=b\", c)\nMODE=\n").unwrap();
+    let key = schema.get("MODE").unwrap();
+    assert_eq!(key.ty.members, ["a=b", "c"]);
+    assert!(schema.warnings.is_empty(), "{:?}", schema.warnings);
+    assert_eq!(parse(&render(&schema)).unwrap(), schema);
+}
+
+#[test]
+fn a_line_that_is_not_a_key_is_named_only_when_it_looks_like_a_name() {
+    let err = parse("postgres://fakeuser:fakepass@db/app?sslmode=off\n").unwrap_err();
+    assert_eq!(err[0].code, "invalid_key_name");
+    assert!(!err[0].message.contains("fakepass"), "{}", err[0].message);
+    let err = parse("MY-KEY=1\n").unwrap_err();
+    assert!(err[0].message.contains("MY-KEY"), "{}", err[0].message);
+}
+
+#[test]
+fn a_constraint_penv_does_not_check_is_a_warning_and_a_bad_number_an_error() {
+    let schema =
+        parse("# @type=string(matches=\"^a$\")\nA_KEY=\n\n# @type=number(precision=2)\nB_KEY=\n")
+            .unwrap();
+    let codes: Vec<&str> = schema.warnings.iter().map(|w| w.code.as_str()).collect();
+    assert_eq!(codes, ["unenforced_constraint", "unenforced_constraint"]);
+    for bad in [
+        "string(minLength=ten)",
+        "string(maxLength=-1)",
+        "number(min=low)",
+        "port(max=)",
+    ] {
+        let err = parse(&format!("# @type={bad}\nA_KEY=\n")).unwrap_err();
+        assert_eq!(err[0].code, "invalid_type", "{bad}");
+    }
+}
+
+#[test]
+fn on_and_off_are_booleans() {
+    assert_eq!(penv_schema::parse_boolean("on"), Some(true));
+    assert_eq!(penv_schema::parse_boolean("OFF"), Some(false));
+    let schema = parse("# @type=boolean\nA_FLAG=\n").unwrap();
+    assert!(validate(&schema, &values(&[("A_FLAG", "on")])).is_empty());
+}
+
+#[test]
+fn a_required_key_whose_computed_default_came_out_empty_fails() {
+    let schema = parse("# @type=string @required\nA_KEY=${B_KEY}\n").unwrap();
+    let found = validate(&schema, &values(&[("A_KEY", "")]));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].rule, "required");
+    assert!(
+        validate(&schema, &values(&[])).is_empty(),
+        "a pending random() has no value yet"
+    );
+}
+
+#[test]
+fn render_keeps_the_provider() {
+    let schema = parse("# @penv=doppler:acme/api\n\n# @type=port\nPORT=3000\n").unwrap();
+    let rendered = render(&schema);
+    assert!(
+        rendered.starts_with("# @penv=doppler:acme/api"),
+        "{rendered}"
+    );
+    assert_eq!(parse(&rendered).unwrap(), schema);
+}
+
+#[test]
+fn set_header_keeps_a_byte_order_mark_at_the_start() {
+    let plain = "\u{feff}# @type=string\nA=\n";
+    let linked = penv_schema::set_header(plain, "acme", "api");
+    assert!(
+        linked.starts_with("\u{feff}# @penv=acme/api\n\n# @type"),
+        "{linked:?}"
+    );
+    assert_eq!(parse(&linked).unwrap().project.as_deref(), Some("api"));
+
+    let headed = "\u{feff}# @schema=1\n\n# @type=string\nA=\n";
+    let linked = penv_schema::set_header(headed, "acme", "api");
+    assert!(
+        linked.starts_with("\u{feff}# @penv=acme/api @schema=1"),
+        "{linked:?}"
+    );
+    assert_eq!(parse(&linked).unwrap().project.as_deref(), Some("api"));
+}
+
+#[test]
+fn a_rotate_span_too_long_to_count_is_refused() {
+    assert!(parse("# @type=string @rotate=18446744073709551615s\nA=\n").is_err());
+}
+
+#[test]
+fn many_keys_parse() {
+    let text: String = (0..20_000)
+        .map(|i| format!("# @type=string\nK{i}=\n\n"))
+        .collect();
+    assert_eq!(parse(&text).unwrap().keys.len(), 20_000);
+}

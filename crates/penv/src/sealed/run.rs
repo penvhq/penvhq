@@ -71,7 +71,7 @@ pub fn prepare(
             return Err(refuse(
                 "cannot_seal",
                 format!(
-                    "{} has @hosts, and its type leaves no room for a placeholder: a matches rule, a type other than string, or a maxLength too short for 16 random characters.",
+                    "{} has @hosts, and its type leaves no room for a placeholder: a matches rule, a type other than string, or a maxLength too short for 24 random characters.",
                     key.name
                 ),
                 format!(

@@ -11,6 +11,11 @@ pub struct Span {
     pub seconds: u64,
 }
 
+/// The longest span a reminder may name: a thousand Gregorian years, in seconds.
+const MAX_SECONDS: u64 = 1_000 * YEAR;
+const YEAR: u64 = 31_556_952;
+const MONTH: u64 = YEAR / 12;
+
 const UNITS: [(&str, u64); 7] = [
     ("y", 0),
     ("m", 0),
@@ -54,7 +59,11 @@ impl Span {
                 _ => span.seconds = span.seconds.checked_add(n.checked_mul(UNITS[at].1)?)?,
             }
         }
-        (span != Span::default()).then_some(span)
+        let total = u64::from(span.years)
+            .checked_mul(YEAR)?
+            .checked_add(u64::from(span.months).checked_mul(MONTH)?)?
+            .checked_add(span.seconds)?;
+        (span != Span::default() && total <= MAX_SECONDS).then_some(span)
     }
 
     /// True when the span is finer than a day, so dates alone cannot hold it.
@@ -83,39 +92,74 @@ pub fn rotation(span: Span, written: Option<u64>, now: u64) -> Rotation {
     let months = y * 12 + (m - 1) + i64::from(span.years) * 12 + i64::from(span.months);
     let (ny, nm) = (months.div_euclid(12), months.rem_euclid(12) + 1);
     let shifted = days_from_civil(ny, nm, d.min(month_length(ny, nm)));
-    let due = (shifted as u64) * 86_400 + clock + span.seconds;
+    let due = i128::from(shifted) * 86_400 + i128::from(clock) + i128::from(span.seconds);
+    let due = u64::try_from(due.max(0)).unwrap_or(u64::MAX);
+    let left = (i128::from(due) - i128::from(now)).clamp(i64::MIN.into(), i64::MAX.into());
     Rotation::Due {
         due,
-        left: due as i64 - now as i64,
+        left: left as i64,
     }
 }
 
-/// `YYYY-MM-DD` (midnight UTC) or `YYYY-MM-DDTHH:MM:SSZ`, as epoch seconds.
+/// `YYYY-MM-DD` (midnight UTC) or an RFC 3339 instant ending in `Z` or an
+/// offset such as `+02:00`, as epoch seconds.
 pub fn parse_instant(text: &str) -> Option<u64> {
     let text = text.trim();
     let (date, clock) = match text.split_once(['T', 't']) {
-        Some((date, clock)) => (date, Some(clock.strip_suffix(['Z', 'z'])?)),
+        Some((date, clock)) => (date, Some(clock)),
         None => (text, None),
     };
     let mut parts = date.split('-');
-    let y: i64 = parts.next()?.parse().ok()?;
-    let m: i64 = parts.next()?.parse().ok()?;
-    let d: i64 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() || !(1..=12).contains(&m) || d < 1 || d > month_length(y, m) {
+    let y = digits(parts.next()?, 4, 4)?;
+    let m = digits(parts.next()?, 1, 2)?;
+    let d = digits(parts.next()?, 1, 2)?;
+    if parts.next().is_some() || y < 1 || !(1..=12).contains(&m) || d < 1 || d > month_length(y, m)
+    {
         return None;
     }
     let mut seconds = 0i64;
     if let Some(clock) = clock {
+        let (clock, offset) = split_offset(clock)?;
         let mut c = clock.split(':');
-        let h: i64 = c.next()?.parse().ok()?;
-        let mi: i64 = c.next()?.parse().ok()?;
-        let s: i64 = c.next().unwrap_or("0").split('.').next()?.parse().ok()?;
+        let h = digits(c.next()?, 1, 2)?;
+        let mi = digits(c.next()?, 1, 2)?;
+        let s = match c.next() {
+            Some(s) => {
+                let (whole, fraction) = s.split_once('.').unwrap_or((s, "0"));
+                digits(fraction, 1, 9)?;
+                digits(whole, 1, 2)?
+            }
+            None => 0,
+        };
         if c.next().is_some() || h > 23 || mi > 59 || s > 60 {
             return None;
         }
-        seconds = h * 3_600 + mi * 60 + s;
+        seconds = h * 3_600 + mi * 60 + s - offset;
     }
     u64::try_from(days_from_civil(y, m, d) * 86_400 + seconds).ok()
+}
+
+/// A clock and its `Z` or `+HH:MM`/`-HH:MM`, as seconds east of UTC.
+fn split_offset(clock: &str) -> Option<(&str, i64)> {
+    if let Some(clock) = clock.strip_suffix(['Z', 'z']) {
+        return Some((clock, 0));
+    }
+    let (clock, offset) = clock.split_at(clock.rfind(['+', '-'])?);
+    let sign = if offset.starts_with('-') { -1 } else { 1 };
+    let (h, m) = offset[1..].split_once(':')?;
+    let (h, m) = (digits(h, 2, 2)?, digits(m, 2, 2)?);
+    if h > 23 || m > 59 {
+        return None;
+    }
+    Some((clock, sign * (h * 3_600 + m * 60)))
+}
+
+/// Unsigned decimal digits, `min` to `max` of them.
+fn digits(text: &str, min: usize, max: usize) -> Option<i64> {
+    if !(min..=max).contains(&text.len()) || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// Epoch seconds as `YYYY-MM-DDTHH:MM:SSZ`.
@@ -132,7 +176,8 @@ pub fn instant(epoch: u64) -> String {
 
 /// Epoch seconds as `YYYY-MM-DD`.
 pub fn day_of(epoch: u64) -> String {
-    instant(epoch)[..10].to_string()
+    let (y, m, d) = civil_from_days((epoch / 86_400) as i64);
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 fn month_length(y: i64, m: i64) -> i64 {
@@ -231,5 +276,47 @@ mod tests {
         }
         assert_eq!(day_of(parse_instant("2026-09-22").unwrap()), "2026-09-22");
         assert_eq!(parse_instant("2026-02-30"), None);
+    }
+
+    #[test]
+    fn a_span_past_a_thousand_years_is_refused_and_rotation_never_overflows() {
+        assert_eq!(Span::parse("18446744073709551615s"), None);
+        assert_eq!(Span::parse("1001y"), None);
+        assert_eq!(Span::parse("12001m"), None);
+        assert_eq!(Span::parse("365243d"), None);
+        assert_eq!(Span::parse("1000y1s"), None);
+        let most = Span::parse("1000y").unwrap();
+        let written = parse_instant("9999-12-31T23:59:59Z").unwrap();
+        assert!(matches!(
+            rotation(most, Some(written), 0),
+            Rotation::Due { left, .. } if left > 0
+        ));
+        let late = Span::parse("365000d").unwrap();
+        assert!(matches!(
+            rotation(late, Some(u64::MAX), u64::MAX),
+            Rotation::Due { .. }
+        ));
+    }
+
+    #[test]
+    fn instants_take_offsets_and_refuse_signs_and_years_out_of_range() {
+        let utc = parse_instant("2026-09-22T14:05:00Z").unwrap();
+        assert_eq!(parse_instant("2026-09-22T16:05:00+02:00"), Some(utc));
+        assert_eq!(parse_instant("2026-09-22T09:05:00.25-05:00"), Some(utc));
+        for bad in [
+            "2026-+9-22",
+            "2026-09--2",
+            "-2026-09-22",
+            "0000-01-01",
+            "10000-01-01",
+            "99999999999999999-01-01",
+            "2026-09-22T14:05:00+2",
+            "2026-09-22T14:05:00+24:00",
+            "2026-09-22T-1:05:00Z",
+        ] {
+            assert_eq!(parse_instant(bad), None, "{bad}");
+        }
+        let last = parse_instant("9999-12-31").unwrap();
+        assert_eq!(day_of(last + 86_400), "10000-01-01");
     }
 }

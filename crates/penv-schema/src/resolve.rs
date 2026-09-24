@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::ir::is_valid_key_name;
 use crate::validate::Values;
 
 /// The functions penv evaluates. `exec` is refused by name: a schema never
@@ -28,8 +29,12 @@ pub const FUNCTIONS: [&str; 15] = [
 /// Filters a `${KEY | filter}` reference runs, left to right.
 pub const FILTERS: [&str; 5] = ["urlencode", "base64", "lower", "upper", "trim"];
 
-/// How deep references may chain before penv stops rather than exhaust the stack.
+/// How deep references may chain, and calls or defaults nest inside one value,
+/// before penv stops rather than exhaust the stack.
 pub const MAX_DEPTH: usize = 128;
+
+/// Nested evaluations across a whole chain of references, for the same reason.
+const MAX_NESTING: usize = 4 * MAX_DEPTH;
 
 /// One raw value and whether it may be computed. A single-quoted value is literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,8 +115,11 @@ pub fn resolve_full(
         quiet: 0,
         deps: BTreeMap::new(),
         control: 0,
+        nesting: 0,
+        too_deep: None,
     };
     for name in raw.keys() {
+        run.too_deep = None;
         run.value(name);
     }
     Resolution {
@@ -128,23 +136,33 @@ pub fn tainted(
     sensitive: impl Fn(&str) -> bool,
 ) -> BTreeSet<String> {
     let source = |dep: &str| match dep.strip_prefix("penv:") {
-        // `penv(env/KEY)` inherits KEY's sensitivity; an address penv cannot
-        // judge is treated as sensitive.
-        Some(address) => sensitive(address.rsplit('/').next().unwrap_or(address)),
+        // `penv(env/KEY)` inherits KEY's sensitivity; another project's key is
+        // one penv cannot judge, so it is sensitive.
+        Some(address) => {
+            address.split('/').count() > 2
+                || sensitive(address.rsplit('/').next().unwrap_or(address))
+        }
         None => sensitive(dep),
     };
+    let mut readers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut out: BTreeSet<String> = BTreeSet::new();
-    loop {
-        let before = out.len();
-        for (key, from) in deps {
-            if !out.contains(key) && from.iter().any(|d| source(d) || out.contains(d)) {
-                out.insert(key.clone());
-            }
+    let mut queue: Vec<&str> = Vec::new();
+    for (key, from) in deps {
+        for dep in from {
+            readers.entry(dep.as_str()).or_default().push(key.as_str());
         }
-        if out.len() == before {
-            return out;
+        if from.iter().any(|d| source(d)) && out.insert(key.clone()) {
+            queue.push(key.as_str());
         }
     }
+    while let Some(key) = queue.pop() {
+        for &reader in readers.get(key).into_iter().flatten() {
+            if out.insert(reader.to_string()) {
+                queue.push(reader);
+            }
+        }
+    }
+    out
 }
 
 /// Every `penv(address)` the computed values name, so the caller can fetch them
@@ -218,6 +236,9 @@ struct Run<'a> {
     /// Inside a condition: a key read here decides which value is chosen but is
     /// not copied into it, so it does not taint the result.
     control: usize,
+    nesting: usize,
+    /// A chain ran too deep: only the key it started from fails, whatever the order.
+    too_deep: Option<String>,
 }
 
 impl Run<'_> {
@@ -236,10 +257,7 @@ impl Run<'_> {
             return Some(raw.text.clone());
         }
         if self.stack.len() >= MAX_DEPTH {
-            self.fail(
-                name,
-                format!("{name}: references nest more than {MAX_DEPTH} deep"),
-            );
+            self.too_deep = Some(format!("references nest more than {MAX_DEPTH} deep"));
             return None;
         }
         if self.stack.iter().any(|k| k == name) {
@@ -269,7 +287,9 @@ impl Run<'_> {
                 self.done.insert(name.to_string(), v.clone());
                 Some(v)
             }
+            Err(_) if self.too_deep.is_some() && !self.stack.is_empty() => None,
             Err(message) => {
+                let message = self.too_deep.take().unwrap_or(message);
                 self.fail(name, format!("{name}: {message}"));
                 None
             }
@@ -325,49 +345,77 @@ impl Run<'_> {
         }
     }
 
+    // One small function per step: a debug build gives every local its own slot.
     fn eval(&mut self, expr: &Expr) -> Result<String, String> {
-        match expr {
+        if self.nesting >= MAX_NESTING {
+            return Err(self.nested_too_deep());
+        }
+        self.nesting += 1;
+        let out = match expr {
             Expr::Text(t) => Ok(t.clone()),
-            Expr::Ref(name) => {
-                if self.raw.contains_key(name) && self.value(name).is_none() {
-                    return Err(format!("{name} could not be computed"));
-                }
-                self.depend(name);
-                let found = self.value(name);
-                if found.is_none() && self.quiet == 0 {
-                    self.unset(name);
-                }
-                Ok(found.unwrap_or_default())
-            }
+            Expr::Ref(name) => self.reference(name),
             Expr::Default {
                 key,
                 or,
                 when_empty,
-            } => {
-                let set = self.raw.contains_key(key) || self.outside.contains_key(key);
-                // Looking is control: only a value that is used is a dependency,
-                // so a fallback taken does not inherit the key's sensitivity.
-                self.control += 1;
-                let value = self.quietly(&Expr::Ref(key.clone()));
-                self.control -= 1;
-                let value = value?;
-                if !set || (*when_empty && value.is_empty()) {
-                    self.eval(or)
-                } else {
-                    self.depend(key);
-                    Ok(value)
-                }
-            }
-            Expr::Filter { inner, filters } => {
-                let mut value = self.eval(inner)?;
-                for filter in filters {
-                    value = apply_filter(filter, &value)?;
-                }
-                Ok(value)
-            }
-            Expr::Template(parts) => parts.iter().map(|p| self.eval(p)).collect(),
+            } => self.default(key, or, *when_empty),
+            Expr::Filter { inner, filters } => self.filter(inner, filters),
+            Expr::Template(parts) => self.join(parts),
             Expr::Call(name, args) => self.call(name, args),
+        };
+        self.nesting -= 1;
+        out
+    }
+
+    #[cold]
+    fn nested_too_deep(&mut self) -> String {
+        let message = format!("expressions nest more than {MAX_NESTING} deep");
+        self.too_deep = Some(message.clone());
+        message
+    }
+
+    fn reference(&mut self, name: &str) -> Result<String, String> {
+        let found = self.value(name);
+        if found.is_none() && self.raw.contains_key(name) {
+            return Err(format!("{name} could not be computed"));
         }
+        self.depend(name);
+        if found.is_none() && self.quiet == 0 {
+            self.unset(name);
+        }
+        Ok(found.unwrap_or_default())
+    }
+
+    fn default(&mut self, key: &str, or: &Expr, when_empty: bool) -> Result<String, String> {
+        let set = self.raw.contains_key(key) || self.outside.contains_key(key);
+        // Looking is control: only a value that is used is a dependency,
+        // so a fallback taken does not inherit the key's sensitivity.
+        self.control += 1;
+        let value = self.quietly(&Expr::Ref(key.to_string()));
+        self.control -= 1;
+        let value = value?;
+        if !set || (when_empty && value.is_empty()) {
+            self.eval(or)
+        } else {
+            self.depend(key);
+            Ok(value)
+        }
+    }
+
+    fn filter(&mut self, inner: &Expr, filters: &[String]) -> Result<String, String> {
+        let mut value = self.eval(inner)?;
+        for filter in filters {
+            value = apply_filter(filter, &value)?;
+        }
+        Ok(value)
+    }
+
+    fn join(&mut self, parts: &[Expr]) -> Result<String, String> {
+        let mut out = String::new();
+        for part in parts {
+            out.push_str(&self.eval(part)?);
+        }
+        Ok(out)
     }
 
     fn call(&mut self, name: &str, args: &[Expr]) -> Result<String, String> {
@@ -395,131 +443,158 @@ impl Run<'_> {
     }
 
     fn call_inner(&mut self, name: &str, args: &[Expr]) -> Result<String, String> {
-        let arity = |min: usize, max: usize| {
-            if args.len() < min || args.len() > max {
-                Err(format!(
-                    "{name}() takes {} argument(s), not {}",
-                    if min == max {
-                        min.to_string()
-                    } else {
-                        format!("{min} to {max}")
-                    },
-                    args.len()
-                ))
-            } else {
-                Ok(())
-            }
-        };
         match name {
-            "ref" => {
-                arity(1, 1)?;
-                match &args[0] {
-                    Expr::Text(key) | Expr::Ref(key) => self.eval(&Expr::Ref(key.clone())),
-                    _ => Err("ref() takes a key name".into()),
-                }
-            }
-            "concat" => args.iter().map(|a| self.eval(a)).collect(),
-            "fallback" => {
-                arity(1, usize::MAX)?;
-                for arg in args {
-                    let v = self.quietly(arg)?;
-                    if !v.is_empty() {
-                        return Ok(v);
-                    }
-                }
-                Ok(String::new())
-            }
-            "if" => {
-                arity(2, 3)?;
-                if truthy(&self.deciding(&args[0])?) {
-                    self.eval(&args[1])
-                } else {
-                    args.get(2).map_or(Ok(String::new()), |a| self.eval(a))
-                }
-            }
-            "eq" => {
-                arity(2, 2)?;
-                Ok(flag(self.eval(&args[0])? == self.eval(&args[1])?))
-            }
-            "not" => {
-                arity(1, 1)?;
-                Ok(flag(!truthy(&self.eval(&args[0])?)))
-            }
-            "isEmpty" => {
-                arity(1, 1)?;
-                Ok(flag(self.quietly(&args[0])?.is_empty()))
-            }
-            "penv" => {
-                arity(0, 1)?;
-                let address = match args.first() {
-                    Some(arg) => self.eval(arg)?,
-                    None => self.stack.last().cloned().unwrap_or_default(),
-                };
-                let address = address.trim();
-                self.depend(&format!("penv:{address}"));
-                self.fetched.get(address).cloned().ok_or_else(|| {
-                    format!(
-                        "penv({address}) takes a written address, such as production/DATABASE_URL"
-                    )
-                })
-            }
-            "forEnv" => {
-                arity(1, usize::MAX)?;
-                let mut hit = false;
-                for arg in args {
-                    hit |= self.eval(arg)? == self.environment;
-                }
-                Ok(flag(hit))
-            }
-            "match" => {
-                arity(2, usize::MAX)?;
-                let subject = self.deciding(&args[0])?;
-                let mut fallback = None;
-                for arm in &args[1..] {
-                    let Expr::Call(kind, parts) = arm else {
-                        return Err("match() takes cases written label: value".into());
-                    };
-                    if kind != ":" {
-                        return Err("match() takes cases written label: value".into());
-                    }
-                    let label = self.deciding(&parts[0])?;
-                    if label == "_" {
-                        fallback = Some(&parts[1]);
-                    } else if label == subject {
-                        return self.eval(&parts[1]);
-                    }
-                }
-                match fallback {
-                    Some(expr) => self.eval(expr),
-                    None => Err("match() found no case for the value and has no _ case".into()),
-                }
-            }
-            "and" | "or" => {
-                arity(1, usize::MAX)?;
-                let want = name == "and";
-                for arg in args {
-                    if truthy(&self.quietly(arg)?) != want {
-                        return Ok(flag(!want));
-                    }
-                }
-                Ok(flag(want))
-            }
-            "startsWith" | "endsWith" => {
-                arity(2, 2)?;
-                let value = self.eval(&args[0])?;
-                let part = self.eval(&args[1])?;
-                Ok(flag(if name == "startsWith" {
-                    value.starts_with(&part)
-                } else {
-                    value.ends_with(&part)
-                }))
-            }
+            "ref" => self.ref_key(args),
+            "concat" => self.join(args),
+            "fallback" => self.fallback(args),
+            "if" => self.branch(args),
+            "eq" => self.equal(args),
+            "not" => self.negate(args),
+            "isEmpty" => self.empty(args),
+            "penv" => self.penv(args),
+            "forEnv" => self.for_env(args),
+            "match" => self.match_case(args),
+            "and" | "or" => self.all_or_any(name == "and", args),
+            "startsWith" | "endsWith" => self.affix(name == "startsWith", args),
             "random" => {
                 Err("random() is generated by penv run, which keeps the value in .env.local".into())
             }
+            ":" => Err(CASE_OUTSIDE_MATCH.into()),
             _ => Err(format!("{name}() is not a function penv runs")),
         }
     }
+
+    fn ref_key(&mut self, args: &[Expr]) -> Result<String, String> {
+        arity("ref", args, 1, 1)?;
+        match &args[0] {
+            Expr::Text(key) | Expr::Ref(key) => self.reference(key),
+            _ => Err("ref() takes a key name".into()),
+        }
+    }
+
+    fn fallback(&mut self, args: &[Expr]) -> Result<String, String> {
+        arity("fallback", args, 1, usize::MAX)?;
+        for arg in args {
+            let v = self.quietly(arg)?;
+            if !v.is_empty() {
+                return Ok(v);
+            }
+        }
+        Ok(String::new())
+    }
+
+    fn branch(&mut self, args: &[Expr]) -> Result<String, String> {
+        arity("if", args, 2, 3)?;
+        if truthy(&self.deciding(&args[0])?) {
+            self.eval(&args[1])
+        } else {
+            args.get(2).map_or(Ok(String::new()), |a| self.eval(a))
+        }
+    }
+
+    fn equal(&mut self, args: &[Expr]) -> Result<String, String> {
+        arity("eq", args, 2, 2)?;
+        let left = self.eval(&args[0])?;
+        Ok(flag(left == self.eval(&args[1])?))
+    }
+
+    fn negate(&mut self, args: &[Expr]) -> Result<String, String> {
+        arity("not", args, 1, 1)?;
+        Ok(flag(!truthy(&self.eval(&args[0])?)))
+    }
+
+    fn empty(&mut self, args: &[Expr]) -> Result<String, String> {
+        arity("isEmpty", args, 1, 1)?;
+        Ok(flag(self.quietly(&args[0])?.is_empty()))
+    }
+
+    fn penv(&mut self, args: &[Expr]) -> Result<String, String> {
+        arity("penv", args, 0, 1)?;
+        // A computed address is a value, and the message below names it.
+        let address = match args.first() {
+            Some(Expr::Text(address)) => address.trim().to_string(),
+            Some(_) => {
+                return Err(
+                    "penv() takes a written address, such as production/DATABASE_URL, not a computed one"
+                        .into(),
+                );
+            }
+            None => self.stack.last().cloned().unwrap_or_default(),
+        };
+        self.depend(&format!("penv:{address}"));
+        self.fetched.get(&address).cloned().ok_or_else(|| {
+            format!("penv({address}) takes a written address, such as production/DATABASE_URL")
+        })
+    }
+
+    fn for_env(&mut self, args: &[Expr]) -> Result<String, String> {
+        arity("forEnv", args, 1, usize::MAX)?;
+        let mut hit = false;
+        for arg in args {
+            hit |= self.eval(arg)? == self.environment;
+        }
+        Ok(flag(hit))
+    }
+
+    fn match_case(&mut self, args: &[Expr]) -> Result<String, String> {
+        arity("match", args, 2, usize::MAX)?;
+        let subject = self.deciding(&args[0])?;
+        let mut fallback = None;
+        for arm in &args[1..] {
+            let Expr::Call(kind, parts) = arm else {
+                return Err("match() takes cases written label: value".into());
+            };
+            if kind != ":" {
+                return Err("match() takes cases written label: value".into());
+            }
+            let label = self.deciding(&parts[0])?;
+            if label == "_" {
+                fallback = Some(&parts[1]);
+            } else if label == subject {
+                return self.eval(&parts[1]);
+            }
+        }
+        match fallback {
+            Some(expr) => self.eval(expr),
+            None => Err("match() found no case for the value and has no _ case".into()),
+        }
+    }
+
+    fn all_or_any(&mut self, want: bool, args: &[Expr]) -> Result<String, String> {
+        arity(if want { "and" } else { "or" }, args, 1, usize::MAX)?;
+        for arg in args {
+            if truthy(&self.quietly(arg)?) != want {
+                return Ok(flag(!want));
+            }
+        }
+        Ok(flag(want))
+    }
+
+    fn affix(&mut self, starts: bool, args: &[Expr]) -> Result<String, String> {
+        arity(if starts { "startsWith" } else { "endsWith" }, args, 2, 2)?;
+        let value = self.eval(&args[0])?;
+        let part = self.eval(&args[1])?;
+        Ok(flag(if starts {
+            value.starts_with(&part)
+        } else {
+            value.ends_with(&part)
+        }))
+    }
+}
+
+fn arity(name: &str, args: &[Expr], min: usize, max: usize) -> Result<(), String> {
+    if (min..=max).contains(&args.len()) {
+        return Ok(());
+    }
+    let count = if min == max {
+        min.to_string()
+    } else {
+        format!("{min} to {max}")
+    };
+    Err(format!(
+        "{name}() takes {count} argument(s), not {}",
+        args.len()
+    ))
 }
 
 fn truthy(v: &str) -> bool {
@@ -555,7 +630,23 @@ fn has_reference(text: &str) -> bool {
     })
 }
 
+const CASE_OUTSIDE_MATCH: &str =
+    "label: value cases belong in match(); quote the text to pass it as written";
+
 fn parse(text: &str) -> Result<Expr, String> {
+    parse_at(text, 0)
+}
+
+fn too_deep(depth: usize) -> Result<(), String> {
+    if depth > MAX_DEPTH {
+        Err(format!("expressions nest more than {MAX_DEPTH} deep"))
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_at(text: &str, depth: usize) -> Result<Expr, String> {
+    too_deep(depth)?;
     let text = text.trim();
     if let Some(name) = call_name(text) {
         if name == "exec" {
@@ -572,47 +663,49 @@ fn parse(text: &str) -> Result<Expr, String> {
         let inner = &text[name.len() + 1..text.len() - 1];
         let args = split(inner)?
             .iter()
-            .map(|a| arg(a))
+            .map(|a| arg(a, depth + 1))
             .collect::<Result<Vec<_>, _>>()?;
+        if name != "match"
+            && args
+                .iter()
+                .any(|a| matches!(a, Expr::Call(c, _) if c == ":"))
+        {
+            return Err(CASE_OUTSIDE_MATCH.into());
+        }
         return Ok(Expr::Call(name.to_string(), args));
     }
-    Ok(template(text))
+    template(text, depth)
 }
 
-fn arg(text: &str) -> Result<Expr, String> {
+fn arg(text: &str, depth: usize) -> Result<Expr, String> {
+    too_deep(depth)?;
     let text = text.trim();
     // A `label: value` case for match(): the first `:` outside quotes.
     if let Some(colon) = case_colon(text) {
-        let label = arg(&text[..colon])?;
-        let value = arg(&text[colon + 1..])?;
+        let label = arg(&text[..colon], depth + 1)?;
+        let value = arg(&text[colon + 1..], depth + 1)?;
         return Ok(Expr::Call(":".into(), vec![label, value]));
     }
     if let Some(q) = text.chars().next().filter(|c| *c == '"' || *c == '\'') {
         if text.len() >= 2 && text.ends_with(q) {
             let inner = &text[1..text.len() - 1];
-            return Ok(if q == '"' {
-                template(inner)
+            return if q == '"' {
+                template(inner, depth)
             } else {
-                Expr::Text(inner.into())
-            });
+                Ok(Expr::Text(inner.into()))
+            };
         }
         return Err("a quoted argument is never closed".into());
     }
-    // `${KEY:-or}` and `${KEY | filter}` as an argument read like they do in text.
-    if text.starts_with("${") {
-        return Ok(template(text));
-    }
-    if let Some(name) = text.strip_prefix('$') {
-        let name = name
-            .strip_prefix('{')
-            .and_then(|n| n.strip_suffix('}'))
-            .unwrap_or(name);
+    if let Some(name) = text.strip_prefix('$')
+        && is_valid_key_name(name)
+    {
         return Ok(Expr::Ref(name.to_string()));
     }
     if call_name(text).is_some() {
-        return parse(text);
+        return parse_at(text, depth);
     }
-    Ok(Expr::Text(text.to_string()))
+    template(text, depth)
 }
 
 /// The `:` of a `label: value` match case: after a bare label, before anything
@@ -645,13 +738,15 @@ fn apply_filter(filter: &str, value: &str) -> Result<String, String> {
         "lower" => value.to_lowercase(),
         "upper" => value.to_uppercase(),
         "trim" => value.trim().to_string(),
-        other => {
-            return Err(format!(
-                "{other} is not a filter penv runs; filters are {}",
-                FILTERS.join(", ")
-            ));
-        }
+        other => return Err(unknown_filter(other)),
     })
+}
+
+fn unknown_filter(name: &str) -> String {
+    format!(
+        "{name} is not a filter penv runs; filters are {}",
+        FILTERS.join(", ")
+    )
 }
 
 /// Standard base64 with padding.
@@ -675,8 +770,23 @@ fn base64(bytes: &[u8]) -> String {
 
 /// `${KEY}` and `$KEY` inside text. `\$` is a literal dollar, as in
 /// dotenv-expand, and so is a `$` that no name follows.
-fn template(text: &str) -> Expr {
+fn template(text: &str, depth: usize) -> Result<Expr, String> {
+    too_deep(depth)?;
     let chars: Vec<char> = text.chars().collect();
+    // Each `{`'s matching `}`, found in one pass rather than a scan per `${`.
+    let mut closes = vec![None; chars.len()];
+    let mut open = Vec::new();
+    for (i, c) in chars.iter().enumerate() {
+        match c {
+            '{' => open.push(i),
+            '}' => {
+                if let Some(o) = open.pop() {
+                    closes[o] = Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
     let mut parts = Vec::new();
     let mut buf = String::new();
     let mut i = 0;
@@ -692,12 +802,15 @@ fn template(text: &str) -> Expr {
             continue;
         }
         if chars.get(i + 1) == Some(&'{')
-            && let Some(end) = closing_brace(&chars, i + 2)
+            && let Some(end) = closes[i + 1]
         {
             let whole: String = chars[i + 2..end].iter().collect();
             let mut pieces = top_level_pipes(&whole).into_iter();
             let inner = pieces.next().unwrap_or_default().trim().to_string();
             let filters: Vec<String> = pieces.map(|f| f.trim().to_string()).collect();
+            if let Some(unknown) = filters.iter().find(|f| !FILTERS.contains(&f.as_str())) {
+                return Err(unknown_filter(unknown));
+            }
             // A key name holds no `-`, so the first one is the operator.
             let split = inner
                 .find('-')
@@ -708,7 +821,7 @@ fn template(text: &str) -> Expr {
             let expr = match split {
                 Some((at, width, when_empty)) => Expr::Default {
                     key: inner[..at].to_string(),
-                    or: Box::new(template(&inner[at + width..])),
+                    or: Box::new(template(&inner[at + width..], depth + 1)?),
                     when_empty,
                 },
                 None => Expr::Ref(inner),
@@ -758,11 +871,11 @@ fn template(text: &str) -> Expr {
     if !buf.is_empty() {
         parts.push(Expr::Text(buf));
     }
-    match parts.len() {
+    Ok(match parts.len() {
         0 => Expr::Text(String::new()),
         1 if matches!(parts[0], Expr::Text(_)) => parts.remove(0),
         _ => Expr::Template(parts),
-    }
+    })
 }
 
 /// Split on `|` outside any nested `${...}`.
@@ -784,27 +897,17 @@ fn top_level_pipes(text: &str) -> Vec<String> {
     out
 }
 
-/// The `}` that closes a `${`, skipping nested `${...}` inside a default.
-fn closing_brace(chars: &[char], from: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, c) in chars.iter().enumerate().skip(from) {
-        match c {
-            '{' => depth += 1,
-            '}' if depth == 0 => return Some(i),
-            '}' => depth -= 1,
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Split call arguments on commas outside quotes and brackets.
+/// Split call arguments on commas outside quotes and brackets. A quote right
+/// after a letter or digit is an apostrophe (`it's`), not an opening quote.
 fn split(inner: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut depth = 0i32;
     let mut quote: Option<char> = None;
+    let mut prev: Option<char> = None;
     for c in inner.chars() {
+        let after_word = prev.is_some_and(char::is_alphanumeric);
+        prev = Some(c);
         match quote {
             Some(q) => {
                 cur.push(c);
@@ -813,7 +916,7 @@ fn split(inner: &str) -> Result<Vec<String>, String> {
                 }
             }
             None => match c {
-                '"' | '\'' => {
+                '"' | '\'' if !after_word => {
                     quote = Some(c);
                     cur.push(c);
                 }
@@ -1211,6 +1314,172 @@ mod tests {
         );
         assert!(e.is_empty(), "{e:?}");
         assert_eq!(v["TAG"], "api-INFO-x");
+    }
+
+    #[test]
+    fn a_reference_inside_an_unquoted_argument_is_expanded() {
+        let (v, e) = run(
+            &[
+                ("APP_ENV", Raw::literal("production")),
+                ("API_HOST", Raw::literal("api.test")),
+                (
+                    "URL",
+                    Raw::computed(
+                        "if(eq($APP_ENV, production), https://${API_HOST}/v1, http://localhost)",
+                    ),
+                ),
+                ("JOINED", Raw::computed("concat(http://$API_HOST, /x)")),
+                ("DOTTED", Raw::computed("concat($API_HOST.v1)")),
+            ],
+            "production",
+        );
+        assert!(e.is_empty(), "{e:?}");
+        assert_eq!(v["URL"], "https://api.test/v1");
+        assert_eq!(v["JOINED"], "http://api.test/x");
+        assert_eq!(v["DOTTED"], "api.test.v1");
+    }
+
+    #[test]
+    fn a_computed_penv_address_is_refused_without_its_value() {
+        let raw: BTreeMap<String, Raw> = [
+            ("SECRET".to_string(), Raw::literal("fake-secret-value")),
+            ("COPY".to_string(), Raw::computed("penv($SECRET)")),
+        ]
+        .into();
+        assert!(penv_addresses(&raw).is_empty());
+        let (v, e) = resolve(&raw, &Values::new(), "development", &Values::new());
+        assert!(!v.contains_key("COPY"));
+        let error = e.iter().find(|e| e.key == "COPY").expect("COPY fails");
+        assert!(!error.message.contains("fake-secret-value"), "{error:?}");
+    }
+
+    #[test]
+    fn deep_nesting_in_one_value_fails_instead_of_overflowing() {
+        let calls = format!("{}x{}", "not(".repeat(20_000), ")".repeat(20_000));
+        let defaults = format!("{}x{}", "${A:-".repeat(20_000), "}".repeat(20_000));
+        let (v, e) = run(
+            &[
+                ("CALLS", Raw::computed(calls)),
+                ("DEFAULTS", Raw::computed(defaults)),
+                (
+                    "FINE",
+                    Raw::computed(format!("{}x{}", "not(".repeat(100), ")".repeat(100))),
+                ),
+            ],
+            "development",
+        );
+        for key in ["CALLS", "DEFAULTS"] {
+            let error = e.iter().find(|e| e.key == key).expect(key);
+            assert!(error.message.contains("nest more than"), "{error:?}");
+        }
+        assert_eq!(v["FINE"], "true");
+    }
+
+    #[test]
+    fn a_long_chain_of_deep_values_fails_instead_of_overflowing() {
+        let nested = |next: &str| format!("{}${next}{}", "concat(".repeat(120), ")".repeat(120));
+        let mut pairs: Vec<(String, Raw)> = (0..200)
+            .map(|i| {
+                (
+                    format!("K{i:03}"),
+                    Raw::computed(nested(&format!("K{:03}", i + 1))),
+                )
+            })
+            .collect();
+        pairs.push(("K200".into(), Raw::literal("end")));
+        let raw = pairs.into_iter().collect();
+        let (_, e) = std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(move || resolve(&raw, &Values::new(), "development", &Values::new()))
+            .unwrap()
+            .join()
+            .expect("no stack overflow");
+        assert!(e.iter().any(|e| e.key == "K000"), "{e:?}");
+    }
+
+    #[test]
+    fn whether_a_chain_is_too_deep_does_not_depend_on_the_order_keys_are_read() {
+        let mut pairs: Vec<(String, Raw)> = (0..50)
+            .map(|i| {
+                (
+                    format!("A{i:02}"),
+                    Raw::computed(format!("${{A{:02}}}", i + 1)),
+                )
+            })
+            .collect();
+        pairs.push(("A50".into(), Raw::computed("${B001}")));
+        pairs.extend((1..100).map(|i| {
+            (
+                format!("B{i:03}"),
+                Raw::computed(format!("${{B{:03}}}", i + 1)),
+            )
+        }));
+        pairs.push(("B100".into(), Raw::literal("end")));
+        let raw = pairs.into_iter().collect();
+        let (v, e) = resolve(&raw, &Values::new(), "development", &Values::new());
+        assert_eq!(v.get("B001").map(String::as_str), Some("end"), "{e:?}");
+        assert!(!e.iter().any(|e| e.key.starts_with('B')), "{e:?}");
+        assert!(e.iter().any(|e| e.key == "A00"), "{e:?}");
+    }
+
+    #[test]
+    fn an_unknown_filter_fails_even_on_a_branch_not_taken() {
+        let (_, e) = run(
+            &[
+                ("A", Raw::literal("x")),
+                ("B", Raw::computed("if(false, ${A | rot13}, x)")),
+            ],
+            "development",
+        );
+        assert!(
+            e.iter()
+                .any(|e| e.key == "B" && e.message.contains("rot13")),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn an_address_penv_cannot_judge_is_sensitive() {
+        let deps: BTreeMap<String, BTreeSet<String>> = [
+            ("FAR", "penv:acme/api/production/PORT"),
+            ("PROJECT", "penv:api/production/PORT"),
+            ("NEAR", "penv:production/PORT"),
+            ("SAME", "penv:PORT"),
+        ]
+        .into_iter()
+        .map(|(k, d)| (k.to_string(), [d.to_string()].into()))
+        .collect();
+        let hot = tainted(&deps, |k| k != "PORT");
+        assert_eq!(
+            hot.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["FAR", "PROJECT"]
+        );
+    }
+
+    #[test]
+    fn taint_follows_a_long_chain() {
+        let mut deps: BTreeMap<String, BTreeSet<String>> = (0..5_000)
+            .map(|i| (format!("K{i}"), [format!("K{}", i + 1)].into()))
+            .collect();
+        deps.insert("K5000".into(), ["SECRET".to_string()].into());
+        deps.insert("CLEAN".into(), ["PORT".to_string()].into());
+        let hot = tainted(&deps, |k| k == "SECRET");
+        assert_eq!(hot.len(), 5_001);
+        assert!(!hot.contains("CLEAN"));
+    }
+
+    #[test]
+    fn a_case_outside_match_and_an_apostrophe_in_a_word_read_sensibly() {
+        let (v, e) = run(
+            &[
+                ("CASE", Raw::computed("if(false, x, Error: none)")),
+                ("WORD", Raw::computed("concat(it's, \" fine\")")),
+            ],
+            "development",
+        );
+        let error = e.iter().find(|e| e.key == "CASE").expect("CASE fails");
+        assert!(error.message.contains("belong in match()"), "{error:?}");
+        assert_eq!(v["WORD"], "it's fine", "{e:?}");
     }
 
     #[test]
