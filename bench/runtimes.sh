@@ -18,6 +18,8 @@ export STRIPE_SECRET_KEY=$SECRET NEXT_PUBLIC_API_URL=https://api.example.com VIT
 
 die() { echo "runtimes: $*" >&2; exit 1; }
 [ -x "$PENV" ] || die "no penv binary: install it or set PENV=<path>"
+# Absolute, because every project below runs from its own directory.
+case $PENV in /*) ;; *) PENV=$PWD/$PENV ;; esac
 command -v node >/dev/null && command -v npm >/dev/null || die "node and npm are required"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/penv-runtimes.XXXXXX")
 PIDS=()

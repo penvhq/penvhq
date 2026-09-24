@@ -202,6 +202,16 @@ pub fn parse(
         .writes
         .into_iter()
         .map(|w| {
+            let scope = w.scope.unwrap_or(file.scope);
+            if let Some(problem) = unsafe_path(&w.path, scope) {
+                return Err(Error::Malformed {
+                    dir: dir.to_string(),
+                    message: format!(
+                        "the write path {} {problem}; a project write names a file inside the repository",
+                        w.path
+                    ),
+                });
+            }
             let body = templates(&w.template).ok_or_else(|| Error::Malformed {
                 dir: dir.to_string(),
                 message: format!("{} is missing", w.template),
@@ -210,7 +220,7 @@ pub fn parse(
                 path: w.path,
                 format: w.format,
                 merge: w.merge,
-                scope: w.scope.unwrap_or(file.scope),
+                scope,
                 union: w
                     .union
                     .unwrap_or_else(|| DEFAULT_UNION.iter().map(|s| s.to_string()).collect()),
@@ -231,6 +241,25 @@ pub fn parse(
         hook: file.hook,
         dir: dir.to_string(),
     })
+}
+
+/// Why a write path could land outside the repository, if it could. A user-scope
+/// path is only printed, so it may start at `~`.
+fn unsafe_path(path: &str, scope: Scope) -> Option<&'static str> {
+    let drive = path.len() >= 2 && path.as_bytes()[1] == b':';
+    if path.is_empty() {
+        return Some("is empty");
+    }
+    if path.starts_with(['/', '\\']) || drive {
+        return Some("is absolute");
+    }
+    if path.split(['/', '\\']).any(|part| part == "..") {
+        return Some("climbs out with ..");
+    }
+    if scope == Scope::Project && path.starts_with('~') {
+        return Some("starts in the home directory");
+    }
+    None
 }
 
 /// What a harness looks like when it is installed.
@@ -341,6 +370,27 @@ deny = { stdout = '{"permission": "deny"}', exit = 0 }
     fn a_guard_that_writes_nothing_is_refused() {
         let error = parse("acme", "name = \"acme\"\n", &templates, "guards/acme").unwrap_err();
         assert!(error.to_string().contains("writes nothing"));
+    }
+
+    #[test]
+    fn a_project_write_cannot_leave_the_repository() {
+        for (path, scope) in [
+            ("/usr/local/bin/penv", "project"),
+            ("C:\\Windows\\x", "project"),
+            ("\\\\server\\share\\x", "project"),
+            ("../../.bashrc", "project"),
+            (".claude/../../x", "project"),
+            ("~/.bashrc", "project"),
+            ("/etc/profile", "user"),
+            ("~/../x", "user"),
+        ] {
+            let config = format!(
+                "name = \"acme\"\n[[write]]\npath = '{path}'\nscope = \"{scope}\"\nformat = \"text\"\nmerge = \"append-unique\"\ntemplate = \"t\"\n"
+            );
+            let error = parse("acme", &config, &templates, "guards/acme").unwrap_err();
+            assert!(error.to_string().contains(path), "{path}: {error}");
+        }
+        assert!(guard().writes.iter().any(|w| w.path.starts_with("~/")));
     }
 
     struct Fake<'a>(&'a [&'a str], &'a [&'a str]);

@@ -29,6 +29,11 @@ pub fn stored(
     let on = crate::config::Config::load(dir)
         .map(|c| c.encrypt())
         .unwrap_or(false);
+    stored_as(on, name, value, sensitive)
+}
+
+/// [`stored`], for a caller writing many values that read the setting once.
+pub fn stored_as(on: bool, name: &str, value: &str, sensitive: bool) -> Result<String, CliError> {
     if !on || !sensitive || value.is_empty() {
         return Ok(value.to_string());
     }
@@ -68,6 +73,10 @@ pub fn decrypt(key: &[u8; 32], name: &str, text: &str, file: &str) -> Result<Str
     String::from_utf8(plain).map_err(|_| fail())
 }
 
+/// The keychain's or the key file's answer, once found: a keychain can take a
+/// noticeable while to ask, and every encrypted file needs the key.
+static FOUND: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
 /// This user's key. With `create`, one is made and stored the first time.
 /// `Ok(None)` when none exists and `create` is false.
 pub fn key(create: bool) -> Result<Option<[u8; 32]>, CliError> {
@@ -83,6 +92,14 @@ pub fn key(create: bool) -> Result<Option<[u8; 32]>, CliError> {
             .with_exit(Exit::Validation)
         });
     }
+    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    if found.is_none() {
+        *found = kept(create)?;
+    }
+    Ok(*found)
+}
+
+fn kept(create: bool) -> Result<Option<[u8; 32]>, CliError> {
     use penv_cloud::Keychain;
     if let Some(keychain) = penv_cloud::Keyring::open(KEYCHAIN_BASE)
         && let Ok(found) = keychain.get(ITEM)
@@ -202,6 +219,15 @@ mod tests {
             encrypt(&key, "K", "v").unwrap(),
             "a fresh nonce each time"
         );
+    }
+
+    #[test]
+    fn a_key_found_once_is_not_looked_up_again() {
+        if std::env::var_os(KEY_VAR).is_some_and(|v| !v.is_empty()) {
+            return;
+        }
+        *FOUND.lock().unwrap() = Some([9u8; 32]);
+        assert_eq!(key(false).unwrap(), Some([9u8; 32]));
     }
 
     #[test]

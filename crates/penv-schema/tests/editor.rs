@@ -359,7 +359,8 @@ fn schema_text_in_a_hover_cannot_render_markdown() {
     let md = hover(text, at(5, 1), &[]).unwrap().markdown;
     assert!(md.contains("\\!\\[x\\]\\(https"), "{md}");
     assert!(md.contains("\\<img"), "{md}");
-    assert!(md.contains("``string(matches=a`b)``"), "{md}");
+    // A backtick in the type is quoted by the schema's own rule and cannot close the span.
+    assert!(md.contains("``string(matches=\"a`b\")``"), "{md}");
 }
 
 #[test]

@@ -100,7 +100,7 @@ run_with() {
     release=$2
     shift 2
     status=0
-    output=$(env PENV_VERSION="$tag" PENV_TARGET="$triple" \
+    output=$(env PENV_ALLOW_ROOT=1 PENV_VERSION="$tag" PENV_TARGET="$triple" \
         PENV_RELEASE_BASE="http://127.0.0.1:$port/$release" "$@" \
         sh "$script" 2>&1) || status=$?
 }
@@ -116,7 +116,7 @@ contains "the install location is printed" "$output" "$work/bin/penv"
 
 # No PENV_VERSION, so the tag comes from the release the base answers with.
 status=0
-output=$(env PENV_TARGET="$triple" PENV_RELEASE_BASE="http://127.0.0.1:$port/good" \
+output=$(env PENV_ALLOW_ROOT=1 PENV_TARGET="$triple" PENV_RELEASE_BASE="http://127.0.0.1:$port/good" \
     HOME="$work/home" sh "$installer" 2>&1) || status=$?
 check "an unpinned install reads the tag off the latest release" "$status" 0
 contains "the tag it resolved is printed" "$output" "penv $tag"
@@ -146,6 +146,11 @@ check "the binary lands from the normalised tag" \
 run good PENV_INSTALL_DIR="$work/slash-bin" PENV_VERSION="$tag/../etc"
 check "a tag holding a slash refuses" "$([ "$status" -ne 0 ] && echo refused || echo installed)" refused
 contains "the refusal says what a tag looks like" "$output" "is not a tag such as v1.2.3"
+
+if [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; then
+    run good PENV_ALLOW_ROOT= PENV_INSTALL_DIR="$work/root-bin"
+    check "root is refused unless PENV_ALLOW_ROOT=1" "$([ "$status" -ne 0 ] && echo refused || echo installed)" refused
+fi
 
 # The installer's own probe, so a host where it would not verify anyway skips these.
 eval "$(sed -n '/^openssl_verifies()/,/^}/p' "$installer")"

@@ -11,58 +11,70 @@ const NEVER: [&str; 4] = ["node_modules", "dist", "build", "target"];
 /// How far under the repository root a package is looked for.
 const DEPTH: usize = 3;
 
-/// Every directory, relative to the repository root, holding any one of the
-/// target's detect files, shallowest first. The empty string names the root,
-/// which comes last so a monorepo's Enter never lands on it.
-pub fn candidates(tree: &dyn Tree, roots: &Roots, target: &Target) -> Vec<String> {
-    let mut out = Vec::new();
-    if target.detect.is_empty() {
-        return out;
-    }
-    walk(tree, &roots.repo, "", 0, target, &mut out);
-    out.sort_by_key(|dir| (dir.is_empty(), dir.split('/').count(), dir.clone()));
-    out
+/// The directories detection looks in, each with the names of the files and
+/// directories it holds: one walk of the repository, which every target is
+/// matched against.
+#[derive(Debug, Clone, Default)]
+pub struct Scan {
+    dirs: Vec<(String, Vec<String>)>,
 }
 
-fn walk(
-    tree: &dyn Tree,
-    repo: &str,
-    relative: &str,
-    depth: usize,
-    target: &Target,
-    out: &mut Vec<String>,
-) {
-    let dir = under(repo, relative);
-    let listed = if target.detect.iter().any(|f| f.starts_with("*.")) {
-        tree.files(&dir)
-    } else {
-        Vec::new()
-    };
-    if target
-        .detect
-        .iter()
-        .any(|file| match file.strip_prefix('*') {
-            Some(suffix) => listed
-                .iter()
-                .any(|name| name.ends_with(suffix) && name.len() > suffix.len()),
-            None => tree.exists(&format!("{dir}/{file}")),
-        })
-    {
-        out.push(relative.to_string());
+impl Scan {
+    pub fn new(tree: &dyn Tree, roots: &Roots) -> Scan {
+        let mut scan = Scan::default();
+        scan.walk(tree, &roots.repo, "", 0);
+        scan
     }
-    if depth == DEPTH {
-        return;
-    }
-    for name in tree.dirs(&dir) {
-        if name.starts_with('.') || NEVER.contains(&name.as_str()) {
-            continue;
+
+    fn walk(&mut self, tree: &dyn Tree, repo: &str, relative: &str, depth: usize) {
+        let dir = under(repo, relative);
+        let mut entries = tree.files(&dir);
+        entries.extend(tree.dirs(&dir));
+        self.dirs.push((relative.to_string(), entries));
+        if depth == DEPTH {
+            return;
         }
-        let child = if relative.is_empty() {
-            name
-        } else {
-            format!("{relative}/{name}")
-        };
-        walk(tree, repo, &child, depth + 1, target, out);
+        for name in tree.dirs(&dir) {
+            if name.starts_with('.') || NEVER.contains(&name.as_str()) {
+                continue;
+            }
+            let child = if relative.is_empty() {
+                name
+            } else {
+                format!("{relative}/{name}")
+            };
+            self.walk(tree, repo, &child, depth + 1);
+        }
+    }
+
+    /// Every directory, relative to the repository root, holding any one of the
+    /// target's detect files, shallowest first. The empty string names the root,
+    /// which comes last so a monorepo's Enter never lands on it.
+    pub fn candidates(&self, target: &Target) -> Vec<String> {
+        let mut out: Vec<String> =
+            self.dirs
+                .iter()
+                .filter(|(dir, files)| {
+                    target.detect.iter().any(|want| {
+                        // `src/main.zig` names a file a level down, read from the walk.
+                        if let Some((sub, name)) = want.rsplit_once('/') {
+                            let path = output_path(dir, sub);
+                            return self.dirs.iter().any(|(d, entries)| {
+                                *d == path && entries.iter().any(|e| e == name)
+                            });
+                        }
+                        match want.strip_prefix('*') {
+                            Some(suffix) => files
+                                .iter()
+                                .any(|name| name.ends_with(suffix) && name.len() > suffix.len()),
+                            None => files.contains(want),
+                        }
+                    })
+                })
+                .map(|(dir, _)| dir.clone())
+                .collect();
+        out.sort_by_key(|dir| (dir.is_empty(), dir.split('/').count(), dir.clone()));
+        out
     }
 }
 
@@ -261,8 +273,21 @@ mod tests {
             .with("/repo/apps/web/package.json")
             .with("/repo/apps/web/tsconfig.json")
             .with("/repo/apps/api/package.json");
-        let found = candidates(&tree, &roots(), &target(&["package.json", "tsconfig.json"]));
+        let found =
+            Scan::new(&tree, &roots()).candidates(&target(&["package.json", "tsconfig.json"]));
         assert_eq!(found, ["apps/api", "apps/web"]);
+    }
+
+    #[test]
+    fn a_detect_entry_may_name_a_file_a_level_down_or_a_directory() {
+        let tree = Fake::default()
+            .with("/repo/tools/zig/src/main.zig")
+            .with("/repo/services/go/cmd/server/main.go")
+            .with("/repo/services/other/src/lib.rs");
+        let zig = Scan::new(&tree, &roots()).candidates(&target(&["src/main.zig"]));
+        assert_eq!(zig, ["tools/zig"]);
+        let go = Scan::new(&tree, &roots()).candidates(&target(&["cmd"]));
+        assert_eq!(go, ["services/go"]);
     }
 
     #[test]
@@ -271,7 +296,7 @@ mod tests {
             .with("/repo/services/api/Api.csproj")
             .with("/repo/services/web/web.csproj.user")
             .with("/repo/tools/.csproj");
-        let found = candidates(&tree, &roots(), &target(&["*.csproj"]));
+        let found = Scan::new(&tree, &roots()).candidates(&target(&["*.csproj"]));
         assert_eq!(found, ["services/api"]);
     }
 
@@ -280,12 +305,13 @@ mod tests {
         let tree = Fake::default()
             .with("/repo/package.json")
             .with("/repo/apps/web/package.json");
-        let found = candidates(&tree, &roots(), &target(&["package.json", "tsconfig.json"]));
+        let found =
+            Scan::new(&tree, &roots()).candidates(&target(&["package.json", "tsconfig.json"]));
         assert_eq!(found, ["apps/web", ""]);
 
         let alone = Fake::default().with("/repo/package.json");
         assert_eq!(
-            candidates(&alone, &roots(), &target(&["package.json"])),
+            Scan::new(&alone, &roots()).candidates(&target(&["package.json"])),
             [""]
         );
     }
@@ -296,7 +322,7 @@ mod tests {
             .with("/repo/package.json")
             .with("/repo/zzz/package.json")
             .with("/repo/aaa/deep/package.json");
-        let found = candidates(&tree, &roots(), &target(&["package.json"]));
+        let found = Scan::new(&tree, &roots()).candidates(&target(&["package.json"]));
         assert_eq!(found, ["zzz", "aaa/deep", ""]);
     }
 
@@ -306,7 +332,7 @@ mod tests {
             .with("/repo/package.json")
             .with("/repo/pnpm-workspace.yaml")
             .with("/repo/apps/web/package.json");
-        let found = candidates(&tree, &roots(), &target(&["package.json"]));
+        let found = Scan::new(&tree, &roots()).candidates(&target(&["package.json"]));
         assert_eq!(found, ["apps/web", ""]);
     }
 
@@ -318,14 +344,18 @@ mod tests {
             .with("/repo/.git/hooks/package.json")
             .with("/repo/apps/web/dist/package.json")
             .with("/repo/a/b/c/d/package.json");
-        let found = candidates(&tree, &roots(), &target(&["package.json"]));
+        let found = Scan::new(&tree, &roots()).candidates(&target(&["package.json"]));
         assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]
     fn a_target_with_nothing_to_detect_belongs_nowhere_by_itself() {
         let tree = Fake::default().with("/repo/package.json");
-        assert!(candidates(&tree, &roots(), &target(&[])).is_empty());
+        assert!(
+            Scan::new(&tree, &roots())
+                .candidates(&target(&[]))
+                .is_empty()
+        );
     }
 
     #[test]

@@ -106,6 +106,16 @@ fn the_policy_flags_say_what_the_design_says() {
 
     let pull = find(&manifest, "pull");
     assert_eq!(pull["revealsValues"], true);
+    assert_eq!(
+        pull["exitCodes"],
+        serde_json::json!([0, 1, 2, 3, 5, 6]),
+        "an invalid schema or environment name stops pull with 3"
+    );
+    assert_eq!(
+        find(&manifest, "bundle")["revealsValues"],
+        true,
+        "bundle prints the key to every value"
+    );
     let human: Vec<&str> = pull["flags"]
         .as_array()
         .unwrap()

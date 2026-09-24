@@ -26,7 +26,12 @@ pub fn epoch_from_rfc3339(text: &str) -> Option<u64> {
     let year: i64 = date.next()?.parse().ok()?;
     let month: i64 = two(date.next()?)?;
     let day: i64 = two(date.next()?)?;
-    if date.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    // Bounded so a hostile year cannot overflow the day count.
+    if date.next().is_some()
+        || !(1970..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+    {
         return None;
     }
 
@@ -55,6 +60,9 @@ fn split_offset(rest: &str) -> Option<(&str, i64)> {
     let mut parts = zone[1..].split(':');
     let hours: i64 = two(parts.next()?)?;
     let minutes: i64 = two(parts.next().unwrap_or("0"))?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
     Some((clock, sign * (hours * 3_600 + minutes * 60)))
 }
 
@@ -137,6 +145,10 @@ mod tests {
             "2026-09-08T25:00:00Z",
             "1969-12-31T23:59:59Z",
             "2026-09-08T12:34:56",
+            "99999999999999-01-01T00:00:00Z",
+            "9223372036854775807-01-01T00:00:00Z",
+            "10000-01-01T00:00:00Z",
+            "2026-09-08T12:34:56+9999999999999999:00",
         ] {
             assert_eq!(epoch_from_rfc3339(text), None, "{text} parsed");
         }

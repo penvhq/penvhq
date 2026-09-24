@@ -54,6 +54,9 @@ type Env struct {
 	AlertsEmail string
 
 	SupportNote *Secret
+
+	// Built from the secret, so its prefix does not make it safe to inline.
+	NextPublicCheckoutToken Secret
 }
 
 // Load reads and checks every variable. The error names each problem and never a value.
@@ -73,6 +76,7 @@ func Load() (*Env, error) {
 		return v, true
 	}
 	bad := func(name, want string) { problems = append(problems, name+" is not "+want) }
+	_, _ = raw, bad
 	_ = strconv.Itoa
 	_ = strings.ToLower
 	e := &Env{}
@@ -156,6 +160,10 @@ func Load() (*Env, error) {
 	if v, ok := raw("SUPPORT_NOTE", "", false); ok {
 		s := Secret(v)
 		e.SupportNote = &s
+	}
+	if v, ok := raw("NEXT_PUBLIC_CHECKOUT_TOKEN", "", true); ok {
+		s := Secret(v)
+		e.NextPublicCheckoutToken = s
 	}
 	if len(problems) > 0 {
 		return nil, errors.New(strings.Join(problems, "; "))

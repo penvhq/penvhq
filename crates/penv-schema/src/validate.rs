@@ -53,7 +53,10 @@ pub fn validate_key(key: &Key, value: Option<&str>) -> Vec<Violation> {
     let mut out = Vec::new();
     let present = value.filter(|v| !v.is_empty());
     let Some(value) = present else {
-        if key.required && key.default.is_none() {
+        // A literal default fills the key; a computed one that came out empty
+        // does not. No value at all is a random() still pending.
+        let defaulted = key.default.is_some() && (!key.default_expr || value.is_none());
+        if key.required && !defaulted {
             out.push(Violation::new(
                 &key.name,
                 "required",
@@ -206,11 +209,12 @@ pub fn validate_key(key: &Key, value: Option<&str>) -> Vec<Violation> {
     out
 }
 
-/// The boolean spellings penv accepts, both to validate and to infer.
+/// The boolean spellings penv accepts, both to validate and to infer, and the
+/// ones every generated loader reads.
 pub fn parse_boolean(value: &str) -> Option<bool> {
     match value.to_ascii_lowercase().as_str() {
-        "true" | "yes" | "1" => Some(true),
-        "false" | "no" | "0" => Some(false),
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" => Some(false),
         _ => None,
     }
 }

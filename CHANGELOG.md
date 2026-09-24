@@ -5,6 +5,10 @@
 ### Added
 - **Editor support.** `penv lsp` serves `.env.schema` over the Language Server Protocol: the problems `penv check` reports for the schema, completion and hover for every decorator, function and filter (marked penv, @env-spec or varlock-only), go-to-definition for key references, and an outline. It reads no value file and sends no request.
 - **penv for VS Code**, published from `packages/vscode` to the Marketplace and Open VSX. It runs `penv lsp`, finds the platform binary behind an npm install, and runs beside varlock's @env-spec extension.
+- `penv upgrade [latest|next|<version>]`: `next` follows prereleases, a version pins or steps back. `latest` stays the default.
+
+### Changed
+- A prerelease no longer becomes the release `/install` and `penv upgrade` give, once a plain release exists.
 
 ### Fixed
 - `gen ts` declared `inlined` when no public key used it (`noUnusedLocals`), and `Response.json` lacked `override` (`noImplicitOverride`). The targets job now type-checks the output with both on.

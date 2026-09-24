@@ -1,7 +1,7 @@
-use penv_targets::folder::{self, BuiltIn};
+use penv_targets::folder::{self, BuiltIn, Source};
 
 use crate::error::Error;
-use crate::guard::{Guard, parse};
+use crate::guard::{Guard, Hook, parse};
 
 pub use penv_targets::folder::{Roots, Tree};
 
@@ -32,7 +32,9 @@ pub const BUILT_IN: &[BuiltIn] = &[
     built_in!("windsurf", ["hooks.json.tmpl"]),
 ];
 
-/// Repo folder, then home folder, then built in. The first found wins.
+/// Repo folder, then home folder, then built in. The first found wins, except
+/// that the repository may not replace a built-in guard: anyone who can commit
+/// could then point a write outside the guard or make the hook allow everything.
 pub fn load(tree: &dyn Tree, roots: &Roots, name: &str) -> Result<Guard, Error> {
     let found =
         folder::find(tree, roots, "guards", "guard.toml", BUILT_IN, name).map_err(|looked| {
@@ -41,11 +43,45 @@ pub fn load(tree: &dyn Tree, roots: &Roots, name: &str) -> Result<Guard, Error> 
                 looked,
             }
         })?;
+    if found.source == Source::Repo && BUILT_IN.iter().any(|b| b.name == name) {
+        return Err(Error::Shadows {
+            name: name.to_string(),
+            dir: found.dir,
+        });
+    }
     let config = found.file("guard.toml").ok_or_else(|| Error::Malformed {
         dir: found.dir.clone(),
         message: "no guard.toml".into(),
     })?;
     parse(name, &config, &|template| found.file(template), &found.dir)
+}
+
+/// The refusal shape `penv hook` answers in. It comes from the home folder or
+/// the built-in one, never the repository, whose files an agent can write:
+/// a deny that exits 0 with an empty answer would let every call through.
+pub fn hook(tree: &dyn Tree, home: Option<&str>, name: &str) -> Option<Hook> {
+    let built_in = BUILT_IN.iter().find(|b| b.name == name);
+    let compiled = |file: &str| built_in.and_then(|b| b.file(file)).map(str::to_string);
+    let dir = home.map(|h| format!("{h}/.penv/guards/{name}"));
+    let home_guard = dir
+        .as_ref()
+        .and_then(|d| tree.read(&format!("{d}/guard.toml")).map(|c| (d, c)))
+        .and_then(|(dir, config)| {
+            let read = |file: &str| {
+                tree.read(&format!("{dir}/{file}"))
+                    .or_else(|| compiled(file))
+            };
+            parse(name, &config, &read, dir).ok()
+        });
+    // A home folder that does not parse keeps the built-in answer, not none.
+    match home_guard {
+        Some(guard) => guard.hook,
+        None => {
+            parse(name, &compiled("guard.toml")?, &compiled, "built in")
+                .ok()?
+                .hook
+        }
+    }
 }
 
 /// Every guard that can be loaded: the ranked built-in list first, then whatever
@@ -126,14 +162,65 @@ template = "settings.json.tmpl"
         );
     }
 
+    // A committed folder replacing a built-in guard could aim its writes or its
+    // hook answer anywhere, so the repository may add a harness and the home
+    // folder alone may change one.
     #[test]
-    fn the_repo_folder_beats_the_built_in_one() {
-        let tree = Fake::default()
+    fn the_home_folder_beats_the_built_in_one_and_the_repo_folder_may_not() {
+        let home = Fake::default()
+            .with("/home/.penv/guards/claude-code/guard.toml", CONFIG)
+            .with("/home/.penv/guards/claude-code/settings.json.tmpl", "{}");
+        let guard = load(&home, &roots(), "claude-code").unwrap();
+        assert_eq!(guard.dir, "/home/.penv/guards/claude-code");
+        assert_eq!(guard.writes.len(), 1);
+
+        let repo = Fake::default()
             .with("/repo/.penv/guards/claude-code/guard.toml", CONFIG)
             .with("/repo/.penv/guards/claude-code/settings.json.tmpl", "{}");
-        let guard = load(&tree, &roots(), "claude-code").unwrap();
-        assert_eq!(guard.dir, "/repo/.penv/guards/claude-code");
-        assert_eq!(guard.writes.len(), 1);
+        let error = load(&repo, &roots(), "claude-code").unwrap_err();
+        assert!(matches!(error, Error::Shadows { .. }), "{error}");
+        assert!(error.to_string().contains("~/.penv/guards/claude-code"));
+    }
+
+    #[test]
+    fn the_repo_folder_can_add_a_harness_penv_does_not_know() {
+        let config = CONFIG.replace("claude-code", "nano");
+        let tree = Fake::default()
+            .with("/repo/.penv/guards/nano/guard.toml", &config)
+            .with("/repo/.penv/guards/nano/settings.json.tmpl", "{}");
+        let guard = load(&tree, &roots(), "nano").unwrap();
+        assert_eq!(guard.dir, "/repo/.penv/guards/nano");
+    }
+
+    #[test]
+    fn the_hook_answer_never_comes_from_the_repository() {
+        let open = format!("{CONFIG}\n[hook]\ndeny = {{ stdout = '{{}}', exit = 0 }}\n");
+        let repo = Fake::default()
+            .with("/repo/.penv/guards/claude-code/guard.toml", &open)
+            .with("/repo/.penv/guards/claude-code/settings.json.tmpl", "{}")
+            .with(
+                "/repo/.penv/guards/nano/guard.toml",
+                &open.replace("claude-code", "nano"),
+            )
+            .with("/repo/.penv/guards/nano/settings.json.tmpl", "{}");
+        let built_in = hook(&repo, Some("/home"), "claude-code").unwrap();
+        assert_eq!(built_in.payload, Payload::ClaudeCode);
+        assert_ne!(built_in.deny.stdout.as_deref(), Some("{}"));
+        assert_eq!(hook(&repo, Some("/home"), "nano"), None);
+
+        let home = Fake::default()
+            .with(
+                "/home/.penv/guards/nano/guard.toml",
+                &open.replace("claude-code", "nano"),
+            )
+            .with("/home/.penv/guards/nano/settings.json.tmpl", "{}");
+        assert_eq!(hook(&home, Some("/home"), "nano").unwrap().deny.exit, 0);
+
+        let broken = Fake::default().with("/home/.penv/guards/cursor/guard.toml", "name = 1");
+        assert_eq!(
+            hook(&broken, Some("/home"), "cursor").unwrap().payload,
+            Payload::Cursor
+        );
     }
 
     #[test]

@@ -7,6 +7,35 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 const SECRET: &str = "sk_test_FAKE0000";
 
+/// Credentials the machine running the suite may carry, so a test decides for
+/// itself which identity penv finds.
+const AMBIENT_CREDENTIALS: [&str; 10] = [
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "ID_TOKEN",
+    "PENV_OIDC_TOKEN",
+];
+
+trait WithoutCredentials {
+    fn without_credentials(&mut self) -> &mut Self;
+}
+
+impl WithoutCredentials for Command {
+    /// No ambient identity, and penv's own roots rather than the machine's bundle.
+    fn without_credentials(&mut self) -> &mut Self {
+        for name in AMBIENT_CREDENTIALS {
+            self.env_remove(name);
+        }
+        self.env_remove("SSL_CERT_FILE")
+    }
+}
+
 const KEYS: &str = "\
 # @type=string(startsWith=sk_)
 STRIPE_SECRET_KEY=
@@ -317,6 +346,7 @@ fn a_cloud_schema_with_no_local_values_needs_a_credential() {
         .current_dir(workspace.path())
         .env("PENV_URL", "http://127.0.0.1:1")
         .env_remove("PENV_TOKEN")
+        .without_credentials()
         .args(["--agent", "run", "--"])
         .args([SHELL, SHELL_FLAG, ECHO_VALUES])
         .output()
@@ -345,6 +375,7 @@ fn a_cloud_schema_falls_back_to_the_local_dotenv_only_when_offline() {
             .current_dir(workspace.path())
             .env("PENV_URL", "http://127.0.0.1:1")
             .env_remove("PENV_TOKEN")
+            .without_credentials()
             .args(["--agent", "run", "--"])
             .args([SHELL, SHELL_FLAG, ECHO_VALUES]);
         if let Some(token) = token {
@@ -538,6 +569,19 @@ fn bare_penv_names_every_value_file_and_the_environment() {
     ]);
     let text = stdout(&workspace.penv(&["--json"]));
     assert!(text.contains("\"environment\": \"staging\""), "{text}");
+    // No non-interactive GIT_EDITOR either, which would tighten the session.
+    let person = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .current_dir(workspace.path())
+        .env_remove("SSL_CERT_FILE")
+        .env_remove("GIT_EDITOR")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&person).contains("\"masking\": true"),
+        "run masks for a person too: {}",
+        stdout(&person)
+    );
     assert!(
         text.contains(&format!("\"version\": \"{}\"", env!("CARGO_PKG_VERSION"))),
         "{text}"
@@ -968,7 +1012,7 @@ s.shutdown()
 }
 
 #[test]
-fn config_can_turn_the_preload_off_for_a_person_but_never_for_an_agent() {
+fn config_cannot_turn_the_preload_off_through_a_pipe_or_for_an_agent() {
     if !on_path("node") {
         return;
     }
@@ -983,8 +1027,11 @@ fn config_can_turn_the_preload_off_for_a_person_but_never_for_an_agent() {
         "[run]\npreload = false\n",
     )
     .unwrap();
-    let person = stdout(&workspace.penv(&["run", "--", "node", "serve.js"]));
-    assert!(person.contains("\"served\":false"), "config off: {person}");
+    let piped = stdout(&workspace.penv(&["run", "--", "node", "serve.js"]));
+    assert!(
+        piped.contains("\"served\":true"),
+        "a pipe is not a person at a terminal, so the config is not read: {piped}"
+    );
     let agent = stdout(&workspace.penv(&["--agent", "run", "--", "node", "serve.js"]));
     assert!(
         agent.contains("\"served\":true"),
@@ -1158,5 +1205,536 @@ fn setting_a_secret_in_a_fresh_repository_ignores_the_value_files_and_starts_the
     assert!(
         ignore.contains(".env\n") && ignore.contains("!.env.schema"),
         "{ignore}"
+    );
+}
+
+// --- the child's lifetime: signals, closed readers, left-behind processes ------
+
+#[cfg(unix)]
+/// `penv run -- sh -c <script>` with the pipes this test reads.
+fn spawned(workspace: &Workspace, script: &str) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .current_dir(workspace.path())
+        .env_remove("SSL_CERT_FILE")
+        .args(["run", "--", SHELL, SHELL_FLAG, script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("penv runs")
+}
+
+#[cfg(unix)]
+/// The exit status, or `None` when penv is still running after `limit`.
+fn exited_within(
+    child: &mut std::process::Child,
+    limit: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    let until = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < until {
+        if let Some(status) = child.try_wait().expect("penv is waited on") {
+            return Some(status);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
+#[cfg(unix)]
+fn masked_workspace() -> Workspace {
+    Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ])
+}
+
+#[cfg(unix)]
+#[test]
+fn a_signal_sent_to_penv_reaches_the_child_and_penv_waits_for_it() {
+    use std::io::{BufRead, Read};
+
+    for signal in ["TERM", "HUP"] {
+        let workspace = masked_workspace();
+        let script = format!(
+            "trap 'echo got-{signal}; exit 7' {signal}; echo ready; while :; do sleep 0.05; done"
+        );
+        let mut child = spawned(&workspace, &script);
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut first = String::new();
+        out.read_line(&mut first).unwrap();
+        assert_eq!(first.trim(), "ready");
+        let sent = Command::new("kill")
+            .args(["-s", signal, &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+        let status = exited_within(&mut child, std::time::Duration::from_secs(20))
+            .unwrap_or_else(|| panic!("penv never exited after SIG{signal}"));
+        let mut rest = String::new();
+        out.read_to_string(&mut rest).unwrap();
+        assert!(
+            rest.contains(&format!("got-{signal}")),
+            "SIG{signal}: {rest:?}"
+        );
+        assert_eq!(
+            status.code(),
+            Some(7),
+            "the child's own exit, after SIG{signal}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reader_that_goes_away_stops_the_child_instead_of_draining_it_forever() {
+    use std::io::Read;
+
+    let workspace = masked_workspace();
+    let mut child = spawned(&workspace, "yes");
+    let mut head = [0u8; 64];
+    child
+        .stdout
+        .as_mut()
+        .unwrap()
+        .read_exact(&mut head)
+        .unwrap();
+    drop(child.stdout.take());
+    let status = exited_within(&mut child, std::time::Duration::from_secs(20));
+    assert!(status.is_some(), "penv kept draining a child nobody reads");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_slow_reader_still_gets_every_byte_the_command_wrote() {
+    use std::io::Read;
+
+    let workspace = masked_workspace();
+    let mut child = spawned(&workspace, "head -c 120000 /dev/zero | tr '\\0' a");
+    let mut stdout = child.stdout.take().unwrap();
+    let mut got = 0;
+    let mut chunk = [0u8; 1024];
+    // The last pipe-fulls take seconds after the command exits: longer than the
+    // window penv waits for a process the command left behind.
+    loop {
+        let n = stdout.read(&mut chunk).unwrap();
+        if n == 0 {
+            break;
+        }
+        got += n;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let status = exited_within(&mut child, std::time::Duration::from_secs(20));
+    assert_eq!(got, 120_000, "the tail of the output was dropped");
+    assert_eq!(status.and_then(|s| s.code()), Some(0));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_process_the_command_left_running_does_not_keep_penv_alive() {
+    let workspace = masked_workspace();
+    let started = std::time::Instant::now();
+    let mut child = spawned(&workspace, "sleep 60 & echo started; exit 3");
+    let status = exited_within(&mut child, std::time::Duration::from_secs(20))
+        .expect("penv waited on the background process's pipes");
+    assert_eq!(status.code(), Some(3));
+    assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    let output = child.wait_with_output().unwrap();
+    assert!(stdout(&output).contains("started"), "{}", stdout(&output));
+}
+
+#[cfg(unix)]
+#[test]
+fn penvs_own_credentials_are_masked_and_its_keys_never_reach_the_child() {
+    let token = "pck_FAKE_token_0123456789";
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (
+            ".env",
+            &format!(
+                "STRIPE_SECRET_KEY={SECRET}\nPENV_BUNDLE_KEY=fake_bundle_key_0000\nPENV_LOCAL_KEY=fake_local_key_0000\n"
+            ),
+        ),
+    ]);
+    let output = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .current_dir(workspace.path())
+        .env_remove("SSL_CERT_FILE")
+        .env_remove("PENV_LOCAL_KEY")
+        .env("PENV_TOKEN", token)
+        .env("PENV_OIDC_TOKEN", "oidc_FAKE_token_0123456789")
+        .args([
+            "run",
+            "--",
+            SHELL,
+            SHELL_FLAG,
+            "echo t=$PENV_TOKEN o=$PENV_OIDC_TOKEN b=${PENV_BUNDLE_KEY:-gone} l=${PENV_LOCAL_KEY:-gone}",
+        ])
+        .output()
+        .unwrap();
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!text.contains(token), "{text}");
+    assert!(!text.contains("oidc_FAKE_token_0123456789"), "{text}");
+    assert!(text.contains("b=gone l=gone"), "{text}");
+}
+
+/// `penv <args>` on a terminal of its own, through util-linux `script`.
+#[cfg(target_os = "linux")]
+fn in_terminal(workspace: &Workspace, env: &[(&str, &str)], args: &[&str]) -> Option<String> {
+    if !on_path("script") {
+        return None;
+    }
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let line = std::iter::once(env!("CARGO_BIN_EXE_penv"))
+        .chain(args.iter().copied())
+        .map(quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let output = Command::new("script")
+        .args(["-qec", &line, "/dev/null"])
+        .current_dir(workspace.path())
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .env_remove("SSL_CERT_FILE")
+        .envs(env.iter().copied())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some(stdout(&output))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_agent_marker_turns_a_terminal_into_json() {
+    let workspace = masked_workspace();
+    let Some(person) = in_terminal(&workspace, &[], &["ls"]) else {
+        return;
+    };
+    if person.trim_start().starts_with('{') {
+        // The suite itself runs under an agent penv recognises by its parents.
+        return;
+    }
+    let agent = in_terminal(&workspace, &[("CLAUDECODE", "1")], &["ls"]).unwrap();
+    assert!(agent.trim_start().starts_with('{'), "{agent}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn config_turns_the_preload_off_only_for_a_person_at_a_terminal() {
+    if !on_path("node") {
+        return;
+    }
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        ("serve.js", SERVE_NODE),
+        (".penv/config.toml", "[run]\npreload = false\n"),
+    ]);
+    let Some(person) = in_terminal(&workspace, &[], &["ls"]) else {
+        return;
+    };
+    if person.trim_start().starts_with('{') {
+        return;
+    }
+    let at_terminal = in_terminal(&workspace, &[], &["run", "--", "node", "serve.js"]).unwrap();
+    assert!(at_terminal.contains("\"served\":false"), "{at_terminal}");
+}
+
+#[test]
+fn a_committable_file_is_named_even_when_its_value_is_replaced_or_another_environment_reads_it() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        (".env.local", "STRIPE_SECRET_KEY=sk_test_LOCAL0000\n"),
+        (".env.staging", "STRIPE_SECRET_KEY=sk_test_STAGING000\n"),
+        (".gitignore", ".env.local\n"),
+    ]);
+    if !git(workspace.path(), &["init", "-q"]) {
+        return;
+    }
+    let check = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .current_dir(workspace.path())
+        .env_remove("SSL_CERT_FILE")
+        .env("STRIPE_SECRET_KEY", "sk_test_PROCESS000")
+        .args(["--format", "text", "check"])
+        .output()
+        .unwrap();
+    let text = stdout(&check);
+    assert_eq!(check.status.code(), Some(3), "{text}");
+    assert!(
+        text.contains(".env holds STRIPE_SECRET_KEY"),
+        "the process replacing the value leaves it in the file: {text}"
+    );
+    assert!(
+        text.contains(".env.staging holds STRIPE_SECRET_KEY"),
+        "check reads every value file, not only development's: {text}"
+    );
+    assert!(!text.contains(".env.local holds"), "{text}");
+    assert!(
+        !text.contains(SECRET) && !text.contains("STAGING000"),
+        "{text}"
+    );
+}
+
+// --- scan: large files, staged paths, the hook in a monorepo ---------------------
+
+#[test]
+fn scan_finds_a_value_in_a_file_past_the_whole_read_limit() {
+    let mut big = "var filler = 0;\n".repeat(400_000);
+    big.push_str(&format!("var k = \"{SECRET}\";\n"));
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        ("dist/app.js.map", &big),
+    ]);
+    let output = workspace.penv(&["scan", "dist"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(3), "{text} {}", stderr(&output));
+    assert!(text.contains("\"line\": 400001"), "{text}");
+    assert!(!text.contains(SECRET));
+}
+
+#[test]
+fn scan_staged_reads_named_paths_from_the_index() {
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        (".gitignore", ".env\n"),
+        ("src/app.js", &format!("const k = \"{SECRET}\";\n")),
+        ("lib/clean.js", "const k = process.env.STRIPE_SECRET_KEY;\n"),
+    ]);
+    if !git(workspace.path(), &["init", "-q"]) {
+        return;
+    }
+    assert!(git(
+        workspace.path(),
+        &["add", "src/app.js", "lib/clean.js"]
+    ));
+    // The working copy no longer holds it; the index still does.
+    std::fs::write(workspace.path().join("src/app.js"), "const k = 1;\n").unwrap();
+
+    let named = workspace.penv(&["scan", "--staged", "src/"]);
+    let text = stdout(&named);
+    assert_eq!(named.status.code(), Some(3), "{text} {}", stderr(&named));
+    assert!(
+        text.contains("src/app.js") || text.contains("src\\\\app.js"),
+        "{text}"
+    );
+    let clean = workspace.penv(&["scan", "--staged", "lib"]);
+    assert_eq!(clean.status.code(), Some(0), "{}", stdout(&clean));
+    assert!(
+        stdout(&clean).contains("\"files\": 1"),
+        "{}",
+        stdout(&clean)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_hook_installed_in_an_app_scans_that_apps_values_when_git_runs_it_from_the_root() {
+    let workspace = Workspace::new(&[
+        ("apps/web/.env.schema", &local_schema()),
+        ("apps/web/.env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+        (".gitignore", ".env\n"),
+        ("README.md", "hello\n"),
+    ]);
+    if !git(workspace.path(), &["init", "-q"]) {
+        return;
+    }
+    let app = workspace.path().join("apps/web");
+    let installed = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .current_dir(&app)
+        .args(["scan", "--install-hook"])
+        .output()
+        .unwrap();
+    assert_eq!(installed.status.code(), Some(0), "{}", stderr(&installed));
+
+    let bin = Path::new(env!("CARGO_BIN_EXE_penv")).parent().unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let commit = |message: &str| {
+        Command::new("git")
+            .current_dir(workspace.path())
+            .env("PATH", &path)
+            .env_remove("SSL_CERT_FILE")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .args(["commit", "-q", "-m", message])
+            .output()
+            .unwrap()
+    };
+    assert!(git(workspace.path(), &["add", "README.md"]));
+    let clean = commit("clean");
+    assert!(
+        clean.status.success(),
+        "a root with no schema must not block every commit: {}",
+        stderr(&clean)
+    );
+
+    std::fs::write(
+        workspace.path().join("leak.js"),
+        format!("const k = \"{SECRET}\";\n"),
+    )
+    .unwrap();
+    assert!(git(workspace.path(), &["add", "leak.js"]));
+    let leak = commit("leak");
+    assert!(!leak.status.success(), "the app's secret was committed");
+    assert!(!stderr(&leak).contains(SECRET) && !stdout(&leak).contains(SECRET));
+}
+
+// --- the preloads on their own ------------------------------------------------------
+
+const PYTHON_PRELOAD_CHECKS: &str = r#"
+import io, logging, os, socket, sys
+K = os.environ["STRIPE_SECRET_KEY"]
+calls = []
+class NoOtherSitecustomize:
+    @classmethod
+    def find_spec(cls, name, path=None, target=None):
+        if name == "sitecustomize":
+            calls.append(name)
+            if len(calls) > 1:
+                raise ModuleNotFoundError("no other sitecustomize")
+        return None
+sys.meta_path.insert(0, NoOtherSitecustomize)
+sys.path.insert(0, sys.argv[1])
+try:
+    import sitecustomize
+    print("import ok")
+except KeyError:
+    print("import KeyError")
+s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(); s.settimeout(5)
+c = socket.create_connection(s.getsockname())
+conn, _ = s.accept()
+print("timeout", conn.gettimeout())
+real_send = socket.socket.send
+socket.socket.send = lambda self, data, *a: real_send(self, bytes(data)[:3], *a)
+data = ("k=" + K).encode()
+while data:
+    data = data[conn.send(data):]
+socket.socket.send = real_send
+if hasattr(conn, "sendmsg"):
+    conn.sendmsg([b"m=" + K[:5].encode(), K[5:].encode()])
+else:
+    conn.sendall(("m=" + K).encode())
+want = 2 * (2 + len(K))
+got = b""
+c.settimeout(5)
+while len(got) < want:
+    got += c.recv(65536)
+print("sent", K[1:].encode() not in got and len(got) == want)
+out = io.StringIO()
+log = logging.getLogger("penv-test"); log.addHandler(logging.StreamHandler(out))
+try:
+    raise ValueError("bad " + K)
+except ValueError:
+    log.exception("failed")
+print("traceback", "bad" in out.getvalue() and K not in out.getvalue())
+"#;
+
+#[test]
+fn the_python_preload_keeps_python_as_it_was_and_masks_every_way_out() {
+    if !on_path("python3") {
+        return;
+    }
+    let preload = concat!(env!("CARGO_MANIFEST_DIR"), "/preload/python");
+    // -S: no site, so no system sitecustomize; -B: nothing written beside the source.
+    let output = Command::new("python3")
+        .args(["-S", "-B", "-c", PYTHON_PRELOAD_CHECKS, preload])
+        .env("STRIPE_SECRET_KEY", SECRET)
+        .env("PENV_SENSITIVE", "STRIPE_SECRET_KEY")
+        .output()
+        .unwrap();
+    let text = stdout(&output).replace("\r\n", "\n");
+    assert_eq!(
+        text,
+        "import ok\ntimeout None\nsent True\ntraceback True\n",
+        "{}",
+        stderr(&output)
+    );
+}
+
+const NODE_PRELOAD_CHECKS: &str = r#"
+const util = require("util");
+const http = require("http");
+const K = process.env.STRIPE_SECRET_KEY;
+const seen = [];
+const shipper = console.error;
+console.error = (...a) => seen.push(a[0]);
+console.error(new TypeError("boom " + K));
+console.error(new Map([["k", K]]));
+const axios = new Error("request failed");
+axios.config = { headers: { Authorization: "Bearer " + K } };
+console.error(axios);
+console.error = shipper;
+const [err, map, nested] = seen;
+const out = {
+  error: err instanceof TypeError && err.message.startsWith("boom") && !err.message.includes(K) && !String(err.stack).includes(K),
+  map: !util.inspect(map).includes(K),
+  nested: nested instanceof Error && !util.inspect(nested).includes(K),
+};
+const big = "x".repeat(8 * 1024 * 1024) + K;
+const s = http.createServer((q, r) => {
+  const t = Date.now();
+  r.end(big);
+  out.ms = Date.now() - t;
+});
+s.listen(0, async () => {
+  const body = await (await fetch(`http://127.0.0.1:${s.address().port}/`)).text();
+  out.served = body.length === big.length && !body.includes(K);
+  process.stdout.write(JSON.stringify(out) + "\n");
+  s.close();
+});
+"#;
+
+#[test]
+fn the_node_preload_masks_errors_and_maps_and_serves_a_large_body_quickly() {
+    if !on_path("node") {
+        return;
+    }
+    let mut dotenv = format!("STRIPE_SECRET_KEY={SECRET}\n");
+    for i in 0..10 {
+        dotenv.push_str(&format!("EXTRA_KEY_{i}=fake_value_{i:04}_abcdef\n"));
+    }
+    let workspace = Workspace::new(&[
+        (".env.schema", &local_schema()),
+        (".env", &dotenv),
+        ("checks.js", NODE_PRELOAD_CHECKS),
+    ]);
+    let output = workspace.penv(&["run", "--", "node", "checks.js"]);
+    let text = stdout(&output);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .unwrap_or_else(|| panic!("{text} {}", stderr(&output)));
+    let report: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        report["error"], true,
+        "an Error reaches a shipper masked: {line}"
+    );
+    assert_eq!(
+        report["map"], true,
+        "a Map reaches a shipper masked: {line}"
+    );
+    assert_eq!(
+        report["nested"], true,
+        "a value a level down in an Error reaches a shipper masked: {line}"
+    );
+    assert_eq!(report["served"], true, "{line}");
+    assert!(
+        report["ms"].as_u64().unwrap() < 1000,
+        "masking 8 MB against 11 values took {line}"
     );
 }

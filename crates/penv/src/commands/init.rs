@@ -38,6 +38,14 @@ pub fn run(
     if schema_path.is_file() && !force {
         return keep_schema(out, cwd, &schema_path);
     }
+    // Before anything is written, as penv guard refuses it: the harness would
+    // otherwise drop out of the chosen set without a word.
+    if !matches!(guards, Guards::None) {
+        super::guard::refuse_shadowing(cwd)?;
+    }
+
+    // Refused here, an --output it cannot use leaves nothing half written.
+    let plan = super::r#gen::plan(cwd, output)?;
 
     // A first run with nothing to read still leaves a repository penv works in.
     let env_path = cwd.join(ENV_FILE);
@@ -85,7 +93,7 @@ pub fn run(
         !matches!(guards, Guards::Installed) && super::interactive(out, env, agent_flag);
     let chosen = choose(cwd, guards, interactive, &style)?;
     let guarded = super::guard::write_selected(cwd, &schema.to_json(), &chosen);
-    let generated = super::r#gen::auto(out, cwd, &schema, output, interactive)?;
+    let generated = super::r#gen::auto(out, plan, &schema, interactive)?;
 
     let rows: Vec<Vec<String>> = schema
         .keys

@@ -169,6 +169,13 @@ pub fn mentions(text: &str, name: &str) -> bool {
     false
 }
 
+/// Every whole word in `text`, the pieces [`mentions`] matches a name against,
+/// so a file is read once however many names are looked for.
+pub fn words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+}
+
 /// The files worth reading for accessors.
 pub fn is_source(path: &std::path::Path) -> bool {
     matches!(
@@ -258,5 +265,25 @@ Environment.GetEnvironmentVariable("CS_A"); ENV["RB_A"]; ENV.fetch("RB_B"); gete
         assert!(mentions("env.STRIPE_KEY)", "STRIPE_KEY"));
         assert!(!mentions("STRIPE_KEY_2", "STRIPE_KEY"));
         assert!(!mentions("MY_STRIPE_KEY", "STRIPE_KEY"));
+    }
+
+    #[test]
+    fn words_are_what_mentions_matches() {
+        let text = "env.STRIPE_KEY) STRIPE_KEY_2 MY_DB_URL é_TOKEN_é\nx=API_KEY;";
+        for name in [
+            "STRIPE_KEY",
+            "STRIPE_KEY_2",
+            "DB_URL",
+            "TOKEN",
+            "_TOKEN_",
+            "API_KEY",
+            "MY",
+        ] {
+            assert_eq!(
+                words(text).any(|w| w == name),
+                mentions(text, name),
+                "{name}"
+            );
+        }
     }
 }

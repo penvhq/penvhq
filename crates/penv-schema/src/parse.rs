@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::ir::{
     Assert, BaseType, Diagnostic, Import, Key, RequiredDefault, SCHEMA_VERSION, Schema, Type,
     is_public_prefixed, is_valid_key_name,
@@ -22,6 +24,7 @@ pub fn parse(input: &str) -> Result<Schema, Vec<Diagnostic>> {
     let mut p = Parser {
         schema: Schema::default(),
         diags: Vec::new(),
+        seen: HashSet::new(),
     };
     p.run(input);
     if p.diags.is_empty() {
@@ -34,6 +37,8 @@ pub fn parse(input: &str) -> Result<Schema, Vec<Diagnostic>> {
 struct Parser {
     schema: Schema,
     diags: Vec<Diagnostic>,
+    /// Key names declared so far.
+    seen: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -67,7 +72,6 @@ impl Block {
                     | "defaultRequired"
                     | "currentEnv"
                     | "import"
-                    | "assert"
             ) || VARLOCK_HEADER.contains(&d.name.as_str())
         })
     }
@@ -185,6 +189,10 @@ impl Parser {
                 continue;
             }
             let column = base_col + i as u32;
+            // A trailing `# note` after the decorators, as varlock allows.
+            if chars[i] == '#' && chars[i - 1].is_whitespace() {
+                return;
+            }
             if chars[i] != '@' {
                 self.error(
                     line_no,
@@ -218,6 +226,7 @@ impl Parser {
                 while i < chars.len() {
                     let c = chars[i];
                     match quoted {
+                        Some('"') if c == '\\' => i += 1,
                         Some(q) if c == q => quoted = None,
                         Some(_) => {}
                         None if c == '"' || c == '\'' => quoted = Some(c),
@@ -304,6 +313,7 @@ impl Parser {
         while *i < chars.len() {
             let c = chars[*i];
             match quoted {
+                Some('"') if c == '\\' => *i += 1,
                 Some(q) if c == q => quoted = None,
                 Some(_) => {}
                 None if c == '"' || c == '\'' => quoted = Some(c),
@@ -314,6 +324,7 @@ impl Parser {
             }
             *i += 1;
         }
+        *i = (*i).min(chars.len());
         Some(chars[start..*i].iter().collect())
     }
 
@@ -456,8 +467,8 @@ impl Parser {
     }
 
     fn require_value(&mut self, d: &Decorator) -> Option<String> {
-        match d.value.as_deref() {
-            Some(v) if !v.is_empty() => Some(v.to_string()),
+        match text_value(d) {
+            Some(v) if !v.is_empty() => Some(v),
             _ => {
                 self.error(
                     d.line,
@@ -482,15 +493,27 @@ impl Parser {
         };
         let name = line[..eq].trim().to_string();
         if !is_valid_key_name(&name) {
+            // A pasted value line would put part of a secret in the message.
+            let named = name.len() <= 64
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+            let what = if named {
+                format!("{name:?} is not a usable key name")
+            } else {
+                "the text before = is not a key name".to_string()
+            };
             self.error(
                 line_no,
                 1,
                 "invalid_key_name",
-                format!("line {line_no}: {name:?} is not a usable key name"),
+                format!(
+                    "line {line_no}: {what}; a key is letters, digits and _, not starting with a digit"
+                ),
             );
             return;
         }
-        if self.schema.get(&name).is_some() {
+        if !self.seen.insert(name.clone()) {
             self.error(
                 line_no,
                 1,
@@ -500,10 +523,8 @@ impl Parser {
             return;
         }
 
-        let written = line[eq + 1..].trim();
-        let single = written.len() >= 2 && written.starts_with('\'') && written.ends_with('\'');
-        let raw_default = unquote(written);
-        let default_expr = !single && is_expression(&raw_default);
+        let (raw_default, literal) = read_default(line[eq + 1..].trim());
+        let default_expr = !literal && is_expression(&raw_default);
         let default = if raw_default.is_empty() {
             None
         } else {
@@ -574,7 +595,7 @@ impl Parser {
                 },
                 "example" => key.example = self.require_value(d),
                 "docs" => key.docs = self.require_value(d),
-                "deprecated" => key.deprecated = Some(d.value.clone().unwrap_or_default()),
+                "deprecated" => key.deprecated = Some(text_value(d).unwrap_or_default()),
                 "hosts" => {
                     let written = d.value.clone().unwrap_or_default();
                     let hosts: Vec<String> = if d.call {
@@ -745,7 +766,9 @@ impl Parser {
             if arg.is_empty() {
                 continue;
             }
-            match arg.split_once('=') {
+            // A quoted enum member may hold `=` of its own.
+            let quoted = arg.starts_with(['"', '\'']);
+            match arg.split_once('=').filter(|_| !quoted) {
                 Some((k, v)) => {
                     let k = k.trim();
                     let v = unquote(v.trim());
@@ -769,6 +792,30 @@ impl Parser {
                             format!("line {}: {k} is given twice", d.line),
                         );
                         continue;
+                    }
+                    let numeric = match k {
+                        "minLength" | "maxLength" => v.parse::<usize>().is_ok(),
+                        "min" | "max" => v.parse::<f64>().is_ok_and(f64::is_finite),
+                        _ => true,
+                    };
+                    if !numeric {
+                        self.error(
+                            d.line,
+                            d.column,
+                            "invalid_type",
+                            format!("line {}: {k} takes a number, such as {k}=8", d.line),
+                        );
+                        continue;
+                    }
+                    if matches!(k, "matches" | "precision") {
+                        self.warn(
+                            d,
+                            "unenforced_constraint",
+                            format!(
+                                "line {}: penv keeps the {k} constraint for the targets and the cloud and does not check values against it",
+                                d.line
+                            ),
+                        );
                     }
                     ty.constraints.push((k.to_string(), v));
                 }
@@ -834,16 +881,75 @@ fn split_project(v: &str) -> Option<(String, String)> {
     Some((org.to_string(), project.to_string()))
 }
 
+/// A decorator's text: `@name=value` as read, `@name("value")` unquoted.
+fn text_value(d: &Decorator) -> Option<String> {
+    let v = d.value.as_ref()?;
+    Some(if d.call && split_args(v).len() == 1 {
+        unquote(v.trim())
+    } else {
+        v.clone()
+    })
+}
+
+/// A schema default, read the way penv-dotenv reads a value: a quoted one up to
+/// its closing quote, a bare one up to a `#` after a space. Single quotes and
+/// backticks make it literal, which the second item says.
+fn read_default(written: &str) -> (String, bool) {
+    if let Some(q) = written
+        .chars()
+        .next()
+        .filter(|c| matches!(c, '"' | '\'' | '`'))
+    {
+        let body = &written[1..];
+        if let Some(end) = closing_quote(body, q) {
+            let rest = body[end + 1..].trim_start();
+            if rest.is_empty() || rest.starts_with('#') {
+                let inner = &body[..end];
+                return if q == '"' {
+                    (unescape(inner), false)
+                } else {
+                    (inner.to_string(), true)
+                };
+            }
+        }
+    }
+    let bytes = written.as_bytes();
+    let end = (1..bytes.len())
+        .find(|&i| bytes[i] == b'#' && matches!(bytes[i - 1], b' ' | b'\t'))
+        .unwrap_or(bytes.len());
+    (written[..end].trim_end().to_string(), false)
+}
+
+/// Where `q` closes `body`; inside double quotes a backslash escapes.
+fn closing_quote(body: &str, q: char) -> Option<usize> {
+    let mut escaped = false;
+    for (i, c) in body.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' && q == '"' {
+            escaped = true;
+        } else if c == q {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Split on commas that are not inside quotes.
 fn split_args(args: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut quote: Option<char> = None;
+    let mut escaped = false;
     for c in args.chars() {
         match quote {
             Some(q) => {
                 current.push(c);
-                if c == q {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' && q == '"' {
+                    escaped = true;
+                } else if c == q {
                     quote = None;
                 }
             }
@@ -867,13 +973,30 @@ fn unquote(v: &str) -> String {
         if (first == b'"' || first == b'\'') && first == last {
             let inner = &v[1..v.len() - 1];
             return if first == b'"' {
-                inner.replace("\\\"", "\"").replace("\\\\", "\\")
+                unescape(inner)
             } else {
                 inner.to_string()
             };
         }
     }
     v.to_string()
+}
+
+/// `\"` and `\\` inside double quotes, the two escapes `quote` writes; any other
+/// backslash stays, so `\$` still reads as a literal dollar.
+fn unescape(inner: &str) -> String {
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\\', Some(&next @ ('"' | '\\'))) => {
+                out.push(next);
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// `# ---`, or a labelled `# --- api ---`: a block boundary, the way varlock ends its header.
@@ -887,9 +1010,12 @@ pub(crate) fn is_divider(trimmed: &str) -> bool {
 fn last_top_level_comma(text: &str) -> Option<usize> {
     let mut depth = 0i32;
     let mut quote: Option<char> = None;
+    let mut escaped = false;
     let mut last = None;
     for (i, c) in text.char_indices() {
         match quote {
+            Some(_) if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
             Some(q) if c == q => quote = None,
             Some(_) => {}
             None => match c {

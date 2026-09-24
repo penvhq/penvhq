@@ -180,8 +180,8 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             environment.as_deref(),
             env,
         ),
-        Some(Command::Hook { harness }) => hook::run(harness, cwd),
-        Some(Command::Upgrade { check }) => upgrade::run(out, *check),
+        Some(Command::Hook { harness }) => hook::run(harness),
+        Some(Command::Upgrade { channel, check }) => upgrade::run(out, channel.as_deref(), *check),
         Some(Command::Completions { shell }) => completions(
             shell,
             cli.json || cli.format == Some(crate::cli::Format::Json),

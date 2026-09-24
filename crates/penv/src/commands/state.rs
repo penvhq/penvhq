@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
-use penv_agent::{Detection, Policy};
+use penv_agent::Detection;
 use serde_json::{Value, json};
 
 use crate::agent::detect_here;
@@ -23,7 +23,6 @@ pub fn run(out: &Output, cwd: &Path, env: &Env) -> Result<Report, CliError> {
     let found = value_files(&dir);
     let listed = found.iter().map(|p| show(p)).collect::<Vec<_>>().join(", ");
     let detection = detect_here(env, std::io::stdout().is_terminal());
-    let policy = Policy::for_(&detection, false);
 
     let schema = match &schema_path {
         Some(path) => penv_schema::parse(&read_file(path)?).ok(),
@@ -133,10 +132,7 @@ pub fn run(out: &Output, cwd: &Path, env: &Env) -> Result<Report, CliError> {
             "agent",
             format!("{} ({})", style.bold(name), detection.confidence.as_str()),
         ));
-        rows.push(row(
-            "masking",
-            if policy.mask { "on" } else { "off" }.to_string(),
-        ));
+        rows.push(row("masking", "on".to_string()));
     }
     let mut text = rows.join("\n");
     text.push('\n');
@@ -157,7 +153,9 @@ pub fn run(out: &Output, cwd: &Path, env: &Env) -> Result<Report, CliError> {
             "next": next,
             "note": note,
             "agent": agent_json(&detection),
-            "masking": policy.mask,
+            // run masks on every run, a person's included; only --no-mask at
+            // a terminal turns it off, for that one run.
+            "masking": true,
         }),
         text,
     ))

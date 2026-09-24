@@ -24,14 +24,20 @@ pub fn run(
 ) -> Result<Report, CliError> {
     let detection = detect_here(env, std::io::stdout().is_terminal());
     let policy = Policy::for_(&detection, agent_flag);
-    if !policy.pull_allowed && !i_am_human {
+    // The flag speaks for a person only where one is typing: an agent's pipes
+    // are not a terminal, and --agent says outright that no person is there.
+    let person = i_am_human
+        && !agent_flag
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal();
+    if !policy.pull_allowed && !person {
         return Err(CliError::new(
             "agent_session",
             format!(
                 "penv pull writes every value to disk, and this session is {}.",
                 detection.name().unwrap_or("an agent")
             ),
-            "Run it yourself with --i-am-human, or let penv run inject the values instead.",
+            "Run it yourself in a terminal with --i-am-human, or let penv run inject the values instead.",
         )
         .with_exit(Exit::Auth));
     }
@@ -74,6 +80,9 @@ pub fn run(
     // One value the file cannot hold must not cost the rest of the pull.
     let mut stored: Vec<(String, String)> = Vec::new();
     let mut left_out: Vec<String> = Vec::new();
+    let encrypt = crate::config::Config::load(&dir)
+        .map(|c| c.encrypt())
+        .unwrap_or(false);
     for key in &body.keys {
         let Some(value) = key.value.as_deref() else {
             continue;
@@ -83,7 +92,7 @@ pub fn run(
                 let sensitive = schema.get(&key.name).map(|k| k.sensitive).unwrap_or(true);
                 stored.push((
                     key.name.clone(),
-                    crate::localcrypt::stored(&dir, &key.name, value, sensitive)?,
+                    crate::localcrypt::stored_as(encrypt, &key.name, value, sensitive)?,
                 ));
             }
             Err(e) => left_out.push(e.to_string()),

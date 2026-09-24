@@ -76,13 +76,49 @@ fn lang_type(
         })
 }
 
-/// The shared environment plus the case filters only a language target needs.
+/// The shared environment plus the case, quoting and comment filters only a
+/// language target needs.
 fn environment() -> Environment<'static> {
     let mut env = crate::folder::environment();
     env.add_filter("pascal", pascal);
     env.add_filter("camel", camel);
     env.add_filter("snake", snake);
+    env.add_filter("quote_rust", quote_rust);
+    env.add_filter("quote_php", quote_php);
+    env.add_filter("comment", comment);
+    env.add_filter("java_comment", java_comment);
     env
+}
+
+/// A Rust string literal: `Debug` writes only escapes Rust reads back.
+fn quote_rust(value: &str) -> String {
+    format!("{value:?}")
+}
+
+/// A single-quoted PHP literal, where nothing but `\\` and `'` is special, so
+/// a `$` stays a dollar sign.
+fn quote_php(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+/// Text inside a `/* */` comment that cannot end it early.
+fn comment(value: &str) -> String {
+    value.replace("*/", "*\\/")
+}
+
+/// A block comment Java can compile: javac reads a `\u` escape anywhere in
+/// the source, so a lone backslash before `u` gets a second one.
+fn java_comment(value: &str) -> String {
+    let mut out = String::new();
+    let mut run = 0;
+    for c in comment(value).chars() {
+        if c == 'u' && run % 2 == 1 {
+            out.push('\\');
+        }
+        run = if c == '\\' { run + 1 } else { 0 };
+        out.push(c);
+    }
+    out
 }
 
 /// Split a name on separators and on lower-to-upper humps, so `NEXT_PUBLIC_URL`
@@ -310,6 +346,47 @@ mod tests {
             json!([key("A\"B", "string", json!([]))]),
         );
         assert_eq!(out, "\"A\\\"B\"");
+    }
+
+    #[test]
+    fn each_language_quotes_what_its_own_literals_read_back() {
+        let tricky = "Hello $name \\ 'q' \"d\" \u{1f}\u{8}\u{c}\n";
+        let out = rendered(
+            "{{ keys[0].name | quote_rust }}|{{ keys[0].name | quote_php }}",
+            json!([key(tricky, "string", json!([]))]),
+        );
+        let (rust, php) = out.split_once('|').unwrap();
+        assert_eq!(rust, format!("{tricky:?}"));
+        assert!(!rust.contains("\\u001f") && !rust.contains("\\b"), "{rust}");
+        assert_eq!(
+            php, "'Hello $name \\\\ \\'q\\' \"d\" \u{1f}\u{8}\u{c}\n'",
+            "single quotes, so $name is not interpolated"
+        );
+    }
+
+    #[test]
+    fn a_description_cannot_close_the_comment_it_sits_in() {
+        let out = rendered(
+            "/* {{ keys[0].name | comment }} */ /* {{ keys[0].name | java_comment }} */",
+            json!([key(
+                "ends */ here, C:\\users \\\\u0041",
+                "string",
+                json!([])
+            )]),
+        );
+        assert_eq!(
+            out,
+            "/* ends *\\/ here, C:\\users \\\\u0041 */ /* ends *\\/ here, C:\\\\users \\\\u0041 */"
+        );
+    }
+
+    #[test]
+    fn quote_escapes_the_separators_a_csharp_literal_ends_a_line_at() {
+        let out = rendered(
+            "{{ keys[0].name | quote }}",
+            json!([key("a\u{2028}b\u{85}", "string", json!([]))]),
+        );
+        assert_eq!(out, "\"a\\u2028b\\u0085\"");
     }
 
     #[test]

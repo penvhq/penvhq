@@ -345,7 +345,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
             break
         }
         'penv;upgrade' {
-            [CompletionResult]::new('--check', '--check', [CompletionResultType]::ParameterValue, 'Only report what the latest release is')
+            [CompletionResult]::new('--check', '--check', [CompletionResultType]::ParameterValue, 'Only report what that release is')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')

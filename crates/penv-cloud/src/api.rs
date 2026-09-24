@@ -39,6 +39,16 @@ pub fn encode_segment(segment: &str) -> String {
     out
 }
 
+/// One segment of a request path, refused when it is only dots: `..`, and every
+/// encoding of it, is a step up the path to a proxy, whatever the router meant.
+/// `part` names which name it is, since the refusal shows no name.
+pub fn checked_segment(part: &'static str, segment: &str) -> Result<String> {
+    if !segment.is_empty() && segment.bytes().all(|b| b == b'.') {
+        return Err(CloudError::DotSegment(part));
+    }
+    Ok(encode_segment(segment))
+}
+
 /// The same JSON without its null members: the server reads a null as a value,
 /// and the contract asks for absent fields to be absent.
 pub fn without_nulls(value: Value) -> Value {
@@ -247,8 +257,9 @@ pub struct CreatedEnvironment {
 }
 
 /// One parameter as the cloud holds it. `kind` and `version` are the server's
-/// own, so a write sends only what [`CloudKey::to_write`] carries.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// own, so a write sends only what [`CloudKey::to_write`] carries. `Debug`
+/// never shows the value, so nothing that holds a key prints one.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudKey {
     #[serde(default)]
     pub path: String,
@@ -264,6 +275,18 @@ pub struct CloudKey {
     /// When the value was last written. `@rotate` counts from it.
     #[serde(default, rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+}
+
+impl fmt::Debug for CloudKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CloudKey")
+            .field("path", &self.path)
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("version", &self.version)
+            .field("updated_at", &self.updated_at)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CloudKey {
@@ -293,15 +316,15 @@ impl CloudKey {
     }
 
     /// The same address as URL segments, each one encoded on its own.
-    pub fn key_path(&self) -> String {
-        let mut segments: Vec<String> = self
+    pub fn key_path(&self) -> Result<String> {
+        let mut segments = self
             .path
             .split('/')
             .filter(|segment| !segment.is_empty())
-            .map(encode_segment)
-            .collect();
-        segments.push(encode_segment(&self.name));
-        segments.join("/")
+            .map(|segment| checked_segment("key path", segment))
+            .collect::<Result<Vec<String>>>()?;
+        segments.push(checked_segment("key", &self.name)?);
+        Ok(segments.join("/"))
     }
 }
 
@@ -481,6 +504,15 @@ impl Api {
         format!("{}/api/v1{path}", self.base_url)
     }
 
+    fn envs_url(&self, at: &Address) -> Result<String> {
+        Ok(self.url(&format!(
+            "/envs/{}/{}/{}",
+            checked_segment("org", &at.org)?,
+            checked_segment("project", &at.project)?,
+            checked_segment("environment", &at.environment)?
+        )))
+    }
+
     fn stamp<A>(&self, mut request: RequestBuilder<A>) -> RequestBuilder<A> {
         if let Some(name) = &self.agent_name {
             request = request.header(AGENT_HEADER, name);
@@ -558,7 +590,7 @@ impl Api {
     // --- environments --------------------------------------------------------
 
     pub fn env_head(&self, bearer: &Bearer, at: &Address, etag: Option<&str>) -> Result<Freshness> {
-        let url = self.url(&format!("/envs/{}", at.path()));
+        let url = self.envs_url(at)?;
         let mut response = self.attempt(&url, || {
             let mut request = self.authed(self.http.head(&url), bearer);
             if let Some(etag) = etag {
@@ -580,7 +612,7 @@ impl Api {
         etag: Option<&str>,
         values: bool,
     ) -> Result<Fetched> {
-        let url = self.url(&format!("/envs/{}", at.path()));
+        let url = self.envs_url(at)?;
         let mut response = self.attempt(&url, || {
             let mut request = self.authed(self.http.get(&url), bearer);
             if !values {
@@ -608,7 +640,7 @@ impl Api {
         keys: &[CloudKey],
         prune: bool,
     ) -> Result<PutResult> {
-        let url = self.url(&format!("/envs/{}", at.path()));
+        let url = self.envs_url(at)?;
         let body = json!({
             "keys": keys.iter().map(CloudKey::to_write).collect::<Vec<_>>(),
             "prune": prune,
@@ -621,7 +653,7 @@ impl Api {
     }
 
     pub fn key_set(&self, bearer: &Bearer, at: &Address, key: &CloudKey) -> Result<SetResult> {
-        let url = self.url(&format!("/envs/{}/keys/{}", at.path(), key.key_path()));
+        let url = format!("{}/keys/{}", self.envs_url(at)?, key.key_path()?);
         let mut body = key.to_write();
         if let Some(object) = body.as_object_mut() {
             object.remove("path");
@@ -636,7 +668,7 @@ impl Api {
 
     /// The key's whole address, the same segments `key_set` writes to.
     pub fn key_unset(&self, bearer: &Bearer, at: &Address, key: &CloudKey) -> Result<UnsetResult> {
-        let url = self.url(&format!("/envs/{}/keys/{}", at.path(), key.key_path()));
+        let url = format!("{}/keys/{}", self.envs_url(at)?, key.key_path()?);
         let mut response =
             self.attempt(&url, || self.authed(self.http.delete(&url), bearer).call())?;
         expect(&mut response, &[StatusCode::OK])?;
@@ -690,7 +722,7 @@ impl Api {
     }
 
     pub fn approval(&self, bearer: &Bearer, id: &str) -> Result<Approval> {
-        let url = self.url(&format!("/approvals/{}", encode_segment(id)));
+        let url = self.url(&format!("/approvals/{}", checked_segment("approval", id)?));
         let mut response =
             self.attempt(&url, || self.authed(self.http.get(&url), bearer).call())?;
         expect(&mut response, &[StatusCode::OK])?;
@@ -700,7 +732,10 @@ impl Api {
     /// Redeem an approved request, once. A 409 answers with why not, and the
     /// caller turns that code into the exit code.
     pub fn approval_redeem(&self, bearer: &Bearer, id: &str) -> Result<Revealed> {
-        let url = self.url(&format!("/approvals/{}/redeem", encode_segment(id)));
+        let url = self.url(&format!(
+            "/approvals/{}/redeem",
+            checked_segment("approval", id)?
+        ));
         let mut response = self.attempt(&url, || {
             self.authed(self.http.post(&url), bearer).send_empty()
         })?;
@@ -729,7 +764,7 @@ impl Api {
             #[serde(default)]
             projects: Vec<Project>,
         }
-        let url = self.url(&format!("/orgs/{}/projects", encode_segment(org)));
+        let url = self.url(&format!("/orgs/{}/projects", checked_segment("org", org)?));
         let mut response =
             self.attempt(&url, || self.authed(self.http.get(&url), bearer).call())?;
         expect(&mut response, &[StatusCode::OK])?;
@@ -745,7 +780,7 @@ impl Api {
         name: &str,
         environments: &[String],
     ) -> Result<Project> {
-        let url = self.url(&format!("/orgs/{}/projects", encode_segment(org)));
+        let url = self.url(&format!("/orgs/{}/projects", checked_segment("org", org)?));
         let body = json!({ "name": name, "environments": environments });
         let mut response = self.attempt(&url, || {
             self.authed(self.http.post(&url), bearer).send_json(&body)
@@ -759,20 +794,20 @@ impl Api {
         })
     }
 
-    fn project_url(&self, org: &str, project: &str) -> String {
-        self.url(&format!(
+    fn project_url(&self, org: &str, project: &str) -> Result<String> {
+        Ok(self.url(&format!(
             "/orgs/{}/projects/{}",
-            encode_segment(org),
-            encode_segment(project)
-        ))
+            checked_segment("org", org)?,
+            checked_segment("project", project)?
+        )))
     }
 
-    fn environment_url(&self, org: &str, project: &str, environment: &str) -> String {
-        format!(
+    fn environment_url(&self, org: &str, project: &str, environment: &str) -> Result<String> {
+        Ok(format!(
             "{}/environments/{}",
-            self.project_url(org, project),
-            encode_segment(environment)
-        )
+            self.project_url(org, project)?,
+            checked_segment("environment", environment)?
+        ))
     }
 
     /// The answer carries the slug the new name became, which the header needs.
@@ -783,7 +818,7 @@ impl Api {
         project: &str,
         name: &str,
     ) -> Result<Project> {
-        let url = self.project_url(org, project);
+        let url = self.project_url(org, project)?;
         let body = json!({ "name": name });
         let mut response = self.attempt(&url, || {
             self.authed(self.http.patch(&url), bearer).send_json(&body)
@@ -793,7 +828,7 @@ impl Api {
     }
 
     pub fn delete_project(&self, bearer: &Bearer, org: &str, project: &str) -> Result<Deleted> {
-        let url = self.project_url(org, project);
+        let url = self.project_url(org, project)?;
         let mut response =
             self.attempt(&url, || self.authed(self.http.delete(&url), bearer).call())?;
         expect(&mut response, &[StatusCode::OK])?;
@@ -809,7 +844,7 @@ impl Api {
         name: &str,
         from: Option<&str>,
     ) -> Result<CreatedEnvironment> {
-        let url = format!("{}/environments", self.project_url(org, project));
+        let url = format!("{}/environments", self.project_url(org, project)?);
         let body = without_nulls(json!({ "name": name, "from": from }));
         let mut response = self.attempt(&url, || {
             self.authed(self.http.post(&url), bearer).send_json(&body)
@@ -826,7 +861,7 @@ impl Api {
         environment: &str,
         name: &str,
     ) -> Result<()> {
-        let url = self.environment_url(org, project, environment);
+        let url = self.environment_url(org, project, environment)?;
         let body = json!({ "name": name });
         let mut response = self.attempt(&url, || {
             self.authed(self.http.patch(&url), bearer).send_json(&body)
@@ -841,7 +876,7 @@ impl Api {
         project: &str,
         environment: &str,
     ) -> Result<Deleted> {
-        let url = self.environment_url(org, project, environment);
+        let url = self.environment_url(org, project, environment)?;
         let mut response =
             self.attempt(&url, || self.authed(self.http.delete(&url), bearer).call())?;
         expect(&mut response, &[StatusCode::OK])?;
@@ -901,7 +936,7 @@ impl Api {
             generation: body
                 .get("generation")
                 .and_then(Value::as_u64)
-                .unwrap_or(generation + 1),
+                .unwrap_or(generation.saturating_add(1)),
             bearer: bearer_of(&url, &body, now)?,
         })
     }
@@ -953,29 +988,50 @@ pub fn checked_base_url(raw: &str) -> Result<String> {
 /// https everywhere but the loopback the tests and a local server run on. Every
 /// URL penv sends a credential to goes through here.
 pub fn checked_url(raw: &str) -> Result<String> {
+    let shown = redacted(raw);
     let (scheme, rest) = raw
         .split_once("://")
-        .ok_or_else(|| CloudError::Url(format!("{raw} is not an http or https URL")))?;
+        .ok_or_else(|| CloudError::Url(format!("{shown} is not an http or https URL")))?;
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     // A userinfo half hides the real host behind an @, so no authority may carry one.
     if authority.contains('@') {
         return Err(CloudError::Url(format!(
-            "{raw} carries a user in front of its host, and penv sends a credential to hosts only"
+            "{shown} carries a user in front of its host, and penv sends a credential to hosts only"
         )));
     }
     let host = host_of(authority);
     if host.is_empty() {
-        return Err(CloudError::Url(format!("{raw} names no host")));
+        return Err(CloudError::Url(format!("{shown} names no host")));
     }
     match scheme {
         "https" => Ok(raw.to_string()),
         "http" if matches!(host, "127.0.0.1" | "localhost" | "[::1]") => Ok(raw.to_string()),
         "http" => Err(CloudError::Url(format!(
-            "{raw} is plain http, and a credential only travels over https"
+            "{shown} is plain http, and a credential only travels over https"
         ))),
         other => Err(CloudError::Url(format!(
             "{other} is not a scheme penv speaks"
         ))),
+    }
+}
+
+/// The host a URL names, lowercased, or `None` where it names none.
+pub fn url_host(raw: &str) -> Option<String> {
+    let (_, rest) = raw.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit('@').next().unwrap_or_default();
+    Some(host_of(authority).to_ascii_lowercase()).filter(|host| !host.is_empty())
+}
+
+/// A URL as a message may show it: user info in front of the host is where a
+/// password goes, so it is replaced.
+fn redacted(raw: &str) -> String {
+    let (scheme, rest) = raw.split_once("://").unwrap_or(("", raw));
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..end].rfind('@') {
+        Some(at) if scheme.is_empty() => format!("<user>{}", &rest[at..]),
+        Some(at) => format!("{scheme}://<user>{}", &rest[at..]),
+        None => raw.to_string(),
     }
 }
 
@@ -994,7 +1050,7 @@ fn send(
     url: &str,
     sent: std::result::Result<Response<Body>, ureq::Error>,
 ) -> Result<Response<Body>> {
-    sent.map_err(|e| match e {
+    let response = sent.map_err(|e| match e {
         ureq::Error::TooManyRedirects | ureq::Error::RedirectFailed => CloudError::Redirected {
             url: url.to_string(),
         },
@@ -1002,7 +1058,19 @@ fn send(
             url: url.to_string(),
             reason: other.to_string(),
         },
-    })
+    })?;
+    // With redirects off, ureq hands a 3xx back as an ordinary answer.
+    if redirected(response.status().as_u16()) {
+        return Err(CloudError::Redirected {
+            url: url.to_string(),
+        });
+    }
+    Ok(response)
+}
+
+/// Every 3xx but the 304 a conditional read expects.
+fn redirected(status: u16) -> bool {
+    (300..400).contains(&status) && status != 304
 }
 
 fn expect(response: &mut Response<Body>, ok: &[StatusCode]) -> Result<()> {
@@ -1043,13 +1111,28 @@ fn refusal(status: u16, response: &mut Response<Body>) -> ApiError {
 }
 
 fn read_json<T: DeserializeOwned>(url: &str, response: &mut Response<Body>) -> Result<T> {
-    response
+    let unreadable = |reason: String| CloudError::Unreadable {
+        url: url.to_string(),
+        reason,
+    };
+    let bytes = response
         .body_mut()
-        .read_json()
-        .map_err(|e| CloudError::Unreadable {
-            url: url.to_string(),
-            reason: e.to_string(),
-        })
+        .read_to_vec()
+        .map_err(|e| unreadable(e.to_string()))?;
+    serde_json::from_slice(&bytes).map_err(|e| unreadable(json_reason(&e)))
+}
+
+/// Where the JSON went wrong, never what it held: serde's own text quotes the
+/// offending scalar, and that may be a value.
+fn json_reason(error: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+    let what = match error.classify() {
+        Category::Io => "the body could not be read",
+        Category::Syntax => "malformed JSON",
+        Category::Data => "JSON of another shape",
+        Category::Eof => "JSON cut short",
+    };
+    format!("{what} at line {} column {}", error.line(), error.column())
 }
 
 fn etag_of(response: &Response<Body>) -> Option<String> {
@@ -1083,7 +1166,7 @@ fn bearer_of(url: &str, body: &Value, now: u64) -> Result<Bearer> {
         .or_else(|| {
             body.get("expiresIn")
                 .and_then(Value::as_u64)
-                .map(|seconds| now + seconds)
+                .map(|seconds| now.saturating_add(seconds))
         });
     Ok(Bearer {
         token: token.to_string(),
@@ -1143,7 +1226,7 @@ mod tests {
             name: "DB URL".into(),
             ..CloudKey::default()
         };
-        assert_eq!(key.key_path(), "services/web%20api/DB%20URL");
+        assert_eq!(key.key_path().unwrap(), "services/web%20api/DB%20URL");
         assert_eq!(encode_segment("a-b_c.d~e"), "a-b_c.d~e");
     }
 
@@ -1217,6 +1300,118 @@ mod tests {
         );
         assert!(!shown.contains("FAKE"), "{shown}");
         assert!(shown.contains("STRIPE_SECRET_KEY"), "{shown}");
+    }
+
+    #[test]
+    fn a_name_made_only_of_dots_is_refused_and_named_by_its_part() {
+        for dots in [".", "..", "..."] {
+            assert!(matches!(
+                checked_segment("environment", dots),
+                Err(CloudError::DotSegment("environment"))
+            ));
+        }
+        assert_eq!(checked_segment("environment", "v1.2").unwrap(), "v1.2");
+        assert_eq!(checked_segment("environment", ".env").unwrap(), ".env");
+        let key = CloudKey {
+            path: "services/..".into(),
+            name: "PORT".into(),
+            ..CloudKey::default()
+        };
+        assert!(matches!(
+            key.key_path(),
+            Err(CloudError::DotSegment("key path"))
+        ));
+
+        let api = Api::new("https://penv.cloud").unwrap();
+        let at = Address::new("acme", "..", "development");
+        let error = api.envs_url(&at).unwrap_err();
+        assert!(
+            matches!(error, CloudError::DotSegment("project")),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("project"), "{error}");
+        assert!(api.project_url("acme", "..").is_err());
+        assert!(api.environment_url("acme", "api", ".").is_err());
+    }
+
+    #[test]
+    fn a_url_error_never_shows_the_password_in_it() {
+        for raw in [
+            "https://u:secretFAKE@penv.example",
+            "http://u:secretFAKE@evil.example/x",
+            "u:secretFAKE@penv.example",
+            "ftp://u:secretFAKE@penv.example",
+        ] {
+            let shown = checked_url(raw).unwrap_err().to_string();
+            assert!(!shown.contains("secretFAKE"), "{shown}");
+        }
+        assert!(
+            checked_url("https://u:secretFAKE@penv.example")
+                .unwrap_err()
+                .to_string()
+                .contains("<user>@penv.example")
+        );
+    }
+
+    #[test]
+    fn every_redirect_but_not_modified_is_a_redirect() {
+        for status in [300, 301, 302, 303, 307, 308] {
+            assert!(redirected(status), "{status}");
+        }
+        for status in [200, 204, 304, 400, 404, 500] {
+            assert!(!redirected(status), "{status}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_answer_says_where_and_never_what() {
+        let error = serde_json::from_str::<Challenge>("{\"nonce\": 918273645}").unwrap_err();
+        let reason = json_reason(&error);
+        assert!(!reason.contains("918273645"), "{reason}");
+        assert!(reason.contains("line 1"), "{reason}");
+    }
+
+    #[test]
+    fn a_hostile_expiry_saturates_rather_than_overflowing() {
+        let body = json!({ "credential": "pck_FAKE", "expiresIn": u64::MAX });
+        assert_eq!(
+            bearer_of("https://penv.cloud", &body, 1_000)
+                .unwrap()
+                .expires_at,
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn a_key_never_prints_its_value() {
+        let key = CloudKey {
+            name: "STRIPE_SECRET_KEY".into(),
+            value: Some("sk_test_FAKE0000".into()),
+            ..CloudKey::default()
+        };
+        let body = EnvBody {
+            keys: vec![key],
+            skipped: Vec::new(),
+        };
+        let fetched = Fetched::Body {
+            etag: None,
+            body: body.clone(),
+        };
+        for shown in [format!("{body:?}"), format!("{fetched:?}")] {
+            assert!(!shown.contains("FAKE"), "{shown}");
+            assert!(shown.contains("STRIPE_SECRET_KEY"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_url_host_is_the_host_and_nothing_around_it() {
+        assert_eq!(
+            url_host("https://Penv.Cloud:443/device?x=1").as_deref(),
+            Some("penv.cloud")
+        );
+        assert_eq!(url_host("http://[::1]:8787/").as_deref(), Some("[::1]"));
+        assert_eq!(url_host("penv.cloud"), None);
+        assert_eq!(url_host("https:///x"), None);
     }
 
     #[test]

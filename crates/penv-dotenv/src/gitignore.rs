@@ -3,6 +3,8 @@
 /// of the block.
 pub const IGNORE_LINES: [&str; 3] = [".env", ".env.*", "!.env.schema"];
 
+const KEEP_SCHEMA: &str = "!.env.schema";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitignoreUpdate {
     pub content: String,
@@ -21,11 +23,23 @@ pub fn ensure_ignored(existing: &str) -> GitignoreUpdate {
         .lines()
         .map(|l| l.trim().trim_start_matches('/'))
         .collect();
-    let added: Vec<&'static str> = IGNORE_LINES
+    let mut added: Vec<&'static str> = IGNORE_LINES
         .iter()
         .copied()
         .filter(|want| !present.contains(want))
         .collect();
+    // The last matching line wins in git, so the negation has to come after
+    // every pattern that reaches `.env.schema`, the ones added here included.
+    let swallows = |line: &str| matches!(line, ".env.*" | ".env*");
+    let last_negation = present.iter().rposition(|l| *l == KEEP_SCHEMA);
+    let last_swallow = present.iter().rposition(|l| swallows(l));
+    let buried = match (last_negation, last_swallow) {
+        (Some(negation), Some(swallow)) => negation < swallow,
+        _ => false,
+    };
+    if !added.contains(&KEEP_SCHEMA) && (buried || added.iter().any(|l| swallows(l))) {
+        added.push(KEEP_SCHEMA);
+    }
 
     let mut content = existing.to_string();
     if !added.is_empty() {

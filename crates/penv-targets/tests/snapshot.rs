@@ -3,6 +3,23 @@
 use penv_targets::{Roots, Source, Target, Tree, load, render};
 
 const FIXTURE: &str = include_str!("fixture.env.schema");
+/// Only string-shaped keys, so nothing parses, and no keys at all.
+const STRINGS: &str = include_str!("strings.env.schema");
+const EMPTY: &str = include_str!("empty.env.schema");
+/// Names each language reserves or its loader already uses, and a default and
+/// a description holding the characters literals and comments treat specially.
+const RESERVED: &str = include_str!("reserved.env.schema");
+
+/// Every built-in target and the file name its snapshot is kept under.
+const FILES: [(&str, &str); 7] = [
+    ("ts", "ts.env.ts"),
+    ("py", "py.penv_env.py"),
+    ("go", "go.env.go"),
+    ("rust", "rust.env.rs"),
+    ("php", "php.Env.php"),
+    ("java", "java.Env.java"),
+    ("csharp", "csharp.Env.g.cs"),
+];
 const TS: &str = include_str!("snapshots/ts.env.ts");
 const PY: &str = include_str!("snapshots/py.penv_env.py");
 const GO: &str = include_str!("snapshots/go.env.go");
@@ -32,8 +49,16 @@ fn built_in(name: &str) -> Target {
 }
 
 fn rendered(name: &str) -> String {
-    let schema = penv_schema::parse(FIXTURE).expect("the fixture parses");
+    rendered_from(FIXTURE, name)
+}
+
+fn rendered_from(fixture: &str, name: &str) -> String {
+    let schema = penv_schema::parse(fixture).expect("the fixture parses");
     render(&built_in(name), &view(&schema), VERSION).expect("the fixture renders")
+}
+
+fn snapshot(path: &str) -> String {
+    std::fs::read_to_string(format!("tests/snapshots/{path}")).unwrap_or_default()
 }
 
 /// Point at the first line that differs; the whole file is too long to read in a
@@ -43,7 +68,11 @@ fn assert_same(name: &str, expected: &str, actual: &str) {
         return;
     }
     if std::env::var_os("PENV_BLESS").is_some() {
-        std::fs::write(format!("tests/snapshots/{name}"), actual).unwrap();
+        let path = format!("tests/snapshots/{name}");
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, actual).unwrap();
         panic!("{name} was rewritten from PENV_BLESS; read the diff and run again");
     }
     let mut hint = String::new();
@@ -98,14 +127,120 @@ fn every_new_target_hides_secrets_behind_a_redacting_type() {
     }
 }
 
-/// The schema JSON as `penv gen` hands it over, with each key marked public or not.
+/// The schema JSON exactly as `penv gen` hands it over.
 fn view(schema: &penv_schema::Schema) -> serde_json::Value {
-    let mut json = schema.to_json();
-    for key in json["keys"].as_array_mut().expect("keys") {
-        let public = schema.is_public(key["name"].as_str().unwrap_or_default());
-        key["public"] = serde_json::Value::Bool(public);
+    penv_targets::view(schema, "development")
+}
+
+#[test]
+fn a_schema_of_only_strings_or_of_nothing_still_renders_through_every_target() {
+    for (dir, fixture) in [
+        ("strings", STRINGS),
+        ("empty", EMPTY),
+        ("reserved", RESERVED),
+    ] {
+        for (name, file) in FILES {
+            let path = format!("{dir}/{file}");
+            assert_same(&path, &snapshot(&path), &rendered_from(fixture, name));
+        }
     }
-    json
+}
+
+#[test]
+fn a_key_named_like_a_keyword_or_a_loader_local_is_escaped_per_language() {
+    let rust = snapshot("reserved/rust.env.rs");
+    for want in [
+        "pub r#type: Option<",
+        "pub r#match:",
+        "pub self_:",
+        "let r#type = Self::raw(",
+    ] {
+        assert!(rust.contains(want), "{want}");
+    }
+    assert!(rust.contains("__penv_problems"));
+    let php = snapshot("reserved/php.Env.php");
+    assert!(
+        php.contains("$this_,") && php.contains("$__penvRaw("),
+        "{php}"
+    );
+    let java = snapshot("reserved/java.Env.java");
+    for want in [
+        "Secret class_,",
+        "Secret default_,",
+        "Secret load_,",
+        "Secret toString_,",
+        "__penvProblems",
+    ] {
+        assert!(java.contains(want), "{want}");
+    }
+    let csharp = snapshot("reserved/csharp.Env.g.cs");
+    for want in [
+        "Secret? Load_,",
+        "Secret? ToString_,",
+        "var @class =",
+        "            @default,",
+        "__PenvRaw(",
+    ] {
+        assert!(csharp.contains(want), "{want}");
+    }
+    assert!(snapshot("reserved/py.penv_env.py").contains("self.None_:"));
+}
+
+#[test]
+fn a_default_and_a_description_keep_their_characters_in_every_language() {
+    assert!(snapshot("reserved/php.Env.php").contains("'Hi $name, from C:\\\\users'"));
+    assert!(snapshot("reserved/rust.env.rs").contains("\"Hi $name, from C:\\\\users\""));
+    assert!(
+        snapshot("reserved/ts.env.ts")
+            .contains("/** Kept in C:\\users\\penv, never in *\\/tmp. */")
+    );
+    assert!(
+        snapshot("reserved/java.Env.java")
+            .contains("/* Kept in C:\\\\users\\penv, never in *\\/tmp. */")
+    );
+}
+
+#[test]
+fn a_public_key_computed_from_a_secret_is_read_and_masked_like_one() {
+    for runtime in ["node", "vite"] {
+        let mut target = built_in("ts");
+        target
+            .options
+            .insert("runtime".into(), toml::Value::String(runtime.into()));
+        let schema = penv_schema::parse(FIXTURE).expect("the fixture parses");
+        let out = render(&target, &view(&schema), VERSION).unwrap();
+        assert!(
+            !out.contains("env.NEXT_PUBLIC_CHECKOUT_TOKEN"),
+            "{runtime} inlines it"
+        );
+        let mask = &out[out.find("values = [").unwrap()..out.find("].filter(").unwrap()];
+        assert!(
+            mask.contains("read(\"NEXT_PUBLIC_CHECKOUT_TOKEN\")"),
+            "{mask}"
+        );
+    }
+    assert!(
+        !TS.contains("${STRIPE_SECRET_KEY}") && !PY.contains("${STRIPE_SECRET_KEY}"),
+        "a computed default is never a literal fallback"
+    );
+}
+
+#[test]
+fn the_ts_target_reads_an_empty_value_as_unset_and_every_boolean_word() {
+    assert!(
+        TS.contains("Number(given(read(\"PORT\"), \"3000\"))"),
+        "{TS}"
+    );
+    assert!(TS.contains("flag(given(read(\"FEATURE_BILLING\"), \"false\"), \"FEATURE_BILLING\")"));
+    assert!(TS.contains("[\"1\", \"true\", \"yes\", \"on\"]"));
+    assert!(!TS.contains("=== \"true\""));
+    let schema = penv_schema::parse(
+        "# @type=number(isInt=false) @sensitive=false\nRATIO=\n\n# @type=number(isInt=true) @sensitive=false\nCOUNT=\n",
+    )
+    .unwrap();
+    let out = render(&built_in("ts"), &view(&schema), VERSION).unwrap();
+    assert!(out.contains("RATIO must be a number"), "{out}");
+    assert!(out.contains("COUNT must be a whole number"), "{out}");
 }
 
 /// `key_case` is the folder's own option, so a repo-local ts target can flip it.
@@ -167,17 +302,14 @@ fn the_py_target_takes_pydantic_types_only_when_its_options_ask_for_them() {
         .options
         .insert("pydantic".into(), toml::Value::Boolean(true));
     let schema = penv_schema::parse(FIXTURE).expect("the fixture parses");
-    let out = render(&target, &schema.to_json(), VERSION).expect("the fixture renders");
+    let out = render(&target, &view(&schema), VERSION).expect("the fixture renders");
     assert!(out.contains("from pydantic import HttpUrl, SecretStr"));
-    assert!(out.contains("self.STRIPE_SECRET_KEY: SecretStr = SecretStr("));
+    assert!(out.contains("self.STRIPE_SECRET_KEY: SecretStr = _secret("));
     assert!(
         !PY.contains("pydantic"),
         "the default is the standard library"
     );
-    assert!(
-        PY.contains("self.STRIPE_SECRET_KEY: str = _require("),
-        "{PY}"
-    );
+    assert!(PY.contains("self.STRIPE_SECRET_KEY: str = _raw("), "{PY}");
 }
 
 #[test]

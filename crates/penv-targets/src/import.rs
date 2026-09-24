@@ -4,7 +4,7 @@
 use serde_json::Value;
 
 use crate::detect::layout_root;
-use crate::target::Target;
+use crate::target::{Target, word};
 
 /// One config in an `extends` chain: the directory it sits in, relative to the
 /// repository root, and its text. The package's own file comes first.
@@ -31,7 +31,7 @@ pub fn extends_of(config: &Config) -> Option<String> {
     if !named.starts_with("./") && !named.starts_with("../") {
         return None;
     }
-    let path = join(&config.dir, named);
+    let path = join(&config.dir, named)?;
     Some(if path.ends_with(".json") {
         path
     } else {
@@ -41,6 +41,8 @@ pub fn extends_of(config: &Config) -> Option<String> {
 
 /// The import line for a file the target wrote. `path` is relative to the
 /// repository root, and `configs` is the `paths_from` chain read at the edge.
+/// `{specifier}`, `{module}` and `{dir}` come from the path, and `{<knob>}` is
+/// that option's value in effect.
 pub fn import_line(
     target: &Target,
     package: &str,
@@ -55,10 +57,20 @@ pub fn import_line(
         Some(root) => relative[root.len() + 1..].to_string(),
         None => relative.clone(),
     };
-    Some(
-        line.replace("{specifier}", &specifier)
-            .replace("{module}", &drop_extension(&module).replace('/', ".")),
-    )
+    let mut line = line
+        .replace("{specifier}", &specifier)
+        .replace("{module}", &drop_extension(&module).replace('/', "."))
+        .replace("{dir}", &parent(&relative));
+    for (knob, value) in target.effective() {
+        line = line.replace(&format!("{{{}}}", knob.name), &word(value));
+    }
+    Some(line)
+}
+
+fn parent(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_default()
 }
 
 /// The specifier a `paths` map already gives this file. Targets resolve against
@@ -67,7 +79,7 @@ pub fn aliased(configs: &[Config], path: &str) -> Option<String> {
     let (paths_at, paths) = first(configs, "paths")?;
     let paths = paths.as_object()?;
     let base = match first(configs, "baseUrl") {
-        Some((at, url)) => join(&at, url.as_str()?),
+        Some((at, url)) => join(&at, url.as_str()?)?,
         None => paths_at,
     };
     let stem = drop_extension(path);
@@ -75,7 +87,7 @@ pub fn aliased(configs: &[Config], path: &str) -> Option<String> {
     let mut best: Option<(usize, String)> = None;
     for (alias, targets) in paths {
         for target in targets.as_array().into_iter().flatten() {
-            let Some(target) = target.as_str().map(|t| join(&base, t)) else {
+            let Some(target) = target.as_str().and_then(|t| join(&base, t)) else {
                 continue;
             };
             let hit = match (alias.strip_suffix('*'), target.strip_suffix('*')) {
@@ -108,19 +120,20 @@ fn first(configs: &[Config], field: &str) -> Option<(String, Value)> {
 }
 
 /// Two forward-slash paths joined and reduced: no `.` segments left, and `..`
-/// taken off the end of what came before it.
-pub fn join(base: &str, rest: &str) -> String {
+/// taken off the end of what came before it. `None` when a `..` climbs above
+/// the repository root, where penv cannot follow.
+pub fn join(base: &str, rest: &str) -> Option<String> {
     let mut out: Vec<&str> = Vec::new();
     for segment in base.split('/').chain(rest.split('/')) {
         match segment {
             "" | "." => {}
             ".." => {
-                out.pop();
+                out.pop()?;
             }
             name => out.push(name),
         }
     }
-    out.join("/")
+    Some(out.join("/"))
 }
 
 /// A path relative to the package that holds it, in forward slashes.
@@ -437,9 +450,76 @@ mod tests {
 
     #[test]
     fn a_joined_path_never_keeps_a_dot_segment() {
-        assert_eq!(join("", "./src/env.ts"), "src/env.ts");
-        assert_eq!(join(".", "./src/./env.ts"), "src/env.ts");
-        assert_eq!(join("apps/web", "../api/src"), "apps/api/src");
-        assert_eq!(join("apps/web", "./"), "apps/web");
+        assert_eq!(join("", "./src/env.ts").as_deref(), Some("src/env.ts"));
+        assert_eq!(join(".", "./src/./env.ts").as_deref(), Some("src/env.ts"));
+        assert_eq!(
+            join("apps/web", "../api/src").as_deref(),
+            Some("apps/api/src")
+        );
+        assert_eq!(join("apps/web", "./").as_deref(), Some("apps/web"));
+    }
+
+    #[test]
+    fn a_path_that_climbs_above_the_repository_is_not_followed() {
+        assert_eq!(join("apps/web", "../../../tsconfig.base.json"), None);
+        let up = Config::new(
+            "apps/web",
+            r#"{ "extends": "../../../tsconfig.base.json" }"#,
+        );
+        assert_eq!(extends_of(&up), None);
+        let base = Config::new(
+            "apps/web",
+            r#"{ "compilerOptions": { "baseUrl": "../../..", "paths": { "@/*": ["./apps/web/src/*"] } } }"#,
+        );
+        assert_eq!(
+            aliased(&[base], "apps/web/src/env.ts"),
+            None,
+            "an alias nobody can prove is a relative import"
+        );
+        assert_eq!(
+            join("apps/web", "../../tsconfig.base.json").as_deref(),
+            Some("tsconfig.base.json")
+        );
+    }
+
+    fn knob(name: &str, default: &str) -> crate::target::Knob {
+        crate::target::Knob {
+            name: name.into(),
+            default: toml::Value::String(default.into()),
+            values: Vec::new(),
+            about: "x".into(),
+        }
+    }
+
+    #[test]
+    fn an_option_in_the_import_line_reads_the_value_in_effect() {
+        let mut php = target(Some("use {namespace}\\Env;"));
+        php.knobs = vec![knob("namespace", "App")];
+        assert_eq!(
+            import_line(&php, "", "src/Env.php", &[]).as_deref(),
+            Some("use App\\Env;"),
+            "the default when nothing set it"
+        );
+        php.options.insert(
+            "namespace".into(),
+            toml::Value::String("Acme\\Billing".into()),
+        );
+        assert_eq!(
+            import_line(&php, "", "src/Env.php", &[]).as_deref(),
+            Some("use Acme\\Billing\\Env;")
+        );
+    }
+
+    #[test]
+    fn a_go_import_names_the_directory_the_file_was_written_to() {
+        let go = target(Some("import \"<module>/{dir}\""));
+        assert_eq!(
+            import_line(&go, "", "internal/config/env.go", &[]).as_deref(),
+            Some("import \"<module>/internal/config\"")
+        );
+        assert_eq!(
+            import_line(&go, "services/api", "services/api/env/env.go", &[]).as_deref(),
+            Some("import \"<module>/env\"")
+        );
     }
 }

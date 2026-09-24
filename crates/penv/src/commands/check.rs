@@ -121,7 +121,10 @@ pub fn run(
         }
     }
     if only.is_none() {
-        for (file, how, keys) in source::exposed_secrets(&schema, &resolved) {
+        // Every value file here, not only this environment's: a tracked one
+        // leaks whether or not it is read today.
+        let files = source::value_file_keys(dir);
+        for (file, how, keys) in source::exposed_secrets(&schema, &resolved.tainted, &files) {
             violations.push(Violation::new(
                 &show(&file),
                 "git",
@@ -305,8 +308,14 @@ pub fn run(
         for harness in guards.json["harnesses"].as_array().into_iter().flatten() {
             for file in harness["files"].as_array().into_iter().flatten() {
                 if file["status"] != "current" {
+                    // penv never weakens a value already there, so rerunning it cannot help.
+                    let fix = if file["overridden"].as_array().is_some_and(|o| !o.is_empty()) {
+                        "edit the value the file already holds there"
+                    } else {
+                        "run penv guard"
+                    };
                     report.text.push_str(&format!(
-                        "\n{} guard {} {} is {}; run penv guard",
+                        "\n{} guard {} {} is {}; {fix}",
                         style.dim("note"),
                         harness["name"].as_str().unwrap_or_default(),
                         file["path"].as_str().unwrap_or_default(),
@@ -614,7 +623,7 @@ fn names(text: &str, key: &str) -> bool {
 fn code_usage(dir: &Path, schema: &penv_schema::Schema) -> (Vec<(String, String)>, Vec<String>) {
     const MAX_FILES: usize = 20_000;
     const MAX_BYTES: u64 = 1024 * 1024;
-    let mut files = super::scan::candidates(dir, &[], false).unwrap_or_else(|_| {
+    let mut files = super::scan::candidates(dir, &[]).unwrap_or_else(|_| {
         let mut out = Vec::new();
         super::scan::walk(dir, &mut out);
         out
@@ -622,7 +631,11 @@ fn code_usage(dir: &Path, schema: &penv_schema::Schema) -> (Vec<(String, String)
     files.retain(|f| crate::usage::is_source(f));
     let generated = generated_files(dir);
     let mut undeclared: Vec<(String, String)> = Vec::new();
-    let mut texts: Vec<String> = Vec::new();
+    // Each file is read once and dropped: only the declared names it mentions stay.
+    let declared: std::collections::HashSet<&str> =
+        schema.keys.iter().map(|k| k.name.as_str()).collect();
+    let mut mentioned: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut read_any = false;
     for file in files.into_iter().take(MAX_FILES) {
         let path = if file.is_absolute() {
             file.clone()
@@ -651,9 +664,14 @@ fn code_usage(dir: &Path, schema: &penv_schema::Schema) -> (Vec<(String, String)
                 undeclared.push((name, format!("{shown}:{line}")));
             }
         }
-        texts.push(text);
+        for word in crate::usage::words(&text) {
+            if let Some(name) = declared.get(word) {
+                mentioned.insert(name);
+            }
+        }
+        read_any = true;
     }
-    if texts.is_empty() {
+    if !read_any {
         return (undeclared, Vec::new());
     }
     // A key another key's value is built from counts as used.
@@ -666,7 +684,7 @@ fn code_usage(dir: &Path, schema: &penv_schema::Schema) -> (Vec<(String, String)
         .keys
         .iter()
         .filter(|k| schema.current_env.as_deref() != Some(k.name.as_str()))
-        .filter(|k| !texts.iter().any(|t| crate::usage::mentions(t, &k.name)))
+        .filter(|k| !mentioned.contains(k.name.as_str()))
         .filter(|k| !defaults.iter().any(|d| crate::usage::mentions(d, &k.name)))
         .map(|k| k.name.clone())
         .collect();

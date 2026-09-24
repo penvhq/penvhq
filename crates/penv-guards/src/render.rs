@@ -169,6 +169,18 @@ mod tests {
     }
 
     #[test]
+    fn the_gemini_hook_is_a_before_tool_hook_over_every_tool() {
+        let out: Value = serde_json::from_str(&rendered("gemini", 0)).unwrap();
+        let hook = &out["hooks"]["BeforeTool"][0];
+        assert_eq!(hook["matcher"], ".*", "read_file and glob pass otherwise");
+        assert_eq!(hook["hooks"][0]["command"], "penv hook gemini");
+        assert!(out["hooks"].get("PreToolUse").is_none());
+        let guard = guard("gemini");
+        assert!(guard.writes[0].union.iter().any(|k| k == "BeforeTool"));
+        assert_eq!(guard.hook.unwrap().deny.exit, 2);
+    }
+
+    #[test]
     fn the_cursor_hook_covers_a_shell_call_as_well_as_a_read() {
         let out: Value = serde_json::from_str(&rendered("cursor", 1)).unwrap();
         for event in ["beforeReadFile", "beforeShellExecution"] {

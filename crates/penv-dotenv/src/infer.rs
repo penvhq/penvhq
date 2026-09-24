@@ -2,13 +2,14 @@ use penv_schema::{
     BaseType, Key, Schema, Type, is_absolute_url, is_email, is_public_prefixed, parse_boolean,
 };
 
-use crate::read::Dotenv;
+use crate::read::{Dotenv, is_plausible_key};
 
 /// Draft a schema from a `.env`. Every key is sensitive and required unless a
-/// bundler prefix or a value too dull to be a secret says otherwise.
+/// bundler prefix or a value too dull to be a secret says otherwise. A copied
+/// value sits in the committed schema, so it is no secret.
 pub fn infer(env: &Dotenv) -> Schema {
     let mut schema = Schema::default();
-    for entry in &env.entries {
+    for entry in env.entries.iter().filter(|e| is_plausible_key(&e.key)) {
         let prefixed = is_public_prefixed(&entry.key);
         let ty = infer_type(&entry.key, &entry.value);
         // A bundler prefix says who may read the key, never that the value is
@@ -115,8 +116,10 @@ fn is_loopback_url(value: &str) -> bool {
 /// The type `init` reads out of one pair. `set` uses it for a key the schema
 /// does not list yet, without ever copying the value.
 pub fn infer_type(key: &str, value: &str) -> Type {
+    // TRANSPORT and SUPPORT end in PORT too.
+    let port = key == "PORT" || key.ends_with("_PORT");
     if value.is_empty() {
-        return Type::new(if key.ends_with("PORT") {
+        return Type::new(if port {
             BaseType::Port
         } else {
             BaseType::String
@@ -125,16 +128,17 @@ pub fn infer_type(key: &str, value: &str) -> Type {
     if is_absolute_url(value) {
         return Type::new(BaseType::Url);
     }
-    if key.ends_with("PORT") && matches!(value.parse::<u32>(), Ok(n) if (1..=65535).contains(&n)) {
+    if port && matches!(value.parse::<u32>(), Ok(n) if (1..=65535).contains(&n)) {
         return Type::new(BaseType::Port);
     }
-    if parse_boolean(value).is_some() {
-        return Type::new(BaseType::Boolean);
-    }
+    // Before the boolean check, which reads 0 and 1 as false and true.
     if value.parse::<i64>().is_ok() {
         let mut ty = Type::new(BaseType::Number);
         ty.constraints.push(("isInt".into(), "true".into()));
         return ty;
+    }
+    if parse_boolean(value).is_some() {
+        return Type::new(BaseType::Boolean);
     }
     if matches!(value.parse::<f64>(), Ok(n) if n.is_finite()) {
         return Type::new(BaseType::Number);

@@ -7,6 +7,11 @@ pub enum Error {
         name: String,
         looked: Vec<String>,
     },
+    /// A name that is not a word, so never a folder or a section.
+    Name {
+        name: String,
+    },
+    /// `dir` is where the broken file lives: a folder, or a config section.
     Malformed {
         dir: String,
         message: String,
@@ -28,6 +33,10 @@ impl fmt::Display for Error {
             Error::NotFound { name, looked } => {
                 write!(f, "no target named {name}; looked in {}", looked.join(", "))
             }
+            Error::Name { name } => write!(
+                f,
+                "{name} is not a target name; a name is a-z, 0-9, - and _"
+            ),
             Error::Malformed { dir, message } => write!(f, "{dir} is not a target: {message}"),
             Error::NoTypeFor { target, base } => {
                 write!(f, "target {target} has no [types] entry for {base}")

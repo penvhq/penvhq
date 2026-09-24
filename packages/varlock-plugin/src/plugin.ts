@@ -183,8 +183,16 @@ class PenvInstance {
       });
     }
     const where = label(at);
+    const parts = [at.org, at.project, at.environment];
+    // URL parsing collapses `.` and `..` (and their %2e forms), so such a name
+    // would read another path on the same host.
+    if (parts.some((part) => /^\.+$/.test(part))) {
+      throw new SchemaError(`penv cannot read ${where}: a name made only of dots is not one`, {
+        tip: 'Check the org, project and environment in @penv and the item',
+      });
+    }
     // Each part is one path segment; an environment named feature/foo stays one.
-    const path = [at.org, at.project, at.environment].map(encodeURIComponent).join('/');
+    const path = parts.map(encodeURIComponent).join('/');
     let response: Response;
     try {
       response = await fetch(`${this.url}/api/v1/envs/${path}`, {

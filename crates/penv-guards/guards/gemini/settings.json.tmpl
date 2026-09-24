@@ -1,8 +1,8 @@
 {
   "hooks": {
-    "PreToolUse": [
+    "BeforeTool": [
       {
-        "matcher": "run_shell_command",
+        "matcher": ".*",
         "hooks": [{ "type": "command", "command": "penv hook gemini" }]
       }
     ]

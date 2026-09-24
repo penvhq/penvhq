@@ -42,18 +42,21 @@ pub struct Masker {
     by_first_byte: Vec<Vec<u32>>,
     longest: usize,
     held: Vec<u8>,
+    /// Bytes of `held` before this are already covered by a replacement.
+    masked_until: usize,
 }
 
 impl Masker {
     pub fn new(secrets: Vec<String>) -> Masker {
         let mut patterns: Vec<Pattern> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for secret in &secrets {
             if secret.len() < MIN_SECRET_LEN {
                 continue;
             }
             let replacement = redaction(secret).into_bytes();
             for (form, wrapped) in forms(secret) {
-                if !form.is_empty() && !patterns.iter().any(|p| p.bytes == form.as_bytes()) {
+                if !form.is_empty() && seen.insert(form.clone()) {
                     patterns.push(Pattern {
                         bytes: form.into_bytes(),
                         replacement: replacement.clone(),
@@ -75,6 +78,7 @@ impl Masker {
             by_first_byte,
             longest,
             held: Vec::new(),
+            masked_until: 0,
         }
     }
 
@@ -114,18 +118,22 @@ impl Masker {
             if !ending && index >= tail && self.partial_at(index) {
                 break;
             }
-            match self.match_at(index) {
-                (Some(pattern), consumed) => {
-                    out.extend_from_slice(&self.held[run..index]);
-                    out.extend_from_slice(&self.patterns[pattern].replacement);
-                    index += consumed;
-                    run = index;
-                }
-                (None, _) => index += 1,
+            let (pattern, consumed) = self.match_at(index);
+            if index < self.masked_until {
+                // Inside a masked run a match only lengthens it.
+                self.masked_until = self.masked_until.max(index + consumed);
+                run = index + 1;
+            } else if let Some(pattern) = pattern {
+                out.extend_from_slice(&self.held[run..index]);
+                out.extend_from_slice(&self.patterns[pattern].replacement);
+                self.masked_until = index + consumed;
+                run = index + 1;
             }
+            index += 1;
         }
         out.extend_from_slice(&self.held[run..index]);
         self.held.drain(..index);
+        self.masked_until = self.masked_until.saturating_sub(index);
     }
 
     /// The longest pattern that fits whole at this position, and what it ate.
@@ -181,7 +189,8 @@ fn compare(hay: &[u8], pattern: &Pattern) -> Hit {
 
 /// The shapes one secret can leave a process in: as written, base64 in both
 /// alphabets at every phase a prefix can push it to, hex, percent-encoded and
-/// escaped as a JSON string body. The flag marks the forms that arrive wrapped.
+/// escaped as a JSON string body the ways common encoders write one. The flag
+/// marks the forms that arrive wrapped.
 fn forms(secret: &str) -> Vec<(String, bool)> {
     let raw = secret.as_bytes();
     let mut out = vec![
@@ -199,8 +208,31 @@ fn forms(secret: &str) -> Vec<(String, bool)> {
     out.push((hex(raw, UPPER_HEX), false));
     out.push((percent(secret, UPPER_HEX), false));
     out.push((percent(secret, LOWER_HEX), false));
-    out.push((json_escaped(secret), false));
+    // Every mix of the optional escapes; one that changes nothing is dropped as
+    // a duplicate by the masker.
+    for bits in 0..16u8 {
+        let style = JsonStyle {
+            slash: bits & 1 != 0,
+            html: bits & 2 != 0,
+            ascii: bits & 4 != 0,
+            upper: bits & 8 != 0,
+        };
+        out.push((json_escaped(secret, style), false));
+    }
     out
+}
+
+/// How far a JSON encoder escapes beyond the minimum.
+#[derive(Clone, Copy)]
+struct JsonStyle {
+    /// `\/`, which PHP and some Java encoders write.
+    slash: bool,
+    /// `<` for `<`, `>` and `&`, as Go writes them.
+    html: bool,
+    /// `\uXXXX` for everything past ASCII, as Python's `ensure_ascii` does.
+    ascii: bool,
+    /// Upper-case hex digits in `\uXXXX`.
+    upper: bool,
 }
 
 fn base64(input: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
@@ -266,8 +298,15 @@ fn percent(value: &str, digits: &[u8; 16]) -> String {
 }
 
 /// The body of a JSON string, without the quotes around it.
-fn json_escaped(value: &str) -> String {
+fn json_escaped(value: &str, style: JsonStyle) -> String {
     let mut out = String::with_capacity(value.len());
+    let unit = |out: &mut String, unit: u16| {
+        if style.upper {
+            out.push_str(&format!("\\u{unit:04X}"));
+        } else {
+            out.push_str(&format!("\\u{unit:04x}"));
+        }
+    };
     for c in value.chars() {
         match c {
             '"' => out.push_str("\\\""),
@@ -277,9 +316,38 @@ fn json_escaped(value: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            '/' if style.slash => out.push_str("\\/"),
+            '<' | '>' | '&' if style.html => unit(&mut out, c as u16),
+            c if (c as u32) < 0x20 => unit(&mut out, c as u16),
+            c if !c.is_ascii() && style.ascii => {
+                let mut pair = [0u16; 2];
+                for half in c.encode_utf16(&mut pair) {
+                    unit(&mut out, *half);
+                }
+            }
             c => out.push(c),
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Masker;
+
+    #[test]
+    fn held_back_bytes_stay_under_twice_the_longest_pattern() {
+        let mut masker = Masker::new(vec!["aaaaaaaa".to_string(), "abababab".to_string()]);
+        let bound = masker.longest * 2;
+        let mut out = Vec::new();
+        let streams = ["a".repeat(1 << 20), "ab".repeat(1 << 19)];
+        for (stream, size) in streams.iter().zip([4096, 4093]) {
+            for chunk in stream.as_bytes().chunks(size) {
+                masker.feed(chunk, &mut out);
+                assert!(masker.held.len() <= bound, "{} held", masker.held.len());
+            }
+        }
+        masker.finish(&mut out);
+        assert!(masker.held.is_empty());
+    }
 }

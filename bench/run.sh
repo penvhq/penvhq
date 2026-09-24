@@ -18,6 +18,8 @@ SECRET=sk_live_BENCH_4242424242424242
 
 die() { echo "bench: $*" >&2; exit 1; }
 [ -x "$PENV" ] || die "no penv binary: install it or set PENV=<path>"
+# Absolute, because every project below runs from its own directory.
+case $PENV in /*) ;; *) PENV=$PWD/$PENV ;; esac
 for tool in node npm git python3; do command -v "$tool" >/dev/null || die "$tool is required"; done
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/penv-bench.XXXXXX")
@@ -25,6 +27,7 @@ trap 'rm -rf "$WORK"' EXIT
 echo "penv:    $("$PENV" --version)"
 if [ -n "${VARLOCK:-}" ]; then
   [ -x "$VARLOCK" ] || die "VARLOCK=$VARLOCK is not an executable"
+  case $VARLOCK in /*) ;; *) VARLOCK=$PWD/$VARLOCK ;; esac
   echo "varlock: using $VARLOCK"
 else
   echo "varlock: installing $VARLOCK_VERSION from npm into $WORK ..."
@@ -74,7 +77,9 @@ median_ms() {
     const times = [];
     for (let i = 0; i < Number(runs); i++) {
       const t = process.hrtime.bigint();
-      spawnSync(cmd[0], cmd.slice(1), { stdio: "ignore" });
+      const ran = spawnSync(cmd[0], cmd.slice(1), { stdio: "ignore" });
+      // A command that never started would be timed as the fastest run.
+      if (ran.error) { console.error(`bench: ${cmd[0]}: ${ran.error.message}`); process.exit(1); }
       times.push(Number(process.hrtime.bigint() - t) / 1e6);
     }
     times.sort((a, b) => a - b);

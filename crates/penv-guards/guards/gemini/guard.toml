@@ -1,5 +1,5 @@
 name = "gemini"
-description = "A Gemini CLI PreToolUse hook that is the penv binary itself."
+description = "A Gemini CLI BeforeTool hook for every tool, the penv binary itself; Gemini blocks on exit 2 with the reason on stderr."
 scope = "project"
 detect = ["~/.gemini", ".gemini"]
 exe = ["gemini"]
@@ -8,7 +8,7 @@ exe = ["gemini"]
 path = ".gemini/settings.json"
 format = "json"
 merge = "deny-union"
-union = ["PreToolUse", "hooks"]
+union = ["BeforeTool", "hooks"]
 template = "settings.json.tmpl"
 
 [hook]
