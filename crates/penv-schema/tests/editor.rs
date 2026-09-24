@@ -426,6 +426,20 @@ fn hovering_a_reference_function_or_type_explains_it() {
 }
 
 #[test]
+fn an_error_in_another_block_still_leaves_each_key_its_summary() {
+    let text = "# @defaultSensitive=false\n# ---\n\n# @rotate=soon\nA=\n\n# @type=url @hosts(x.example.com)\nB=\n";
+    assert!(parse(text).is_err());
+    let md = hover(text, at(7, 0), &[]).unwrap().markdown;
+    assert!(md.starts_with("**B**: `url`"), "{md}");
+    assert!(md.contains("sealed to `x.example.com`"), "{md}");
+    assert!(
+        !md.contains("sensitive ·"),
+        "the header still applies: {md}"
+    );
+    assert_eq!(hover(text, at(4, 0), &[]).unwrap().markdown, "**A**");
+}
+
+#[test]
 fn hovering_plain_text_shows_nothing() {
     assert!(hover(SCHEMA, at(4, 6), &[]).is_none());
     assert!(hover(SCHEMA, at(9, 12), &[]).is_none());

@@ -899,7 +899,10 @@ fn reference_at(chars: &[char], ws: usize, _we: usize) -> bool {
 
 /// A key as the schema declares it, with the binary's notes.
 fn summary(text: &str, name: &str, notes: &[KeyNote]) -> String {
-    let schema: Option<Schema> = parse(text).ok();
+    // One error elsewhere in the file must not blank every key's summary.
+    let schema: Option<Schema> = parse(text)
+        .ok()
+        .or_else(|| alone(text, name).and_then(|t| parse(&t).ok()));
     let mut out = format!("**{name}**");
     if let Some(key) = schema.as_ref().and_then(|s| s.get(name)) {
         out.push_str(&format!(": {}", code(&key.ty.to_string())));
@@ -927,6 +930,31 @@ fn summary(text: &str, name: &str, notes: &[KeyNote]) -> String {
         out.push_str(&format!("\n\n{}", note.message));
     }
     out
+}
+
+/// The header and one key's block, as a schema of their own.
+fn alone(text: &str, name: &str) -> Option<String> {
+    let lines = lines(text);
+    let at = key_line(&lines, name)?;
+    let render = |range: std::ops::Range<usize>| -> Vec<String> {
+        range
+            .map(|i| lines[i].chars.iter().collect::<String>())
+            .collect()
+    };
+    let mut out = Vec::new();
+    let first = lines.iter().position(|l| l.kind != Kind::Blank)?;
+    let mut end = first;
+    while end < lines.len() && lines[end].kind == Kind::Comment {
+        end += 1;
+    }
+    let block = block_of(&lines, at);
+    if end < lines.len() && end < at && block.start != first {
+        out.extend(render(first..end));
+        out.push("# ---".to_string());
+        out.push(String::new());
+    }
+    out.extend(render(block.start..at + 1));
+    Some(out.join("\n"))
 }
 
 /// Schema text shown as markdown: every markdown character escaped, so a
