@@ -412,39 +412,49 @@ fn rotation(
         let Some(span) = Span::parse(rotate) else {
             continue;
         };
-        let show_at = |t: u64| {
-            if span.is_sub_day() {
-                instant(t)
-            } else {
-                instant(t)[..10].to_string()
+        let state = status(span, written, now);
+        let text = reminder(&key.name, rotate, span, &state, schema.is_cloud());
+        let json = match state {
+            Rotation::Unrecorded => json!({ "key": key.name, "rotate": rotate, "recorded": false }),
+            Rotation::Due { due, left } => {
+                json!({ "key": key.name, "rotate": rotate, "recorded": true, "due": instant(due), "overdue": left <= 0 })
             }
         };
-        match status(span, written, now) {
-                        Rotation::Unrecorded => out.push(Reminder {
-                text: if schema.is_cloud() {
-                    format!(
-                        "rotate {} has @rotate={rotate}, and the cloud has not said when it was last written",
-                        key.name
-                    )
-                } else {
-                    format!(
-                        "rotate {} has @rotate={rotate} and no recorded write; penv set {} records one",
-                        key.name, key.name
-                    )
-                },
-                json: json!({ "key": key.name, "rotate": rotate, "recorded": false }),
-            }),
-            Rotation::Due { due, left } if left <= 0 => out.push(Reminder {
-                text: format!("rotate {} was due {}; rotate it, then penv set {}", key.name, show_at(due), key.name),
-                json: json!({ "key": key.name, "rotate": rotate, "recorded": true, "due": instant(due), "overdue": true }),
-            }),
-            Rotation::Due { due, .. } => out.push(Reminder {
-                text: format!("rotate {} by {}", key.name, show_at(due)),
-                json: json!({ "key": key.name, "rotate": rotate, "recorded": true, "due": instant(due), "overdue": false }),
-            }),
-        }
+        out.push(Reminder { text, json });
     }
     out
+}
+
+/// What penv says about one key's `@rotate`. `check` prints it; the editor
+/// shows the same words.
+pub(crate) fn reminder(
+    name: &str,
+    rotate: &str,
+    span: penv_schema::rotate::Span,
+    state: &penv_schema::rotate::Rotation,
+    cloud: bool,
+) -> String {
+    use penv_schema::rotate::{Rotation, instant};
+    let show_at = |t: u64| {
+        if span.is_sub_day() {
+            instant(t)
+        } else {
+            instant(t)[..10].to_string()
+        }
+    };
+    match state {
+        Rotation::Unrecorded if cloud => format!(
+            "rotate {name} has @rotate={rotate}, and the cloud has not said when it was last written"
+        ),
+        Rotation::Unrecorded => format!(
+            "rotate {name} has @rotate={rotate} and no recorded write; penv set {name} records one"
+        ),
+        Rotation::Due { due, left } if *left <= 0 => format!(
+            "rotate {name} was due {}; rotate it, then penv set {name}",
+            show_at(*due)
+        ),
+        Rotation::Due { due, .. } => format!("rotate {name} by {}", show_at(*due)),
+    }
 }
 
 /// The penv-only features a schema file uses, which varlock rejects.
