@@ -87,10 +87,14 @@ fn out_of_reach(file: &File, path: &str) -> bool {
 }
 
 /// Windows reads no owner here: the bundle passes when this user cannot open
-/// it for writing, and no distribution store is named.
+/// it for writing though it carries no read-only attribute, and no
+/// distribution store is named.
 #[cfg(not(unix))]
-fn out_of_reach(_file: &File, path: &str) -> bool {
-    std::fs::OpenOptions::new().append(true).open(path).is_err()
+fn out_of_reach(file: &File, path: &str) -> bool {
+    // The read-only attribute is the user's to clear, like a mode bit; only an
+    // access list that denies this user the write counts.
+    let flagged = file.metadata().is_ok_and(|m| m.permissions().readonly());
+    !flagged && std::fs::OpenOptions::new().append(true).open(path).is_err()
 }
 
 /// A file its owner can always make writable again with chmod, so a mode alone
@@ -154,6 +158,25 @@ mod tests {
         std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o444)).unwrap();
         let err = load(&bundle.to_string_lossy(), true).unwrap_err();
         assert!(err.contains("an agent is running penv"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_bundle_its_owner_flagged_read_only_is_still_refused_under_an_agent() {
+        let dir = std::env::temp_dir().join(format!("penv-tls-ro-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bundle = dir.join("ca.pem");
+        std::fs::write(&bundle, "not a certificate\n").unwrap();
+        let mut permissions = std::fs::metadata(&bundle).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&bundle, permissions).unwrap();
+        let err = load(&bundle.to_string_lossy(), true).unwrap_err();
+        assert!(err.contains("an agent is running penv"), "{err}");
+        let mut permissions = std::fs::metadata(&bundle).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        let _ = std::fs::set_permissions(&bundle, permissions);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
