@@ -57,6 +57,7 @@ complete -c penv -n '__fish_penv_at ""' -a 'upgrade' -d 'Replace penv with the l
 complete -c penv -n '__fish_penv_at ""' -a 'completions' -d 'Print the shell completion script'
 complete -c penv -n '__fish_penv_at ""' -a 'hook' -d 'Run as a harness hook; a payload it cannot read is refused'
 complete -c penv -n '__fish_penv_at ""' -a 'schema' -d 'Print the schema as JSON'
+complete -c penv -n '__fish_penv_at ""' -a 'lsp' -d 'Serve .env.schema to an editor over the Language Server Protocol on stdio'
 complete -c penv -n '__fish_penv_at ""' -a 'help' -d 'Show help for a command'
 complete -c penv -n '__fish_penv_at ""' -l json -d 'Emit JSON on stdout, whatever stdout is attached to'
 complete -c penv -n '__fish_penv_at ""' -l format -r -d 'Pick the output format: json or text' -a 'json text'

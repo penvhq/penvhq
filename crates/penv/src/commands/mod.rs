@@ -10,6 +10,7 @@ pub mod init;
 mod login;
 mod logout;
 mod ls;
+mod lsp;
 mod machine;
 mod project;
 mod pull;
@@ -186,6 +187,7 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             cli.json || cli.format == Some(crate::cli::Format::Json),
         ),
         Some(Command::Schema) => schema(cwd),
+        Some(Command::Lsp) => lsp::run(),
         Some(Command::Help { command }) => help(command.as_deref()),
     }
 }

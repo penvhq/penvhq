@@ -274,6 +274,12 @@ const META: &[Meta] = &[
         ..DEFAULT_META
     },
     Meta {
+        path: "lsp",
+        implemented: true,
+        exit_codes: &[0, 1],
+        ..DEFAULT_META
+    },
+    Meta {
         path: "help",
         implemented: true,
         ..DEFAULT_META
