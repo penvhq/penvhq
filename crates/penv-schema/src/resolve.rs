@@ -36,6 +36,10 @@ pub const MAX_DEPTH: usize = 128;
 /// Nested evaluations across a whole chain of references, for the same reason.
 const MAX_NESTING: usize = 4 * MAX_DEPTH;
 
+/// The stack the depth limits are sized for, in every build on every platform.
+/// Resolve on a thread this large: Windows gives its main thread 1 MiB.
+pub const STACK: usize = 16 << 20;
+
 /// One raw value and whether it may be computed. A single-quoted value is literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Raw {
@@ -1357,17 +1361,24 @@ mod tests {
     fn deep_nesting_in_one_value_fails_instead_of_overflowing() {
         let calls = format!("{}x{}", "not(".repeat(20_000), ")".repeat(20_000));
         let defaults = format!("{}x{}", "${A:-".repeat(20_000), "}".repeat(20_000));
-        let (v, e) = run(
-            &[
-                ("CALLS", Raw::computed(calls)),
-                ("DEFAULTS", Raw::computed(defaults)),
-                (
-                    "FINE",
-                    Raw::computed(format!("{}x{}", "not(".repeat(100), ")".repeat(100))),
-                ),
-            ],
-            "development",
-        );
+        let (v, e) = std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn(move || {
+                run(
+                    &[
+                        ("CALLS", Raw::computed(calls)),
+                        ("DEFAULTS", Raw::computed(defaults)),
+                        (
+                            "FINE",
+                            Raw::computed(format!("{}x{}", "not(".repeat(100), ")".repeat(100))),
+                        ),
+                    ],
+                    "development",
+                )
+            })
+            .unwrap()
+            .join()
+            .expect("no stack overflow");
         for key in ["CALLS", "DEFAULTS"] {
             let error = e.iter().find(|e| e.key == key).expect(key);
             assert!(error.message.contains("nest more than"), "{error:?}");
@@ -1389,7 +1400,7 @@ mod tests {
         pairs.push(("K200".into(), Raw::literal("end")));
         let raw = pairs.into_iter().collect();
         let (_, e) = std::thread::Builder::new()
-            .stack_size(1 << 20)
+            .stack_size(STACK)
             .spawn(move || resolve(&raw, &Values::new(), "development", &Values::new()))
             .unwrap()
             .join()
