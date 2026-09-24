@@ -370,6 +370,7 @@ fn spawn(
     signals::child_started(child.id());
 
     let (done, finished) = std::sync::mpsc::channel();
+    let writing = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut pumps: Vec<JoinHandle<()>> = Vec::new();
     if piped {
         if let Some(pipe) = child.stdout.take() {
@@ -378,10 +379,17 @@ fn spawn(
                 std::io::stdout(),
                 Masker::new(secrets.clone()),
                 done.clone(),
+                writing.clone(),
             ));
         }
         if let Some(pipe) = child.stderr.take() {
-            pumps.push(pump(pipe, std::io::stderr(), Masker::new(secrets), done));
+            pumps.push(pump(
+                pipe,
+                std::io::stderr(),
+                Masker::new(secrets),
+                done,
+                writing.clone(),
+            ));
         }
     }
 
@@ -389,14 +397,21 @@ fn spawn(
     signals::restore(forwarding);
     // A grandchild the command left running (`server &`) can hold the pipes
     // open forever; what it prints after a short drain is not this command's.
-    let deadline = std::time::Instant::now() + DRAIN;
+    // Time spent handing output to a slow reader (`| less`) is still the
+    // command's own output going out, so only idle time counts.
+    let tick = std::time::Duration::from_millis(50);
+    let mut idle = std::time::Duration::ZERO;
     let mut drained = 0;
-    while drained < pumps.len() {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if finished.recv_timeout(left).is_err() {
-            break;
+    while drained < pumps.len() && idle < DRAIN {
+        match finished.recv_timeout(tick) {
+            Ok(()) => drained += 1,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if writing.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    idle += tick;
+                }
+            }
         }
-        drained += 1;
     }
     if drained == pumps.len() {
         for pump in pumps {
@@ -433,6 +448,7 @@ fn pump<R, W>(
     mut to: W,
     mut masker: Masker,
     done: std::sync::mpsc::Sender<()>,
+    writing: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) -> JoinHandle<()>
 where
     R: Read + Send + 'static,
@@ -452,7 +468,13 @@ where
             };
             scrubbed.clear();
             masker.feed(&chunk[..read], &mut scrubbed);
-            if !scrubbed.is_empty() && (to.write_all(&scrubbed).is_err() || to.flush().is_err()) {
+            if scrubbed.is_empty() {
+                continue;
+            }
+            writing.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let sent = to.write_all(&scrubbed).is_ok() && to.flush().is_ok();
+            writing.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            if !sent {
                 open = false;
                 break;
             }

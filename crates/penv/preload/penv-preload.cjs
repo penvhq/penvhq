@@ -114,6 +114,27 @@
           : typeof process !== "undefined" && process.getBuiltinModule && process.getBuiltinModule("node:util");
       if (util && typeof util.inspect === "function") inspect = util.inspect;
     } catch (_) {}
+    // A plain object as masked JSON, anything JSON cannot show as its masked
+    // inspection; the object itself when neither holds a value.
+    const maskObject = (a) => {
+      try {
+        const json = JSON.stringify(a);
+        if (typeof json === "string" && maskText(json) !== json) return maskText(json);
+      } catch (_) {}
+      if (inspect) {
+        try {
+          const shown = inspect(a);
+          if (maskText(shown) !== shown) return maskText(shown);
+        } catch (_) {}
+      }
+      return a;
+    };
+    const maskField = (v, depth) => {
+      if (typeof v === "string") return maskText(v);
+      if (v instanceof Error) return depth < 4 ? maskError(v, depth + 1) : v;
+      if (v && typeof v === "object") return maskObject(v);
+      return v;
+    };
     const maskError = (e, depth) => {
       const message = maskText(e.message);
       const stack = maskText(e.stack);
@@ -122,7 +143,8 @@
       const own = {};
       for (const k of Object.keys(e)) {
         if (k === "cause") continue;
-        own[k] = maskText(e[k]);
+        // An axios error carries config.headers.Authorization a level down.
+        own[k] = maskField(e[k], depth);
         if (own[k] !== e[k]) changed = true;
       }
       if (!changed) return e;
@@ -137,15 +159,7 @@
         if (typeof a === "string") return maskText(a);
         if (!a || typeof a !== "object") return a;
         if (a instanceof Error) return maskError(a, 0);
-        try {
-          const json = JSON.stringify(a);
-          if (typeof json === "string" && maskText(json) !== json) return maskText(json);
-        } catch (_) {}
-        if (inspect) {
-          const shown = inspect(a);
-          if (maskText(shown) !== shown) return maskText(shown);
-        }
-        return a;
+        return maskObject(a);
       });
     const guard = (fn) => {
       if (typeof fn !== "function" || fn.__penvMasked) return fn;

@@ -1311,6 +1311,31 @@ fn a_reader_that_goes_away_stops_the_child_instead_of_draining_it_forever() {
 
 #[cfg(unix)]
 #[test]
+fn a_slow_reader_still_gets_every_byte_the_command_wrote() {
+    use std::io::Read;
+
+    let workspace = masked_workspace();
+    let mut child = spawned(&workspace, "head -c 120000 /dev/zero | tr '\\0' a");
+    let mut stdout = child.stdout.take().unwrap();
+    let mut got = 0;
+    let mut chunk = [0u8; 1024];
+    // The last pipe-fulls take seconds after the command exits: longer than the
+    // window penv waits for a process the command left behind.
+    loop {
+        let n = stdout.read(&mut chunk).unwrap();
+        if n == 0 {
+            break;
+        }
+        got += n;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let status = exited_within(&mut child, std::time::Duration::from_secs(20));
+    assert_eq!(got, 120_000, "the tail of the output was dropped");
+    assert_eq!(status.and_then(|s| s.code()), Some(0));
+}
+
+#[cfg(unix)]
+#[test]
 fn a_process_the_command_left_running_does_not_keep_penv_alive() {
     let workspace = masked_workspace();
     let started = std::time::Instant::now();
@@ -1650,11 +1675,15 @@ const shipper = console.error;
 console.error = (...a) => seen.push(a[0]);
 console.error(new TypeError("boom " + K));
 console.error(new Map([["k", K]]));
+const axios = new Error("request failed");
+axios.config = { headers: { Authorization: "Bearer " + K } };
+console.error(axios);
 console.error = shipper;
-const [err, map] = seen;
+const [err, map, nested] = seen;
 const out = {
   error: err instanceof TypeError && err.message.startsWith("boom") && !err.message.includes(K) && !String(err.stack).includes(K),
   map: !util.inspect(map).includes(K),
+  nested: nested instanceof Error && !util.inspect(nested).includes(K),
 };
 const big = "x".repeat(8 * 1024 * 1024) + K;
 const s = http.createServer((q, r) => {
@@ -1698,6 +1727,10 @@ fn the_node_preload_masks_errors_and_maps_and_serves_a_large_body_quickly() {
     assert_eq!(
         report["map"], true,
         "a Map reaches a shipper masked: {line}"
+    );
+    assert_eq!(
+        report["nested"], true,
+        "a value a level down in an Error reaches a shipper masked: {line}"
     );
     assert_eq!(report["served"], true, "{line}");
     assert!(
