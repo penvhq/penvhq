@@ -421,39 +421,49 @@ fn rotation(
         let Some(span) = Span::parse(rotate) else {
             continue;
         };
-        let show_at = |t: u64| {
-            if span.is_sub_day() {
-                instant(t)
-            } else {
-                instant(t)[..10].to_string()
+        let state = status(span, written, now);
+        let text = reminder(&key.name, rotate, span, &state, schema.is_cloud());
+        let json = match state {
+            Rotation::Unrecorded => json!({ "key": key.name, "rotate": rotate, "recorded": false }),
+            Rotation::Due { due, left } => {
+                json!({ "key": key.name, "rotate": rotate, "recorded": true, "due": instant(due), "overdue": left <= 0 })
             }
         };
-        match status(span, written, now) {
-                        Rotation::Unrecorded => out.push(Reminder {
-                text: if schema.is_cloud() {
-                    format!(
-                        "rotate {} has @rotate={rotate}, and the cloud has not said when it was last written",
-                        key.name
-                    )
-                } else {
-                    format!(
-                        "rotate {} has @rotate={rotate} and no recorded write; penv set {} records one",
-                        key.name, key.name
-                    )
-                },
-                json: json!({ "key": key.name, "rotate": rotate, "recorded": false }),
-            }),
-            Rotation::Due { due, left } if left <= 0 => out.push(Reminder {
-                text: format!("rotate {} was due {}; rotate it, then penv set {}", key.name, show_at(due), key.name),
-                json: json!({ "key": key.name, "rotate": rotate, "recorded": true, "due": instant(due), "overdue": true }),
-            }),
-            Rotation::Due { due, .. } => out.push(Reminder {
-                text: format!("rotate {} by {}", key.name, show_at(due)),
-                json: json!({ "key": key.name, "rotate": rotate, "recorded": true, "due": instant(due), "overdue": false }),
-            }),
-        }
+        out.push(Reminder { text, json });
     }
     out
+}
+
+/// What penv says about one key's `@rotate`. `check` prints it; the editor
+/// shows the same words.
+pub(crate) fn reminder(
+    name: &str,
+    rotate: &str,
+    span: penv_schema::rotate::Span,
+    state: &penv_schema::rotate::Rotation,
+    cloud: bool,
+) -> String {
+    use penv_schema::rotate::{Rotation, instant};
+    let show_at = |t: u64| {
+        if span.is_sub_day() {
+            instant(t)
+        } else {
+            instant(t)[..10].to_string()
+        }
+    };
+    match state {
+        Rotation::Unrecorded if cloud => format!(
+            "rotate {name} has @rotate={rotate}, and the cloud has not said when it was last written"
+        ),
+        Rotation::Unrecorded => format!(
+            "rotate {name} has @rotate={rotate} and no recorded write; penv set {name} records one"
+        ),
+        Rotation::Due { due, left } if *left <= 0 => format!(
+            "rotate {name} was due {}; rotate it, then penv set {name}",
+            show_at(*due)
+        ),
+        Rotation::Due { due, .. } => format!("rotate {name} by {}", show_at(*due)),
+    }
 }
 
 /// The penv-only features a schema file uses, which varlock rejects.
@@ -716,4 +726,44 @@ fn generated_files(dir: &Path) -> Vec<std::path::PathBuf> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod reminder_tests {
+    use super::reminder;
+    use penv_schema::rotate::{Rotation, Span, parse_instant};
+
+    #[test]
+    fn every_rotate_sentence_check_and_the_editor_share() {
+        let days = Span::parse("90d").unwrap();
+        let hours = Span::parse("12h").unwrap();
+        let due = parse_instant("2026-03-31").unwrap();
+        let at = parse_instant("2026-03-31T12:00:00Z").unwrap();
+        assert_eq!(
+            reminder("K", "90d", days, &Rotation::Unrecorded, false),
+            "rotate K has @rotate=90d and no recorded write; penv set K records one"
+        );
+        assert_eq!(
+            reminder("K", "90d", days, &Rotation::Unrecorded, true),
+            "rotate K has @rotate=90d, and the cloud has not said when it was last written"
+        );
+        assert_eq!(
+            reminder("K", "90d", days, &Rotation::Due { due, left: 0 }, false),
+            "rotate K was due 2026-03-31; rotate it, then penv set K"
+        );
+        assert_eq!(
+            reminder("K", "90d", days, &Rotation::Due { due, left: 1 }, false),
+            "rotate K by 2026-03-31"
+        );
+        assert_eq!(
+            reminder(
+                "K",
+                "12h",
+                hours,
+                &Rotation::Due { due: at, left: 5 },
+                false
+            ),
+            "rotate K by 2026-03-31T12:00:00Z"
+        );
+    }
 }

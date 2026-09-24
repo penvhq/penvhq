@@ -33,9 +33,24 @@ pub fn parse(cwd: &Path) -> Result<(PathBuf, Result<Schema, Located>), CliError>
     Ok((path, parsed))
 }
 
+/// Text for the schema at `path`, read the way `check` reads that file: imports
+/// merged and `.penv/config.toml` applied. The editor hands in unsaved text.
+pub fn parse_text(path: &Path, source: &str) -> Result<Result<Schema, Located>, CliError> {
+    let mut chain = vec![canonical(path)];
+    Ok(parse_source(path, source, &mut chain)?.and_then(|schema| with_config(path, schema)))
+}
+
 fn parse_file(path: &Path, chain: &mut Vec<PathBuf>) -> Result<Result<Schema, Located>, CliError> {
     let source = read_file(path)?;
-    let mut schema = match penv_schema::parse(&source) {
+    parse_source(path, &source, chain)
+}
+
+fn parse_source(
+    path: &Path,
+    source: &str,
+    chain: &mut Vec<PathBuf>,
+) -> Result<Result<Schema, Located>, CliError> {
+    let mut schema = match penv_schema::parse(source) {
         Ok(schema) => schema,
         Err(found) => {
             return Ok(Err(found

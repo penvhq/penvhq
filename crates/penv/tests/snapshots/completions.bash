@@ -13,7 +13,7 @@ _penv() {
             -*) continue ;;
         esac
         case "${cmd:+$cmd }$word" in
-            init|run|push|pull|login|logout|set|unset|ls|bundle|encrypt|decrypt|why|check|gen|scan|guard|reveal|project|"project ls"|"project new"|"project rename"|"project rm"|env|"env ls"|"env new"|"env rename"|"env copy"|"env rm"|machine|"machine enroll"|upgrade|completions|hook|schema|help) cmd="${cmd:+$cmd }$word" ;;
+            init|run|push|pull|login|logout|set|unset|ls|bundle|encrypt|decrypt|why|check|gen|scan|guard|reveal|project|"project ls"|"project new"|"project rename"|"project rm"|env|"env ls"|"env new"|"env rename"|"env copy"|"env rm"|machine|"machine enroll"|upgrade|completions|hook|schema|lsp|help) cmd="${cmd:+$cmd }$word" ;;
             *) break ;;
         esac
     done
@@ -33,7 +33,7 @@ _penv() {
     words=""
     system=""
     case "$cmd" in
-        "") words="init run push pull login logout set unset ls bundle encrypt decrypt why check gen scan guard reveal project env machine upgrade completions hook schema help --json --format --agent --provider" ;;
+        "") words="init run push pull login logout set unset ls bundle encrypt decrypt why check gen scan guard reveal project env machine upgrade completions hook schema lsp help --json --format --agent --provider" ;;
         init) words="--force --guards --no-guards --output --json --format --agent --provider" ;;
         run) words="--env --no-mask --no-preload --sealed --json --format --agent --provider"; system=-c ;;
         push) words="--env --org --prune --json --format --agent --provider" ;;
@@ -69,6 +69,7 @@ _penv() {
         completions) words="bash zsh fish powershell elvish --json --format --agent --provider" ;;
         hook) words="--json --format --agent --provider" ;;
         schema) words="--json --format --agent --provider" ;;
+        lsp) words="--json --format --agent --provider" ;;
         help) words="--json --format --agent --provider" ;;
     esac
     COMPREPLY=($(compgen -W "$words" $system -- "$cur"))

@@ -157,6 +157,7 @@ cloud   @penv header, credential in the keychain; value files present only when 
 | `upgrade` | Replaces this binary with the raw asset for its target from a release, after checking its signature and digest. The one argument is the channel: `latest` (default, the newest plain release), `next` (the highest version published, prereleases included) or a version. `latest` and `next` only move forward; a version is installed whichever way it lies. `--check` reports what the channel holds and changes nothing | never on its own; a schema this build cannot read names the command in its refusal |
 | `completions <shell>` | Writes the completion script for bash, zsh, fish, powershell or elvish, generated from the manifest | never |
 | `help --json` | The command manifest | never |
+| `lsp` | A Language Server Protocol server on stdio for files named `.env.schema`, and no other file. Diagnostics are what `check` reports for the schema: the parser's errors and warnings, `@import` targets, `.penv/config.toml` public prefixes and schema version, and, in local mode, overdue `@rotate` keys in `check`'s words. Completion, hover, definition and the outline read `penv-schema`'s `vocabulary.json`, which names every decorator, function, filter and type with its origin. Reads no value file and sends no request; under `@penv=` hover says the rotation clock is the provider's. Hidden from help, like `hook` | never |
 
 Not commands: `env`/`use` (use `--env` or `PENV_ENV`, default `development`), `config`, `doctor` (it is `check`), `agent` (agents are detected).
 
@@ -432,7 +433,7 @@ The workflow creates the release once as a draft, in a job the six build jobs ne
 
 ```text
 crates/penv           the binary: clap commands, output, exit codes, manifest
-crates/penv-schema    .env.schema parser, IR, JSON, validation (no I/O)
+crates/penv-schema    .env.schema parser, IR, JSON, validation, editor support (no I/O)
 crates/penv-dotenv    the safe-subset .env reader and writer
 crates/penv-agent     detection and policy (pure functions over an environment map)
 crates/penv-mask      streaming scrubber

@@ -29,6 +29,7 @@ _penv() {
         'completions:Print the shell completion script'
         'hook:Run as a harness hook; a payload it cannot read is refused'
         'schema:Print the schema as JSON'
+        'lsp:Serve .env.schema to an editor over the Language Server Protocol on stdio'
         'help:Show help for a command'
     )
     local curcontext="$curcontext" state line
@@ -69,6 +70,7 @@ _penv() {
                 completions) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' '1: :(bash zsh fish powershell elvish)' ;;
                 hook) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 schema) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                lsp) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 help) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 *) ;;
             esac ;;

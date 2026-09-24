@@ -1,6 +1,7 @@
 //! `.env.schema` as a value: parse it, project it to JSON, validate values against
 //! it, and render it back. No I/O lives here.
 
+pub mod editor;
 mod ir;
 mod parse;
 pub mod placeholder;

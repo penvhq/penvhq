@@ -339,6 +339,10 @@ pub enum Command {
     #[command(hide = true)]
     Schema,
 
+    /// Serve .env.schema to an editor over the Language Server Protocol on stdio
+    #[command(hide = true)]
+    Lsp,
+
     /// Show help for a command
     Help {
         /// Print help for one command instead

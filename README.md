@@ -145,6 +145,15 @@ It reads the repository's source for `process.env`, `import.meta.env`, `Deno.env
 
 `penv why KEY` says which file, cloud environment or default a value came from, which files it overrides, which keys it is built on, and whether it is masked, public or sealed. It never prints the value.
 
+### Editors
+
+`penv lsp` serves `.env.schema` over the Language Server Protocol: the problems `penv check` reports for the schema, completion and hover for every decorator, function and filter (marked penv, @env-spec or varlock-only), go-to-definition for `$KEY` and `${KEY}`, and an outline. It reads no value file and sends no request.
+
+| Editor | Setup |
+|---|---|
+| VS Code, and editors that install from Open VSX | the **penv** extension: [packages/vscode](./packages/vscode/README.md) |
+| Neovim 0.11, Helix 25.07 | [config](./packages/vscode/README.md#other-editors) |
+
 ## Encryption at Rest
 
 Off by default. `penv encrypt` converts the sensitive values in the `.env` files beside `.env.schema` and sets `[local] encrypt = true`, after which `penv set`, `penv pull` and `random()` write `KEY=enc:v1:…` too. Every penv command decrypts where it reads, whatever the setting.
@@ -578,6 +587,7 @@ penv run -- npm run dev       # native; @plugin and @initPenv are ignored
 | `scan [PATH...] [--staged] [--install-hook]` | secret values in files |
 | `ls` | keys, types, presence |
 | `why KEY` | where a value comes from, never the value |
+| `lsp` | `.env.schema` for editors, over the Language Server Protocol on stdio |
 | `encrypt` / `decrypt` | convert the `.env` files' secrets |
 | `bundle [--env E]` | encrypted values for a deploy, opened by `PENV_BUNDLE_KEY` |
 | `gen ts\|py\|go\|rust\|php\|java\|csharp` | typed file |
