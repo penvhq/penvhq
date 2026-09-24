@@ -572,6 +572,7 @@ fn put(
     let path = dir.join(&settled.path);
     let unchanged = read_file(&path).is_ok_and(|existing| existing == rendered);
     if !unchanged {
+        crate::files::within(dir, &path)?;
         write_file_making_parents(&path, rendered)?;
     }
 

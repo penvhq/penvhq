@@ -62,6 +62,9 @@ pub fn run(
                 continue;
             }
             let path = dir.join(&entry.path);
+            if !check {
+                crate::files::within(&dir, &path)?;
+            }
             let (status, overridden) = act(guard, entry, &path, &json, check)?;
             failed |= check && status != CURRENT;
             rows.push(vec![

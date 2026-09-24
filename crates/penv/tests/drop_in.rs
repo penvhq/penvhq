@@ -580,6 +580,37 @@ fn a_committed_output_that_leaves_the_repository_is_refused_and_nothing_is_writt
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn a_committed_symlink_cannot_carry_an_output_out_of_the_repository() {
+    let outside = std::env::temp_dir().join(format!("penv-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).unwrap();
+    let victim = outside.join("victim.txt");
+    std::fs::write(&victim, "untouched").unwrap();
+    for (link, target, output) in [
+        ("src", outside.clone(), "src/env.ts"),
+        ("env.ts", victim.clone(), "env.ts"),
+    ] {
+        let workspace = Workspace::new(&[
+            (".env.schema", SCHEMA),
+            ("package.json", "{}"),
+            (
+                ".penv/config.toml",
+                &format!("[targets.ts]\noutput = \"{output}\"\n"),
+            ),
+        ]);
+        std::os::unix::fs::symlink(&target, workspace.path(link)).unwrap();
+        let refused = workspace.penv(&["--json", "gen", "ts"]);
+        assert_eq!(refused.status.code(), Some(3), "{}", stderr(&refused));
+        let error: Value = serde_json::from_str(&stderr(&refused)).expect("a JSON error");
+        assert_eq!(error["error"], "output_outside_repo", "{link}");
+        assert!(!outside.join("env.ts").exists(), "{link}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+    }
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 #[test]
 fn an_output_init_cannot_use_is_refused_before_anything_is_written() {
     let workspace = Workspace::new(&[

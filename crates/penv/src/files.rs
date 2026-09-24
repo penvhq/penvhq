@@ -58,6 +58,43 @@ pub fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
     })
 }
 
+/// Refuse a write under `root` that a symbolic link would carry somewhere
+/// else: a committed `out -> ~/.bashrc` passes any check made on the text of
+/// the path. Makes the parent directories it checks.
+pub fn within(root: &Path, path: &Path) -> Result<(), CliError> {
+    let refused = || {
+        CliError::new(
+            "output_outside_repo",
+            format!(
+                "{} leads out of {} through a symbolic link.",
+                show(path),
+                show(root)
+            ),
+            "Replace the link with a directory, or name another path.",
+        )
+        .with_exit(crate::error::Exit::Validation)
+    };
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CliError::new(
+                "unwritable_file",
+                format!("{} could not be created: {e}.", show(parent)),
+                "Check the directory and its permissions.",
+            )
+        })?;
+        let (Ok(real_root), Ok(real_parent)) = (root.canonicalize(), parent.canonicalize()) else {
+            return Err(refused());
+        };
+        if !real_parent.starts_with(&real_root) {
+            return Err(refused());
+        }
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(refused());
+    }
+    Ok(())
+}
+
 /// A file that will hold values: nobody but this account may read it. Windows
 /// keeps the directory's inherited ACL, which is the user's own profile.
 pub fn write_private_file(path: &Path, contents: &str) -> Result<(), CliError> {
