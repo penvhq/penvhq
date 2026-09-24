@@ -222,6 +222,52 @@ fn a_sealed_command_holds_a_placeholder_and_the_allowed_host_gets_the_value_in_t
 }
 
 #[test]
+fn a_key_computed_from_a_sealed_one_holds_the_placeholder_too() {
+    let dir = scratch("derived");
+    std::fs::write(
+        dir.join(".env.schema"),
+        "# @type=string(startsWith=sk_test_, minLength=40) @hosts=api.example.com\nSTRIPE_SECRET_KEY=\n\n# @type=string\nAUTH_HEADER=\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".env"),
+        format!("STRIPE_SECRET_KEY={REAL}\nAUTH_HEADER=\"Bearer ${{STRIPE_SECRET_KEY}}\"\n"),
+    )
+    .unwrap();
+    // A file, not stdout: the output masker would hide a leak from the test.
+    let out = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .current_dir(&dir)
+        .env_remove("SSL_CERT_FILE")
+        .env_remove("PENV_ENV")
+        .args([
+            "run",
+            "--sealed",
+            "--",
+            "sh",
+            "-c",
+            "printf '%s\\n%s' \"$STRIPE_SECRET_KEY\" \"$AUTH_HEADER\" > seen.txt",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let seen = std::fs::read_to_string(dir.join("seen.txt")).unwrap();
+    let (key, header) = seen.split_once('\n').unwrap();
+    assert!(!seen.contains(REAL), "the command took the value");
+    assert!(key.starts_with("sk_test_") && key != REAL);
+    assert_eq!(header, format!("Bearer {key}"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_key_whose_type_leaves_no_room_is_refused_before_the_command_starts() {
     let dir = scratch("room");
     std::fs::write(

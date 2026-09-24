@@ -7,6 +7,35 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 const SECRET: &str = "sk_test_FAKE0000";
 
+/// Credentials the machine running the suite may carry, so a test decides for
+/// itself which identity penv finds.
+const AMBIENT_CREDENTIALS: [&str; 10] = [
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "ID_TOKEN",
+    "PENV_OIDC_TOKEN",
+];
+
+trait WithoutCredentials {
+    fn without_credentials(&mut self) -> &mut Self;
+}
+
+impl WithoutCredentials for Command {
+    /// No ambient identity, and penv's own roots rather than the machine's bundle.
+    fn without_credentials(&mut self) -> &mut Self {
+        for name in AMBIENT_CREDENTIALS {
+            self.env_remove(name);
+        }
+        self.env_remove("SSL_CERT_FILE")
+    }
+}
+
 const KEYS: &str = "\
 # @type=string(startsWith=sk_)
 STRIPE_SECRET_KEY=
@@ -317,6 +346,7 @@ fn a_cloud_schema_with_no_local_values_needs_a_credential() {
         .current_dir(workspace.path())
         .env("PENV_URL", "http://127.0.0.1:1")
         .env_remove("PENV_TOKEN")
+        .without_credentials()
         .args(["--agent", "run", "--"])
         .args([SHELL, SHELL_FLAG, ECHO_VALUES])
         .output()
@@ -345,6 +375,7 @@ fn a_cloud_schema_falls_back_to_the_local_dotenv_only_when_offline() {
             .current_dir(workspace.path())
             .env("PENV_URL", "http://127.0.0.1:1")
             .env_remove("PENV_TOKEN")
+            .without_credentials()
             .args(["--agent", "run", "--"])
             .args([SHELL, SHELL_FLAG, ECHO_VALUES]);
         if let Some(token) = token {

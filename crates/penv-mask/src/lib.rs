@@ -47,13 +47,14 @@ pub struct Masker {
 impl Masker {
     pub fn new(secrets: Vec<String>) -> Masker {
         let mut patterns: Vec<Pattern> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for secret in &secrets {
             if secret.len() < MIN_SECRET_LEN {
                 continue;
             }
             let replacement = redaction(secret).into_bytes();
             for (form, wrapped) in forms(secret) {
-                if !form.is_empty() && !patterns.iter().any(|p| p.bytes == form.as_bytes()) {
+                if !form.is_empty() && seen.insert(form.clone()) {
                     patterns.push(Pattern {
                         bytes: form.into_bytes(),
                         replacement: replacement.clone(),

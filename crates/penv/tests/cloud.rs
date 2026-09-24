@@ -68,6 +68,21 @@ const AGENT_MARKERS: [&str; 14] = [
     "ROO_ACTIVE",
 ];
 
+/// Credentials the machine running the suite may carry, so a test decides for
+/// itself which identity penv finds.
+const AMBIENT_CREDENTIALS: [&str; 10] = [
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "ID_TOKEN",
+    "PENV_OIDC_TOKEN",
+];
+
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// A scratch project directory. Its name is the project name `push` offers.
@@ -121,7 +136,7 @@ impl Workspace {
             .env_remove("HOME");
         // The suite itself may be running under an agent, and these tests decide
         // for themselves which sessions are one.
-        for marker in AGENT_MARKERS {
+        for marker in AGENT_MARKERS.iter().chain(&AMBIENT_CREDENTIALS) {
             command.env_remove(marker);
         }
         command

@@ -357,20 +357,26 @@ pub fn overlay(values: &Values, top: Layers) -> Layers {
 /// dotenv-flow and varlock share: `APP_ENV=production penv run` means
 /// production. Under the cloud the replacement is named, like a file's.
 pub fn process_wins(layers: &mut Layers, schema: &Schema, env: &Env, cloud: bool) {
+    let process = PathBuf::from("the process environment");
     let declared = schema.keys.iter().map(|k| k.name.clone());
-    let names: Vec<String> = declared.chain(layers.raw.keys().cloned()).collect();
+    let names: std::collections::BTreeSet<String> =
+        declared.chain(layers.raw.keys().cloned()).collect();
     for name in names {
         let Some(value) = env.get(&name).filter(|v| !v.is_empty()) else {
             continue;
         };
         if cloud && layers.raw.contains_key(&name) {
-            layers
-                .overridden
-                .push((name.clone(), PathBuf::from("the process environment")));
+            // A cloud value has no origin file; one a file already replaced is
+            // named once, by whatever replaced it last.
+            match layers.overridden.iter_mut().find(|(key, _)| *key == name) {
+                Some(entry) => entry.1 = process.clone(),
+                None if !layers.origin.contains_key(&name) => {
+                    layers.overridden.push((name.clone(), process.clone()));
+                }
+                None => {}
+            }
         }
-        layers
-            .origin
-            .insert(name.clone(), PathBuf::from("the process environment"));
+        layers.origin.insert(name.clone(), process.clone());
         layers.raw.insert(name, Raw::literal(value));
     }
 }
@@ -427,6 +433,9 @@ pub struct Resolved {
     pub pending: Vec<String>,
     /// The deploy bundle read in place of the cloud, when `PENV_BUNDLE_KEY` opened one.
     pub bundle: Option<PathBuf>,
+    /// What `values` was computed from, so a sealed run can compute it again.
+    pub raw: BTreeMap<String, Raw>,
+    pub fetched: Values,
 }
 
 /// Whether `random()` values are generated and kept, or only noted. `run`
@@ -545,7 +554,20 @@ pub fn values_with(
     out.values = resolution.values;
     out.errors = resolution.errors;
     out.failed_asserts = asserts(schema, &out.values, env, environment, &fetched);
+    out.raw = raw;
+    out.fetched = fetched;
     Ok(out)
+}
+
+/// The values again with each sealed key standing as its placeholder, so a key
+/// computed from one (`AUTH=Bearer ${STRIPE_KEY}`) carries the placeholder too
+/// and never the value.
+pub fn sealed_values(resolved: &Resolved, env: &Env, placeholders: &[(String, String)]) -> Values {
+    let mut raw = resolved.raw.clone();
+    for (name, placeholder) in placeholders {
+        raw.insert(name.clone(), Raw::literal(placeholder.clone()));
+    }
+    resolve_full(&raw, env.as_map(), &resolved.environment, &resolved.fetched).values
 }
 
 /// Say on stderr what a resolution did that the person did not write down.
@@ -604,11 +626,14 @@ fn asserts(
 ) -> Vec<(u32, String)> {
     let slot = "\0assert".to_string();
     let mut failed = Vec::new();
+    if schema.asserts.is_empty() {
+        return failed;
+    }
+    let mut raw: BTreeMap<String, Raw> = values
+        .iter()
+        .map(|(k, v)| (k.clone(), Raw::literal(v.clone())))
+        .collect();
     for check in &schema.asserts {
-        let mut raw: BTreeMap<String, Raw> = values
-            .iter()
-            .map(|(k, v)| (k.clone(), Raw::literal(v.clone())))
-            .collect();
         raw.insert(slot.clone(), Raw::computed(check.expr.clone()));
         let (out, errors) = resolve(&raw, env.as_map(), environment, fetched);
         let hard = errors.iter().find(|e| e.key == slot && !e.soft);
@@ -1004,6 +1029,41 @@ mod tests {
         let merged = overlay(&cloud, top);
         assert_eq!(merged.overridden[0].0, "A_KEY");
         assert_eq!(merged.raw["A_KEY"].text, "mine");
+    }
+
+    #[test]
+    fn the_process_replacing_a_cloud_value_is_named_once_and_truthfully() {
+        let schema = penv_schema::parse(
+            "# @type=string\nA_KEY=\n\n# @type=string\nB_KEY=\n\n# @type=string\nC_KEY=\n",
+        )
+        .unwrap();
+        let cloud: Values = [
+            ("A_KEY".to_string(), "cloud".to_string()),
+            ("B_KEY".to_string(), "cloud".to_string()),
+        ]
+        .into();
+        let mut top = Layers::default();
+        top.raw.insert("B_KEY".into(), Raw::literal("file"));
+        top.origin.insert("B_KEY".into(), PathBuf::from(".env"));
+        top.raw.insert("C_KEY".into(), Raw::literal("file"));
+        top.origin.insert("C_KEY".into(), PathBuf::from(".env"));
+        let mut merged = overlay(&cloud, top);
+        let env = Env::from_pairs(&[("A_KEY", "p"), ("B_KEY", "p"), ("C_KEY", "p")]);
+        process_wins(&mut merged, &schema, &env, true);
+        let named: Vec<(&str, String)> = merged
+            .overridden
+            .iter()
+            .map(|(k, f)| (k.as_str(), f.display().to_string()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("B_KEY", "the process environment".to_string()),
+                ("A_KEY", "the process environment".to_string()),
+            ],
+            "C_KEY was never a cloud value"
+        );
+        assert!(merged.raw.values().all(|r| r.text == "p"));
     }
 
     #[test]

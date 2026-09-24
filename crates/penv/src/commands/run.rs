@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
 
-use penv_agent::Policy;
 use penv_mask::Masker;
 use penv_schema::{Schema, Values, extras, validate};
 
@@ -68,7 +67,6 @@ pub fn run(
     let stdout_tty = std::io::stdout().is_terminal();
     let detection = detect_here(process_env, stdout_tty);
     let agent = detection.is_agent() || agent_flag;
-    let policy = Policy::for_(&detection, agent_flag);
 
     let environment = source::environment(environment, process_env, &schema, dir);
     let mut fetcher = cloud::Fetcher::new(process_env, &detection);
@@ -89,7 +87,7 @@ pub fn run(
     }
     let tainted = resolved.tainted.clone();
     let failed_asserts = resolved.failed_asserts.clone();
-    let values = resolved.values;
+    let values = resolved.values.clone();
 
     let mut violations = validate(&schema.for_environment(&environment), &values);
     violations.extend(source::public_leaks(&schema, &tainted));
@@ -115,7 +113,7 @@ pub fn run(
     }
 
     let interactive = stdout_tty && std::io::stdin().is_terminal();
-    let (mask, ignored_no_mask) = masking(&policy, no_mask, agent, interactive);
+    let (mask, ignored_no_mask) = masking(no_mask, agent, interactive);
     if ignored_no_mask {
         ui::warn(
             "--no-mask was ignored. It works only when you run penv yourself in a terminal, with no pipe and no AI agent.",
@@ -194,12 +192,8 @@ pub fn run(
     if (agent || sealed)
         && let Some(seal) = crate::sealed::run::prepare(&schema, &values, process_env, agent)?
     {
-        {
-            for (name, placeholder) in &seal.placeholders {
-                child_values.insert(name.clone(), placeholder.clone());
-            }
-            injection.env.extend(seal.env);
-        }
+        child_values = source::sealed_values(&resolved, process_env, &seal.placeholders);
+        injection.env.extend(seal.env);
     }
     let code = spawn(argv, &child_values, &environment, secrets, &injection)?;
     std::process::exit(after_build(dir, started, code, &named))
@@ -264,7 +258,7 @@ fn masked_values(
 /// for every run, CI and a person's terminal included, because a log is copied
 /// further than anyone expects. Turning it off is a person's move: both ends
 /// must be a terminal and no agent.
-fn masking(_policy: &Policy, no_mask: bool, agent: bool, interactive: bool) -> (bool, bool) {
+fn masking(no_mask: bool, agent: bool, interactive: bool) -> (bool, bool) {
     if !no_mask {
         return (true, false);
     }
@@ -388,8 +382,11 @@ where
         let mut scrubbed = Vec::with_capacity(chunk.len());
         loop {
             let read = match from.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(n) => n,
+                // Stopping here would leave the child blocked on a full pipe.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
             };
             scrubbed.clear();
             masker.feed(&chunk[..read], &mut scrubbed);
@@ -567,29 +564,27 @@ mod tests {
 
     #[test]
     fn a_person_may_turn_masking_off_only_at_a_terminal_on_both_ends() {
-        let human = Policy::human();
-        let agent = Policy::agent();
         const INTERACTIVE: bool = true;
         const PIPED: bool = false;
 
         assert_eq!(
-            masking(&human, false, false, INTERACTIVE),
+            masking(false, false, INTERACTIVE),
             (true, false),
             "masking is on by default, for a person too"
         );
         assert_eq!(
-            masking(&human, false, false, PIPED),
+            masking(false, false, PIPED),
             (true, false),
             "CI and pipes mask"
         );
-        assert_eq!(masking(&human, true, false, INTERACTIVE), (false, false));
+        assert_eq!(masking(true, false, INTERACTIVE), (false, false));
         assert_eq!(
-            masking(&agent, true, true, INTERACTIVE),
+            masking(true, true, INTERACTIVE),
             (true, true),
             "an agent never turns masking off"
         );
         assert_eq!(
-            masking(&agent, true, false, PIPED),
+            masking(true, false, PIPED),
             (true, true),
             "a pipe is not a person, so --no-mask is ignored"
         );
@@ -607,8 +602,9 @@ mod tests {
             markers: vec![penv_agent::NON_INTERACTIVE],
             ..Detection::default()
         };
-        let policy = Policy::for_(&detection, false);
-        assert_eq!(masking(&policy, false, false, true), (true, false));
-        assert_eq!(masking(&policy, true, false, true), (false, false));
+        let policy = penv_agent::Policy::for_(&detection, false);
+        assert!(policy.mask);
+        assert_eq!(masking(false, false, true), (true, false));
+        assert_eq!(masking(true, false, true), (false, false));
     }
 }
