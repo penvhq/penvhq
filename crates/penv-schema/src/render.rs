@@ -7,7 +7,12 @@ pub fn render(schema: &Schema) -> String {
     let mut out = String::new();
     let mut header = String::from("#");
     if let (Some(org), Some(project)) = (&schema.org, &schema.project) {
-        let _ = write!(header, " @penv={org}/{project}");
+        let provider = schema
+            .provider
+            .as_ref()
+            .map(|p| format!("{p}:"))
+            .unwrap_or_default();
+        let _ = write!(header, " @penv={provider}{org}/{project}");
     }
     // The version lives in `.penv/config.toml`; a file says it only when it is
     // not the one penv writes, because varlock rejects `@schema`.
@@ -126,13 +131,25 @@ pub fn render_key(key: &Key) -> String {
 }
 
 /// A computed default is written bare so it stays computed; a literal holding a
-/// `$` is single-quoted so it stays literal.
+/// `$` is single-quoted, or backticked, so it stays literal.
 fn default_text(v: &str, computed: bool) -> String {
     if computed {
-        return v.to_string();
+        // Bare, a ` #` would start a comment and edge spaces would be trimmed;
+        // double quotes keep it whole and still computed.
+        let cut = v.contains(" #") || v.contains("\t#") || v.trim() != v;
+        return if cut {
+            format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+        } else {
+            v.to_string()
+        };
     }
-    if crate::resolve::is_expression(v) && !v.contains('\'') {
-        return format!("'{v}'");
+    if crate::resolve::is_expression(v) {
+        if !v.contains('\'') {
+            return format!("'{v}'");
+        }
+        if !v.contains('`') {
+            return format!("`{v}`");
+        }
     }
     quote(v)
 }
@@ -157,6 +174,10 @@ pub fn set_header(source: &str, org: &str, project: &str) -> String {
         "@setValuesBulk",
         "@disable",
     ];
+    let (bom, source) = match source.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", source),
+    };
     let mut token = format!("@penv={org}/{project}");
     let mut lines: Vec<String> = source.split('\n').map(str::to_string).collect();
     let block: Vec<usize> = lines
@@ -183,7 +204,7 @@ pub fn set_header(source: &str, org: &str, project: &str) -> String {
                 token = format!("@penv={provider}:{org}/{project}");
             }
             line.replace_range(at..end, &token);
-            return lines.join("\n");
+            return format!("{bom}{}", lines.join("\n"));
         }
         let first = block
             .iter()
@@ -193,7 +214,7 @@ pub fn set_header(source: &str, org: &str, project: &str) -> String {
         let line = &mut lines[first];
         let hash = line.find('#').unwrap_or(0);
         line.insert_str(hash + 1, &format!(" {token}"));
-        return lines.join("\n");
+        return format!("{bom}{}", lines.join("\n"));
     }
-    format!("# {token}\n\n{source}")
+    format!("{bom}# {token}\n\n{source}")
 }

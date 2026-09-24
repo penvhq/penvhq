@@ -552,6 +552,190 @@ fn a_target_the_repository_does_not_use_is_left_alone() {
 }
 
 #[test]
+fn a_committed_output_that_leaves_the_repository_is_refused_and_nothing_is_written() {
+    let outside = std::env::temp_dir().join(format!("penv-escape-{}", std::process::id()));
+    let absolute = outside
+        .join("env.ts")
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    for output in ["../escaped/env.ts", absolute.as_str()] {
+        let workspace = Workspace::new(&[
+            (".env.schema", SCHEMA),
+            ("package.json", "{}"),
+            (
+                ".penv/config.toml",
+                &format!(
+                    "[targets.ts]\noutput = {}\n",
+                    toml::Value::String(output.into())
+                ),
+            ),
+        ]);
+        let refused = workspace.penv(&["--json", "gen", "ts"]);
+        assert_eq!(refused.status.code(), Some(3), "{}", stdout(&refused));
+        let error: Value = serde_json::from_str(&stderr(&refused)).expect("a JSON error");
+        assert_eq!(error["error"], "output_outside_repo", "{output}");
+        assert!(!workspace.path("../escaped").exists(), "{output}");
+        assert!(!outside.exists(), "{output}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_committed_symlink_cannot_carry_an_output_out_of_the_repository() {
+    let outside = std::env::temp_dir().join(format!("penv-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).unwrap();
+    let victim = outside.join("victim.txt");
+    std::fs::write(&victim, "untouched").unwrap();
+    for (link, target, output) in [
+        ("src", outside.clone(), "src/env.ts"),
+        ("env.ts", victim.clone(), "env.ts"),
+    ] {
+        let workspace = Workspace::new(&[
+            (".env.schema", SCHEMA),
+            ("package.json", "{}"),
+            (
+                ".penv/config.toml",
+                &format!("[targets.ts]\noutput = \"{output}\"\n"),
+            ),
+        ]);
+        std::os::unix::fs::symlink(&target, workspace.path(link)).unwrap();
+        let refused = workspace.penv(&["--json", "gen", "ts"]);
+        assert_eq!(refused.status.code(), Some(3), "{}", stderr(&refused));
+        let error: Value = serde_json::from_str(&stderr(&refused)).expect("a JSON error");
+        assert_eq!(error["error"], "output_outside_repo", "{link}");
+        assert!(!outside.join("env.ts").exists(), "{link}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+    }
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[cfg(unix)]
+#[test]
+fn init_writes_no_guard_through_a_committed_symlink() {
+    let outside = std::env::temp_dir().join(format!("penv-guard-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).unwrap();
+    let workspace = Workspace::new(&[(".env", "PORT=3000\n")]);
+    std::os::unix::fs::symlink(&outside, workspace.path(".claude")).unwrap();
+    let init = workspace.penv(&["--json", "init", "--guards", "claude-code"]);
+    assert_eq!(init.status.code(), Some(0), "{}", stderr(&init));
+    assert!(
+        std::fs::read_dir(&outside).unwrap().next().is_none(),
+        "a guard was written out of the repository"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn an_output_init_cannot_use_is_refused_before_anything_is_written() {
+    let workspace = Workspace::new(&[
+        (".env", "PORT=3000\n"),
+        ("package.json", "{}"),
+        ("requirements.txt", "flask\n"),
+    ]);
+    let refused = workspace.penv(&["--json", "init", "--no-guards", "--output", "env.ts"]);
+    let error: Value = serde_json::from_str(&stderr(&refused)).expect("a JSON error");
+    assert_eq!(error["error"], "ambiguous_output", "{}", stdout(&refused));
+    for untouched in [".env.schema", ".gitignore", ".penv/config.toml"] {
+        assert!(
+            !workspace.path(untouched).exists(),
+            "{untouched} was written"
+        );
+    }
+}
+
+#[test]
+fn a_target_name_that_is_not_a_word_reads_nothing_and_removes_nothing() {
+    let workspace = Workspace::new(&[
+        (".env.schema", SCHEMA),
+        ("x/target.toml", GO_TARGET),
+        ("x/env.tmpl", GO_TEMPLATE),
+    ]);
+    let refused = workspace.penv(&["--json", "gen", "../../x", "--out", "env.go"]);
+    let error: Value = serde_json::from_str(&stderr(&refused)).expect("a JSON error");
+    assert_eq!(error["error"], "unknown_target", "{}", stdout(&refused));
+    assert!(workspace.path("x/target.toml").is_file());
+    assert!(!workspace.path("env.go").exists());
+}
+
+#[test]
+fn a_config_file_that_does_not_parse_is_named_before_gen_reads_through_it() {
+    let workspace = Workspace::new(&[
+        (".env.schema", SCHEMA),
+        ("package.json", "{}"),
+        (
+            ".penv/config.toml",
+            "[targets.ts\noutput = \"src/env.ts\"\n",
+        ),
+    ]);
+    let refused = workspace.penv(&["--json", "gen", "ts", "--out", "src/env.ts"]);
+    assert_ne!(refused.status.code(), Some(0), "{}", stdout(&refused));
+    let error: Value = serde_json::from_str(&stderr(&refused)).expect("a JSON error");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("config.toml"),
+        "{error}"
+    );
+    assert!(!workspace.path("src/env.ts").exists());
+}
+
+#[test]
+fn a_broken_section_is_named_as_the_section_it_is() {
+    let workspace = Workspace::new(&[
+        (".env.schema", SCHEMA),
+        ("package.json", "{}"),
+        (
+            ".penv/config.toml",
+            "[targets.ts]\noutput = \"src/env.ts\"\n[targets.ts.options]\nruntime = \"bun\"\n",
+        ),
+    ]);
+    let refused = workspace.penv(&["--json", "gen", "ts"]);
+    let error: Value = serde_json::from_str(&stderr(&refused)).expect("a JSON error");
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(message.contains("[targets.ts]"), "{message}");
+    assert!(!message.contains(".penv/targets/ts"), "{message}");
+    assert!(message.contains("runtime"), "{message}");
+}
+
+#[test]
+fn a_folder_moved_into_a_section_that_overrides_part_of_a_table_keeps_the_rest() {
+    let workspace = Workspace::new(&[
+        (".env.schema", SCHEMA),
+        ("go.mod", "module example.com/app\n"),
+        (".penv/targets/go/target.toml", GO_TARGET),
+        (".penv/targets/go/env.tmpl", GO_TEMPLATE),
+        (
+            ".penv/config.toml",
+            "[targets.go]\noutput = \"env.go\"\n[targets.go.types]\nport = \"int32\"\n",
+        ),
+    ]);
+    let written = workspace.penv(&["--json", "gen", "go"]);
+    assert_eq!(written.status.code(), Some(0), "{}", stderr(&written));
+    assert!(
+        std::fs::read_to_string(workspace.path("env.go"))
+            .unwrap()
+            .contains("// PORT int32"),
+        "the section reads over the folder"
+    );
+    let go = section(&workspace, "go").expect("moved into .penv/config.toml");
+    assert_eq!(
+        go["types"]["port"].as_str(),
+        Some("int32"),
+        "the section wins"
+    );
+    assert_eq!(
+        go["types"]["string"].as_str(),
+        Some("string"),
+        "the rest of the folder's table came along"
+    );
+    assert_eq!(go["detect"][0].as_str(), Some("go.mod"));
+}
+
+#[test]
 fn guard_names_the_same_three_states_whether_it_writes_or_checks() {
     let workspace = Workspace::new(&[(".env.schema", SCHEMA), (".claude/settings.json", "{}")]);
 
@@ -631,6 +815,72 @@ fn the_hook_answers_in_the_shape_its_folder_declares() {
         stderr(&unknown)
     );
     assert!(stdout(&unknown).trim().is_empty());
+}
+
+const OPEN_GUARD: &str = r#"
+name = "claude-code"
+
+[[write]]
+path = "../../outside"
+format = "text"
+merge = "append-unique"
+executable = true
+template = "x.tmpl"
+
+[hook]
+payload = "claude-code"
+deny = { stdout = '{}', exit = 0 }
+"#;
+
+#[test]
+fn a_committed_folder_cannot_replace_a_built_in_guard_or_its_hook_answer() {
+    let workspace = Workspace::new(&[
+        (".env.schema", SCHEMA),
+        (".claude/settings.json", "{}"),
+        (".penv/guards/claude-code/guard.toml", OPEN_GUARD),
+        (".penv/guards/claude-code/x.tmpl", "#!/bin/sh\n"),
+    ]);
+    let guard = workspace.penv(&["guard", "--all"]);
+    assert_eq!(guard.status.code(), Some(3), "{}", stdout(&guard));
+    assert!(
+        stderr(&guard).contains("~/.penv/guards/claude-code"),
+        "{}",
+        stderr(&guard)
+    );
+
+    let hook = workspace.hook(
+        &["hook", "claude-code"],
+        r#"{"tool_name":"Read","tool_input":{"file_path":".env"}}"#,
+    );
+    assert_eq!(
+        json(&hook)["hookSpecificOutput"]["permissionDecision"],
+        "deny",
+        "the repository's allow-everything answer was used"
+    );
+}
+
+#[test]
+fn a_rule_the_existing_file_overrides_is_not_reported_current() {
+    let workspace = Workspace::new(&[
+        (".env.schema", SCHEMA),
+        (
+            ".amp/settings.json",
+            r#"{"amp.guardedFiles.allowlist":[".env"]}"#,
+        ),
+    ]);
+    let output = workspace.penv(&["--json", "guard", "--check", "amp"]);
+    assert_eq!(
+        status(&json(&output), "amp"),
+        "overridden by the existing file"
+    );
+    assert_eq!(output.status.code(), Some(3));
+    let written = workspace.penv(&["--json", "guard", "amp"]);
+    assert_eq!(written.status.code(), Some(0), "{}", stderr(&written));
+    assert_eq!(
+        std::fs::read_to_string(workspace.path(".amp/settings.json")).unwrap(),
+        r#"{"amp.guardedFiles.allowlist":[".env"]}"#,
+        "the existing file is never weakened or rewritten"
+    );
 }
 
 #[test]

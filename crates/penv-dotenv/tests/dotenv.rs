@@ -95,19 +95,51 @@ fn the_writer_refuses_what_the_subset_excludes() {
 }
 
 #[test]
-fn a_value_with_breaks_and_quotes_is_wrapped_in_the_quote_it_lacks() {
+fn a_value_with_breaks_and_quotes_is_refused_and_one_without_breaks_is_single_quoted() {
+    // The design refuses a line break next to a " or a \: no escape for either
+    // reads back the same in every dialect, and a raw break inside '...' is not
+    // the subset. Backticks are not the subset either.
+    for value in [
+        "<script>alert(\"x\")</script>\nnext \\ line",
+        "it's \"quoted\"\nand broken",
+        "a \\ and\na break",
+    ] {
+        assert_eq!(
+            write(&[("A_KEY", value)]),
+            Err(WriteError::Unportable {
+                key: "A_KEY".into()
+            }),
+            "{value:?}"
+        );
+    }
+    assert_eq!(
+        write(&[("A_KEY", "it's \"quoted\"")]),
+        Err(WriteError::Unquotable {
+            key: "A_KEY".into()
+        })
+    );
+
     let pairs = [
-        ("XSS_KEY", "<script>alert(\"x\")</script>\nnext \\ line"),
-        ("BOTH_QUOTES", "it's \"quoted\"\nand broken"),
+        ("XSS_KEY", "<script>alert(\"x\")</script>"),
         ("BACKTICK", "`tick"),
     ];
     let text = write(&pairs).unwrap();
     assert!(text.starts_with("XSS_KEY='<script>"), "{text}");
-    assert!(text.contains("BOTH_QUOTES=`it's"), "{text}");
-
+    assert!(!text.contains("=`"), "{text}");
     let env = read(&text);
     for (key, value) in pairs {
         assert_eq!(env.get(key), Some(value), "wrote {text:?}");
+    }
+}
+
+#[test]
+fn a_value_that_looks_like_a_call_is_written_so_it_reads_back_as_written() {
+    for value in ["hunter(2)", "random(32)", "concat(a, b)"] {
+        let text = write(&[("A_KEY", value)]).unwrap();
+        assert_eq!(text, format!("A_KEY='{value}'\n"));
+        let env = read(&text);
+        assert!(env.entries[0].literal, "{value} would be computed");
+        assert_eq!(env.get("A_KEY"), Some(value));
     }
 }
 
@@ -198,11 +230,17 @@ fn a_crlf_value_is_written_and_read_back_as_the_lf_one_it_means() {
         Some("-----BEGIN PRIVATE KEY-----\nZmFrZWtleQ==\n-----END PRIVATE KEY-----")
     );
 
-    assert_eq!(
-        write(&[("A_KEY", "one\rtwo"), ("B_KEY", "https://example.test\r")]).unwrap(),
-        "A_KEY=\"one\\ntwo\"\nB_KEY=https://example.test\n",
-        "a carriage return never blocks a pull"
-    );
+    // A carriage return of its own has no portable escape, so the design refuses
+    // it rather than turning it into a line break or dropping it.
+    for value in ["one\rtwo", "https://example.test\r"] {
+        assert_eq!(
+            write(&[("A_KEY", value)]),
+            Err(WriteError::Unportable {
+                key: "A_KEY".into()
+            }),
+            "{value:?}"
+        );
+    }
 }
 
 #[test]
@@ -532,4 +570,148 @@ fn upsert_and_remove_touch_only_the_key() {
         "# local values\nB_KEY=fresh\nC_KEY=three\nD_KEY=four\n"
     );
     assert_eq!(penv_dotenv::upsert("", "A_KEY", "x").unwrap(), "A_KEY=x\n");
+}
+
+const FAKE_PEM_LINES: &str = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCFAKEFAKEFAKEAoIBAQC7FAKE\nq1w2e3r4t5y6u7i8o9p0Q1W2E3R4T5Y6U7I8O9P0zzFAKE==\nabcDEF123=\n";
+
+#[test]
+fn an_unquoted_pem_block_is_one_value_and_no_line_of_it_becomes_a_key() {
+    let source = format!(
+        "PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n{FAKE_PEM_LINES}-----END PRIVATE KEY-----\nAFTER=1\n"
+    );
+    let env = read(&source);
+    let keys: Vec<&str> = env.entries.iter().map(|e| e.key.as_str()).collect();
+    assert_eq!(keys, ["PRIVATE_KEY", "AFTER"]);
+    let value = env.get("PRIVATE_KEY").unwrap();
+    assert!(value.starts_with("-----BEGIN PRIVATE KEY-----\nMIIE"));
+    assert!(value.ends_with("\n-----END PRIVATE KEY-----"));
+    let warning = env
+        .warnings
+        .iter()
+        .find(|w| w.code == "unquoted_multiline")
+        .expect("the block was not reported");
+    assert_eq!(warning.line, 1);
+    for w in &env.warnings {
+        assert!(!w.message.contains("MIIE"), "{w:?}");
+    }
+    let rendered = render(&infer(&env));
+    assert!(!rendered.contains("MIIE") && !rendered.contains("abcDEF"));
+}
+
+#[test]
+fn a_line_that_is_not_a_key_is_never_echoed() {
+    let env = read(&format!(
+        "SOME_KEY=one\n{FAKE_PEM_LINES}q+w/e=r\nmy-key=x\n"
+    ));
+    let keys: Vec<&str> = env.entries.iter().map(|e| e.key.as_str()).collect();
+    assert_eq!(keys, ["SOME_KEY"], "an encoded line became a key");
+    for w in &env.warnings {
+        for fragment in ["MIIE", "q1w2", "abcDEF", "q+w"] {
+            assert!(!w.message.contains(fragment), "{w:?}");
+        }
+    }
+    assert!(
+        env.warnings
+            .iter()
+            .any(|w| w.message == "line 5: the text before = is not a usable key name"),
+        "{:?}",
+        env.warnings
+    );
+    assert!(
+        env.warnings
+            .iter()
+            .any(|w| w.message.contains("\"my-key\"")),
+        "a plain name is still named: {:?}",
+        env.warnings
+    );
+    assert!(infer(&env).get("abcDEF123").is_none());
+}
+
+#[test]
+fn a_short_mixed_case_name_and_a_long_upper_one_are_still_keys() {
+    let long = format!("A{}", "_LONG".repeat(14));
+    let env = read(&format!(
+        "s3Bucket=b\napiV2Url=u\noauth2ClientId=c\n{long}=l\n"
+    ));
+    let keys: Vec<&str> = env.entries.iter().map(|e| e.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["s3Bucket", "apiV2Url", "oauth2ClientId", long.as_str()]
+    );
+    let written = penv_dotenv::upsert(&format!("{long}=l\n"), &long, "m").unwrap();
+    assert_eq!(
+        written,
+        format!("{long}=m\n"),
+        "set replaces the key in place"
+    );
+    let (removed, found) = penv_dotenv::remove(&written, &long);
+    assert!(found && removed.is_empty(), "unset finds it");
+}
+
+#[test]
+fn a_comment_where_the_value_would_start_is_a_comment() {
+    let env = read("A_KEY= # the db password\nB_KEY=#literal\n");
+    assert_eq!(env.get("A_KEY"), Some(""));
+    assert_eq!(env.get("B_KEY"), Some("#literal"));
+    assert!(codes(&env.warnings).contains(&"inline_comment"));
+}
+
+#[test]
+fn an_open_quote_keeps_the_spaces_that_end_its_line() {
+    let env = read("A_KEY=\"one  \ntwo\"\nB_KEY='three \nfour'\n");
+    assert_eq!(env.get("A_KEY"), Some("one  \ntwo"));
+    assert_eq!(env.get("B_KEY"), Some("three \nfour"));
+}
+
+#[test]
+fn upsert_and_remove_handle_every_assignment_of_a_repeated_key() {
+    let source = "A=1\nB=2\nA=3\nC=4\n";
+    let set = penv_dotenv::upsert(source, "A", "9").unwrap();
+    assert_eq!(read(&set).get("A"), Some("9"), "{set}");
+    assert_eq!(set, "B=2\nA=9\nC=4\n");
+    let (gone, found) = penv_dotenv::remove(source, "A");
+    assert!(found);
+    assert_eq!(gone, "B=2\nC=4\n");
+    assert_eq!(read(&gone).get("A"), None);
+}
+
+#[test]
+fn upsert_replaces_the_physical_lines_a_value_spans_and_no_more() {
+    let source = "A=\"x\\ny\nz\"\nB=2\nC=3\n";
+    assert_eq!(
+        penv_dotenv::upsert(source, "A", "new").unwrap(),
+        "A=new\nB=2\nC=3\n"
+    );
+    assert_eq!(penv_dotenv::remove(source, "A").0, "B=2\nC=3\n");
+    let pem =
+        format!("K=-----BEGIN PRIVATE KEY-----\n{FAKE_PEM_LINES}-----END PRIVATE KEY-----\nB=2\n");
+    assert_eq!(penv_dotenv::upsert(&pem, "K", "v").unwrap(), "K=v\nB=2\n");
+}
+
+#[test]
+fn the_schema_negation_lands_after_the_pattern_that_would_swallow_it() {
+    let update = ensure_ignored(".env\n!.env.schema\n");
+    assert_eq!(update.added, [".env.*", "!.env.schema"]);
+    let lines: Vec<&str> = update.content.lines().collect();
+    let star = lines.iter().rposition(|l| *l == ".env.*").unwrap();
+    let keep = lines.iter().rposition(|l| *l == "!.env.schema").unwrap();
+    assert!(keep > star, "{}", update.content);
+    assert!(!ensure_ignored(&update.content).changed());
+
+    let buried = ensure_ignored("!.env.schema\n.env\n.env.*\n");
+    assert_eq!(buried.added, ["!.env.schema"]);
+    assert!(buried.content.ends_with("!.env.schema\n"));
+}
+
+#[test]
+fn a_whole_number_is_a_number_and_only_a_port_key_is_a_port() {
+    let env = read("WORKERS=1\nRETRIES=0\nTRANSPORT=443\nSUPPORT=\nPORT=8080\nDB_PORT=5432\n");
+    let schema = infer(&env);
+    let ty = |name: &str| schema.get(name).unwrap().ty.base;
+    assert_eq!(ty("WORKERS"), BaseType::Number);
+    assert_eq!(ty("RETRIES"), BaseType::Number);
+    assert_eq!(ty("TRANSPORT"), BaseType::Number);
+    assert_eq!(ty("SUPPORT"), BaseType::String);
+    assert_eq!(ty("PORT"), BaseType::Port);
+    assert_eq!(ty("DB_PORT"), BaseType::Port);
 }

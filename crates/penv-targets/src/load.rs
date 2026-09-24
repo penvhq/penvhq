@@ -1,6 +1,6 @@
 use crate::error::Error;
 use crate::folder::{self, BuiltIn, Roots, Source, Tree};
-use crate::target::{Target, parse};
+use crate::target::{Target, is_name, parse};
 
 macro_rules! built_in {
     ($name:literal) => {
@@ -32,68 +32,121 @@ pub const BUILT_IN: &[BuiltIn] = &[
     built_in!("csharp"),
 ];
 
+/// One place a target reads from: its two files, each read once, and where
+/// the `target.toml` really lives, for messages.
+struct Layer {
+    source: Source,
+    at: String,
+    config: String,
+    template: Option<String>,
+}
+
 /// Repo folder, then home folder, then built in. A file the winning folder does
 /// not hold comes from the next place, so an override inherits the rest.
 pub fn load(tree: &dyn Tree, roots: &Roots, name: &str) -> Result<Target, Error> {
-    lone_template(tree, roots, name)?;
-    let found =
-        folder::find(tree, roots, "targets", "target.toml", BUILT_IN, name).map_err(|looked| {
-            Error::NotFound {
-                name: name.to_string(),
-                looked,
+    if !is_name(name) {
+        return Err(Error::Name {
+            name: name.to_string(),
+        });
+    }
+    let places = folder::places(roots, "targets", name);
+    let mut layers: Vec<Layer> = Vec::new();
+    for (source, dir) in &places {
+        let path = format!("{dir}/target.toml");
+        let template = tree.read(&format!("{dir}/env.tmpl"));
+        let Some(config) = tree.read(&path) else {
+            // A template on its own overrides nothing and is a typo worth naming.
+            if template.is_some() {
+                return Err(Error::Malformed {
+                    dir: dir.clone(),
+                    message: "there is an env.tmpl but no target.toml".into(),
+                });
             }
-        })?;
-    let broken = |message: &str| Error::Malformed {
-        dir: found.dir.clone(),
-        message: message.to_string(),
+            continue;
+        };
+        layers.push(Layer {
+            source: *source,
+            at: tree.origin(&path).unwrap_or_else(|| dir.clone()),
+            config,
+            template,
+        });
+    }
+    if let Some(built_in) = BUILT_IN.iter().find(|b| b.name == name) {
+        layers.push(Layer {
+            source: Source::BuiltIn,
+            at: "built in".into(),
+            config: built_in.file("target.toml").unwrap_or_default().to_string(),
+            template: built_in.file("env.tmpl").map(str::to_string),
+        });
+    }
+    let Some(winner) = layers.first() else {
+        let mut looked: Vec<String> = places.into_iter().map(|(_, dir)| dir).collect();
+        looked.push("built in".into());
+        return Err(Error::NotFound {
+            name: name.to_string(),
+            looked,
+        });
     };
+
     // Key by key inside a table too, so an override naming one `[options]` knob
     // keeps the other knobs and the [types] map it inherits.
     let mut config = toml::Table::new();
     let mut output_source = Source::BuiltIn;
-    for (source, text) in found.files("target.toml").iter().rev() {
-        let table: toml::Table = toml::from_str(text).map_err(|e| broken(e.message()))?;
+    for layer in layers.iter().rev() {
+        let table: toml::Table = toml::from_str(&layer.config).map_err(|e| Error::Malformed {
+            dir: layer.at.clone(),
+            message: e.message().to_string(),
+        })?;
         if table.contains_key("output") {
-            output_source = *source;
+            output_source = layer.source;
         }
         merge(&mut config, table);
     }
-    let template = found
-        .file("env.tmpl")
-        .ok_or_else(|| broken("there is a target.toml but no env.tmpl"))?;
+    let template = layers
+        .iter()
+        .find_map(|layer| layer.template.clone())
+        .ok_or_else(|| Error::Malformed {
+            dir: winner.at.clone(),
+            message: "there is a target.toml but no env.tmpl".into(),
+        })?;
     parse(
         name,
         &config,
         &template,
-        found.source,
+        winner.source,
         output_source,
-        &found.dir,
+        &winner.at,
     )
 }
 
-fn merge(into: &mut toml::Table, from: toml::Table) {
+/// `from` over `into`, key by key inside tables. `[[option]]` blocks merge by
+/// `name` and `[[suggest]]` blocks by `option`, so adding one keeps the rest.
+pub fn merge(into: &mut toml::Table, from: toml::Table) {
     for (field, value) in from {
-        match (into.get_mut(&field), value) {
-            (Some(toml::Value::Table(held)), toml::Value::Table(table)) => merge(held, table),
-            (_, value) => {
+        let by = match field.as_str() {
+            "option" => Some("name"),
+            "suggest" => Some("option"),
+            _ => None,
+        };
+        match (into.get_mut(&field), value, by) {
+            (Some(toml::Value::Table(held)), toml::Value::Table(table), _) => merge(held, table),
+            (Some(toml::Value::Array(held)), toml::Value::Array(blocks), Some(by)) => {
+                for block in blocks {
+                    let named = block.get(by).cloned();
+                    match held
+                        .iter_mut()
+                        .find(|h| named.is_some() && h.get(by) == named.as_ref())
+                    {
+                        Some(slot) => *slot = block,
+                        None => held.push(block),
+                    }
+                }
+            }
+            (_, value, _) => {
                 into.insert(field, value);
             }
         }
     }
-}
-
-/// A folder is a target because it holds a `target.toml`; a template on its own
-/// overrides nothing and is a typo worth naming.
-fn lone_template(tree: &dyn Tree, roots: &Roots, name: &str) -> Result<(), Error> {
-    for (_, dir) in folder::places(roots, "targets", name) {
-        if tree.exists(&format!("{dir}/env.tmpl")) && !tree.exists(&format!("{dir}/target.toml")) {
-            return Err(Error::Malformed {
-                dir,
-                message: "there is an env.tmpl but no target.toml".into(),
-            });
-        }
-    }
-    Ok(())
 }
 
 /// Every target name this repository has, each one loaded or the reason it
@@ -102,12 +155,6 @@ pub fn available(tree: &dyn Tree, roots: &Roots) -> Vec<Result<Target, Error>> {
     let mut names = folder::names(tree, roots, "targets", BUILT_IN);
     names.sort();
     names.iter().map(|name| load(tree, roots, name)).collect()
-}
-
-/// True when at least one directory in the repository holds a file this target
-/// detects.
-pub fn detected(tree: &dyn Tree, roots: &Roots, target: &Target) -> bool {
-    !crate::detect::candidates(tree, roots, target).is_empty()
 }
 
 #[cfg(test)]
@@ -142,6 +189,15 @@ mod tests {
                 .collect();
             out.dedup();
             out
+        }
+        fn files(&self, path: &str) -> Vec<String> {
+            let prefix = format!("{path}/");
+            self.0
+                .keys()
+                .filter_map(|p| p.strip_prefix(&prefix))
+                .filter(|rest| !rest.contains('/'))
+                .map(str::to_string)
+                .collect()
         }
     }
 
@@ -282,10 +338,68 @@ enum = "values | join('|')"
     fn a_target_is_detected_where_any_file_it_names_sits() {
         let tree = Fake::default().with("/repo/package.json", "{}");
         let r = roots();
+        let scan = crate::detect::Scan::new(&tree, &r);
         let ts = load(&tree, &r, "ts").unwrap();
         let py = load(&tree, &r, "py").unwrap();
-        assert!(detected(&tree, &r, &ts), "one detect file is enough");
-        assert!(!detected(&tree, &r, &py));
+        assert_eq!(scan.candidates(&ts), [""], "one detect file is enough");
+        assert!(scan.candidates(&py).is_empty());
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_word_never_reaches_a_path() {
+        let tree = Fake::default()
+            .with("/x/target.toml", &custom("x"))
+            .with("/x/env.tmpl", "x");
+        for name in ["../../x", "a/b", "", "Ts", "ts.tmpl"] {
+            let error = load(&tree, &roots(), name).unwrap_err();
+            assert!(matches!(error, Error::Name { .. }), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn adding_one_option_block_keeps_the_ones_it_inherits() {
+        let tree = Fake::default().with(
+            "/repo/.penv/targets/ts/target.toml",
+            "name = \"ts\"\n[options]\nbanner = \"hi\"\n[[option]]\nname = \"banner\"\ndefault = \"\"\nabout = \"A line on top.\"\n[[option]]\nname = \"mask\"\ndefault = false\nvalues = [true, false]\nabout = \"Masking, off here.\"\n[[suggest]]\noption = \"runtime\"\nprompt = \"which runtime?\"\n[[suggest.rule]]\nvalue = \"deno\"\nfiles = [\"deno.json\"]\n",
+        );
+        let target = load(&tree, &roots(), "ts").unwrap();
+        let names: Vec<&str> = target.knobs.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, ["key_case", "mask", "runtime", "banner"]);
+        let mask = target.knobs.iter().find(|k| k.name == "mask").unwrap();
+        assert_eq!(
+            mask.default,
+            toml::Value::Boolean(false),
+            "a block by the same name replaces"
+        );
+        assert_eq!(target.suggest.len(), 1, "replaced by option, not added");
+        assert_eq!(target.suggest[0].prompt, "which runtime?");
+        assert_eq!(target.suggest[0].rule.len(), 1);
+    }
+
+    #[test]
+    fn a_broken_home_file_is_named_and_not_the_repo_one_over_it() {
+        let tree = Fake::default()
+            .with(
+                "/repo/.penv/targets/ts/target.toml",
+                "name = \"ts\"\noutput = \"a.ts\"\n",
+            )
+            .with("/home/.penv/targets/ts/target.toml", "name = ");
+        let message = load(&tree, &roots(), "ts").unwrap_err().to_string();
+        assert!(message.starts_with("/home/.penv/targets/ts "), "{message}");
+    }
+
+    #[test]
+    fn a_config_section_that_breaks_is_named_as_the_section() {
+        let tree = Fake::default().with(
+            "/repo/.penv/config.toml",
+            "[targets.ts]\noutput = \"a.ts\"\ndetects = []\n",
+        );
+        let settled = crate::Settled::new(&tree, "/repo").unwrap();
+        let message = load(&settled, &roots(), "ts").unwrap_err().to_string();
+        assert!(
+            message.starts_with("/repo/.penv/config.toml [targets.ts] "),
+            "{message}"
+        );
     }
 
     #[test]

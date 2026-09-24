@@ -58,24 +58,22 @@ fn parse_file(path: &Path, chain: &mut Vec<PathBuf>) -> Result<Result<Schema, Lo
                 )),
             )]));
         }
-        // A value file is never a schema: importing one would turn its values
-        // into defaults that `penv schema` and `ls` print, past every guard
-        // that keeps agents out of `.env*`.
-        let file_name = target
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        if penv_dotenv::is_value_file(file_name) {
+        // Only a schema is imported: any other `.env*` file may hold values,
+        // which would become defaults that `penv schema` and `ls` print, past
+        // every guard that keeps agents out of `.env*`. A link is judged by
+        // the file it points at.
+        let key = canonical(&target);
+        let file_name = key.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        if file_name != SCHEMA_FILE && (file_name == ENV_FILE || file_name.starts_with(".env.")) {
             return Ok(Err(vec![(
                 path.to_path_buf(),
                 at(format!(
-                    "line {}: @import names {}, a value file; import a schema, such as ../shared/.env.schema",
+                    "line {}: @import names {}, which is not a schema and may hold values; import a schema, such as ../shared/.env.schema",
                     import.line,
                     show(&target)
                 )),
             )]));
         }
-        let key = canonical(&target);
         if chain.contains(&key) {
             return Ok(Err(vec![(
                 path.to_path_buf(),
@@ -271,6 +269,9 @@ pub struct Layers {
     pub warnings: Vec<(PathBuf, penv_dotenv::Warning)>,
     /// Cloud keys a local file replaced, with that file.
     pub overridden: Vec<(String, PathBuf)>,
+    /// Each file read, with the keys it sets a value for itself, whether or not
+    /// that value is the one that wins.
+    pub keys: Vec<(PathBuf, Vec<String>)>,
 }
 
 impl Layers {
@@ -297,7 +298,11 @@ pub fn layers(dir: &Path, files: &[String]) -> Result<Layers, CliError> {
         }
         let read = penv_dotenv::read(&read_file(&path)?);
         let mut key: Option<[u8; 32]> = None;
+        let mut own = Vec::new();
         for (name, mut raw) in read.raw() {
+            if !raw.text.is_empty() {
+                own.push(name.clone());
+            }
             // An encrypted value is decrypted here, the one place every
             // command reads value files through.
             if crate::localcrypt::is_encrypted(&raw.text) {
@@ -330,6 +335,7 @@ pub fn layers(dir: &Path, files: &[String]) -> Result<Layers, CliError> {
         }
         out.warnings
             .extend(read.warnings.into_iter().map(|w| (path.clone(), w)));
+        out.keys.push((path.clone(), own));
         out.read.push(path);
     }
     Ok(out)
@@ -357,20 +363,26 @@ pub fn overlay(values: &Values, top: Layers) -> Layers {
 /// dotenv-flow and varlock share: `APP_ENV=production penv run` means
 /// production. Under the cloud the replacement is named, like a file's.
 pub fn process_wins(layers: &mut Layers, schema: &Schema, env: &Env, cloud: bool) {
+    let process = PathBuf::from("the process environment");
     let declared = schema.keys.iter().map(|k| k.name.clone());
-    let names: Vec<String> = declared.chain(layers.raw.keys().cloned()).collect();
+    let names: std::collections::BTreeSet<String> =
+        declared.chain(layers.raw.keys().cloned()).collect();
     for name in names {
         let Some(value) = env.get(&name).filter(|v| !v.is_empty()) else {
             continue;
         };
         if cloud && layers.raw.contains_key(&name) {
-            layers
-                .overridden
-                .push((name.clone(), PathBuf::from("the process environment")));
+            // A cloud value has no origin file; one a file already replaced is
+            // named once, by whatever replaced it last.
+            match layers.overridden.iter_mut().find(|(key, _)| *key == name) {
+                Some(entry) => entry.1 = process.clone(),
+                None if !layers.origin.contains_key(&name) => {
+                    layers.overridden.push((name.clone(), process.clone()));
+                }
+                None => {}
+            }
         }
-        layers
-            .origin
-            .insert(name.clone(), PathBuf::from("the process environment"));
+        layers.origin.insert(name.clone(), process.clone());
         layers.raw.insert(name, Raw::literal(value));
     }
 }
@@ -427,6 +439,9 @@ pub struct Resolved {
     pub pending: Vec<String>,
     /// The deploy bundle read in place of the cloud, when `PENV_BUNDLE_KEY` opened one.
     pub bundle: Option<PathBuf>,
+    /// What `values` was computed from, so a sealed run can compute it again.
+    pub raw: BTreeMap<String, Raw>,
+    pub fetched: Values,
 }
 
 /// Whether `random()` values are generated and kept, or only noted. `run`
@@ -545,7 +560,20 @@ pub fn values_with(
     out.values = resolution.values;
     out.errors = resolution.errors;
     out.failed_asserts = asserts(schema, &out.values, env, environment, &fetched);
+    out.raw = raw;
+    out.fetched = fetched;
     Ok(out)
+}
+
+/// The values again with each sealed key standing as its placeholder, so a key
+/// computed from one (`AUTH=Bearer ${STRIPE_KEY}`) carries the placeholder too
+/// and never the value.
+pub fn sealed_values(resolved: &Resolved, env: &Env, placeholders: &[(String, String)]) -> Values {
+    let mut raw = resolved.raw.clone();
+    for (name, placeholder) in placeholders {
+        raw.insert(name.clone(), Raw::literal(placeholder.clone()));
+    }
+    resolve_full(&raw, env.as_map(), &resolved.environment, &resolved.fetched).values
 }
 
 /// Say on stderr what a resolution did that the person did not write down.
@@ -604,11 +632,14 @@ fn asserts(
 ) -> Vec<(u32, String)> {
     let slot = "\0assert".to_string();
     let mut failed = Vec::new();
+    if schema.asserts.is_empty() {
+        return failed;
+    }
+    let mut raw: BTreeMap<String, Raw> = values
+        .iter()
+        .map(|(k, v)| (k.clone(), Raw::literal(v.clone())))
+        .collect();
     for check in &schema.asserts {
-        let mut raw: BTreeMap<String, Raw> = values
-            .iter()
-            .map(|(k, v)| (k.clone(), Raw::literal(v.clone())))
-            .collect();
         raw.insert(slot.clone(), Raw::computed(check.expr.clone()));
         let (out, errors) = resolve(&raw, env.as_map(), environment, fetched);
         let hard = errors.iter().find(|e| e.key == slot && !e.soft);
@@ -830,35 +861,6 @@ pub fn warn_unset(errors: &[ResolveError]) {
     }
 }
 
-/// The schema as typed-code generators see it. A computed default is never
-/// written into generated code as a literal fallback (`"random(48)"`,
-/// `"if(...)"`): the key is read like one with no default, and required, because
-/// `penv run` always supplies it. A key computed from a secret is typed as one.
-/// Each key says whether a framework sends it to the browser.
-pub fn gen_view(schema: &Schema) -> serde_json::Value {
-    let mut raw = with_defaults(schema, BTreeMap::new());
-    raw.retain(|_, r| !(r.computed && r.text.trim_start().starts_with("random(")));
-    let resolution = resolve_full(&raw, &Values::new(), DEFAULT_ENVIRONMENT, &Values::new());
-    let hot = tainted(&resolution.deps, |name| {
-        schema.get(name).is_none_or(|k| k.sensitive)
-    });
-    let mut json = schema.to_json();
-    if let Some(keys) = json.get_mut("keys").and_then(|k| k.as_array_mut()) {
-        for key in keys {
-            let name = key["name"].as_str().unwrap_or_default().to_string();
-            if key["defaultExpr"] == serde_json::Value::Bool(true) {
-                key["default"] = serde_json::Value::Null;
-                key["required"] = serde_json::Value::Bool(true);
-            }
-            if hot.contains(&name) {
-                key["sensitive"] = serde_json::Value::Bool(true);
-            }
-            key["public"] = serde_json::Value::Bool(schema.is_public(&name));
-        }
-    }
-    json
-}
-
 /// Public keys whose value is computed from a secret: the prefix sends it to the
 /// browser, so the secret goes with it. Names only.
 pub fn public_leaks(
@@ -881,37 +883,50 @@ pub fn public_leaks(
         .collect()
 }
 
+/// Every value file in `dir`, whichever environment it serves, with the keys it
+/// sets a value for. Names only; nothing is decrypted.
+pub fn value_file_keys(dir: &Path) -> Vec<(PathBuf, Vec<String>)> {
+    crate::files::value_files(dir)
+        .into_iter()
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(&path).ok()?;
+            let keys = penv_dotenv::read(&text)
+                .raw()
+                .into_iter()
+                .filter(|(_, raw)| !raw.text.is_empty())
+                .map(|(name, _)| name)
+                .collect();
+            Some((path, keys))
+        })
+        .collect()
+}
+
 /// Value files git would commit while they hold a sensitive value: the file, how
-/// it is exposed, and the keys whose values it holds. Names only.
+/// it is exposed, and the keys it sets. A value the process or a later file
+/// replaces is still in the file. Names only.
 pub fn exposed_secrets(
     schema: &Schema,
-    resolved: &Resolved,
+    tainted: &std::collections::BTreeSet<String>,
+    files: &[(PathBuf, Vec<String>)],
 ) -> Vec<(PathBuf, crate::gitexposure::Exposure, Vec<String>)> {
-    let mut out = Vec::new();
-    for file in &resolved.layers.read {
-        let keys: Vec<String> = resolved
-            .layers
-            .origin
-            .iter()
-            .filter(|(_, from)| *from == file)
-            .filter(|(name, _)| is_sensitive(schema, &resolved.tainted, name))
-            .filter(|(name, _)| {
-                resolved
-                    .layers
-                    .raw
-                    .get(*name)
-                    .is_some_and(|r| !r.text.is_empty())
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-        if keys.is_empty() {
-            continue;
-        }
-        if let Some(how) = crate::gitexposure::exposure(file) {
-            out.push((file.clone(), how, keys));
-        }
-    }
-    out
+    let holding: Vec<(PathBuf, Vec<String>)> = files
+        .iter()
+        .map(|(file, keys)| {
+            let sensitive = keys
+                .iter()
+                .filter(|name| is_sensitive(schema, tainted, name))
+                .cloned()
+                .collect::<Vec<_>>();
+            (file.clone(), sensitive)
+        })
+        .filter(|(_, keys)| !keys.is_empty())
+        .collect();
+    let paths: Vec<PathBuf> = holding.iter().map(|(f, _)| f.clone()).collect();
+    holding
+        .into_iter()
+        .zip(crate::gitexposure::exposures(&paths))
+        .filter_map(|((file, keys), how)| Some((file, how?, keys)))
+        .collect()
 }
 
 /// One sentence per exposed file, for `check` to fail on and `run` to warn with.
@@ -1007,6 +1022,41 @@ mod tests {
     }
 
     #[test]
+    fn the_process_replacing_a_cloud_value_is_named_once_and_truthfully() {
+        let schema = penv_schema::parse(
+            "# @type=string\nA_KEY=\n\n# @type=string\nB_KEY=\n\n# @type=string\nC_KEY=\n",
+        )
+        .unwrap();
+        let cloud: Values = [
+            ("A_KEY".to_string(), "cloud".to_string()),
+            ("B_KEY".to_string(), "cloud".to_string()),
+        ]
+        .into();
+        let mut top = Layers::default();
+        top.raw.insert("B_KEY".into(), Raw::literal("file"));
+        top.origin.insert("B_KEY".into(), PathBuf::from(".env"));
+        top.raw.insert("C_KEY".into(), Raw::literal("file"));
+        top.origin.insert("C_KEY".into(), PathBuf::from(".env"));
+        let mut merged = overlay(&cloud, top);
+        let env = Env::from_pairs(&[("A_KEY", "p"), ("B_KEY", "p"), ("C_KEY", "p")]);
+        process_wins(&mut merged, &schema, &env, true);
+        let named: Vec<(&str, String)> = merged
+            .overridden
+            .iter()
+            .map(|(k, f)| (k.as_str(), f.display().to_string()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("B_KEY", "the process environment".to_string()),
+                ("A_KEY", "the process environment".to_string()),
+            ],
+            "C_KEY was never a cloud value"
+        );
+        assert!(merged.raw.values().all(|r| r.text == "p"));
+    }
+
+    #[test]
     fn the_environment_comes_from_the_flag_then_the_variable_then_current_env() {
         let d = dir();
         std::fs::write(d.join(".env"), "APP_ENV=staging\n").unwrap();
@@ -1070,7 +1120,35 @@ mod tests {
         )
         .unwrap();
         let err = load(&app).unwrap_err();
-        assert!(err.message.contains("a value file"), "{}", err.message);
+        assert!(err.message.contains("may hold values"), "{}", err.message);
         assert!(!err.message.contains("sk_live_FAKE"));
+
+        for name in [".env.keys", ".env.me", ".env.vault", ".env.example"] {
+            std::fs::write(shared.join(name), "API_KEY=sk_live_FAKE\n").unwrap();
+            std::fs::write(
+                app.join(".env.schema"),
+                format!("# @import(../shared/{name})\n\n# @type=string\nA=\n"),
+            )
+            .unwrap();
+            let err = load(&app).unwrap_err();
+            assert!(
+                err.message.contains("may hold values"),
+                "{name}: {}",
+                err.message
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let link = shared.join("values.schema");
+            std::os::unix::fs::symlink(shared.join(".env.production"), &link).unwrap();
+            std::fs::write(
+                app.join(".env.schema"),
+                "# @import(../shared/values.schema)\n\n# @type=string\nA=\n",
+            )
+            .unwrap();
+            let err = load(&app).unwrap_err();
+            assert!(err.message.contains("may hold values"), "{}", err.message);
+        }
     }
 }

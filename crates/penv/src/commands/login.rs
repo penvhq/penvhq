@@ -30,6 +30,14 @@ pub fn run(out: &Output, _cwd: &Path, env: &Env, agent_flag: bool) -> Result<Rep
     }
 
     let cloud = Cloud::open(env, &detection)?;
+    // A sign-in with nowhere to keep the credential would leave a live one orphaned.
+    if !cloud.keychain.usable() {
+        return Err(CliError::new(
+            "no_keychain",
+            "this host has no keychain, so the credential a sign-in makes would have nowhere to go.",
+            "Sign in where the OS keychain opens, or give this host a PENV_TOKEN.",
+        ));
+    }
     let start = cloud
         .api
         .device_start(&penv_cloud::api::host_name())
@@ -37,7 +45,7 @@ pub fn run(out: &Output, _cwd: &Path, env: &Env, agent_flag: bool) -> Result<Rep
 
     note(&format!("your code is {}", start.user_code));
     note(&format!("open {}", start.verification_uri));
-    if tty && open_browser(&start.verification_uri) {
+    if tty && open_browser(&start.verification_uri, cloud.api.base_url()) {
         note("a browser was opened for you");
     }
 
@@ -78,8 +86,7 @@ const MAX_INTERVAL: u64 = 60;
 
 /// Wait the interval the server named, and lengthen it whenever it says so.
 fn poll(cloud: &Cloud, start: &penv_cloud::DeviceStart) -> Result<penv_cloud::Grant, CliError> {
-    let mut interval = start.interval.max(1);
-    let deadline = cloud.now + start.expires_in;
+    let (mut interval, deadline) = schedule(cloud.now, start);
     loop {
         std::thread::sleep(Duration::from_secs(interval));
         match cloud
@@ -109,6 +116,14 @@ fn poll(cloud: &Cloud, start: &penv_cloud::DeviceStart) -> Result<penv_cloud::Gr
     }
 }
 
+/// The first wait and the moment to give up, whatever numbers the server sent.
+fn schedule(now: u64, start: &penv_cloud::DeviceStart) -> (u64, u64) {
+    (
+        start.interval.clamp(1, MAX_INTERVAL),
+        now.saturating_add(start.expires_in),
+    )
+}
+
 fn expired() -> CliError {
     CliError::new(
         "expired",
@@ -116,4 +131,27 @@ fn expired() -> CliError {
         "Run penv login again.",
     )
     .with_exit(Exit::Auth)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn start(interval: u64, expires_in: u64) -> penv_cloud::DeviceStart {
+        penv_cloud::DeviceStart {
+            device_code: "dc_FAKE".into(),
+            user_code: "WXYZ-1234".into(),
+            verification_uri: "https://penv.cloud/device".into(),
+            expires_in,
+            interval,
+        }
+    }
+
+    #[test]
+    fn a_server_s_numbers_never_make_a_poll_wait_forever_or_overflow() {
+        assert_eq!(schedule(1_000, &start(5, 600)), (5, 1_600));
+        assert_eq!(schedule(1_000, &start(0, 600)).0, 1);
+        assert_eq!(schedule(1_000, &start(u64::MAX, 600)).0, MAX_INTERVAL);
+        assert_eq!(schedule(1_000, &start(5, u64::MAX)).1, u64::MAX);
+    }
 }

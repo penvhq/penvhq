@@ -13,6 +13,6 @@ mod render;
 
 pub use error::Error;
 pub use guard::{Deny, Format, Guard, Hook, Merge, Payload, Probe, Scope, Write, is_installed};
-pub use load::{BUILT_IN, Roots, Tree, available, load};
+pub use load::{BUILT_IN, Roots, Tree, available, hook, load};
 pub use merge::{Outcome, apply};
 pub use render::{deny, render};

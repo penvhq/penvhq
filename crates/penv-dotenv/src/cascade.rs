@@ -43,7 +43,7 @@ pub const NOT_VALUES: [&str; 8] = [
 
 /// An environment name penv can put in a file name: letters, digits, `_`, `-`
 /// and inner dots, and none that would name `.env.local` or a file in
-/// [`NOT_VALUES`].
+/// [`NOT_VALUES`], `prod.local` (the overlay of `prod`) included.
 pub fn is_environment_name(name: &str) -> bool {
     let shaped = !name.is_empty()
         && !name.starts_with('.')
@@ -52,7 +52,8 @@ pub fn is_environment_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
-    shaped && name != "local" && !NOT_VALUES.contains(&name)
+    let last = name.rsplit('.').next().unwrap_or(name);
+    shaped && last != "local" && !NOT_VALUES.contains(&last)
 }
 
 /// A file name that is part of some environment's cascade. Schema, examples and
@@ -94,7 +95,19 @@ mod tests {
             assert!(is_environment_name(good), "{good}");
         }
         for bad in [
-            "", "../x", "a/b", "a\\b", "local", "schema", "keys", ".hidden", "a..b", "x:y",
+            "",
+            "../x",
+            "a/b",
+            "a\\b",
+            "local",
+            "schema",
+            "keys",
+            ".hidden",
+            "a..b",
+            "x:y",
+            "prod.local",
+            "prod.schema",
+            "staging.example",
         ] {
             assert!(!is_environment_name(bad), "{bad}");
         }

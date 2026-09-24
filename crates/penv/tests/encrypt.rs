@@ -201,6 +201,35 @@ fn encrypt_and_decrypt_convert_the_files_switch_the_setting_and_an_agent_cannot_
 }
 
 #[test]
+fn encrypt_leaves_every_computed_value_as_written() {
+    let d = Dir::new(
+        "computed",
+        &[
+            (".env.schema", SCHEMA),
+            (
+                ".env",
+                &format!(
+                    "STRIPE_SECRET_KEY={SECRET}\nREPLICA=penv(production/DATABASE_URL)\nSESSION=random(32)\nMODE=if(eq($PORT, 3000), dev, prod)\nJOINED=concat(a, b)\nREF=${{STRIPE_SECRET_KEY}}\n"
+                ),
+            ),
+        ],
+    );
+    let enc = d.penv(KEY, &["--format", "text", "encrypt"], None);
+    assert_eq!(enc.status.code(), Some(0), "{}", text(&enc));
+    let file = d.read(".env");
+    assert!(file.starts_with("STRIPE_SECRET_KEY=enc:v1:"), "{file}");
+    for line in [
+        "REPLICA=penv(production/DATABASE_URL)",
+        "SESSION=random(32)",
+        "MODE=if(eq($PORT, 3000), dev, prod)",
+        "JOINED=concat(a, b)",
+        "REF=${STRIPE_SECRET_KEY}",
+    ] {
+        assert!(file.contains(line), "{line} was encrypted: {file}");
+    }
+}
+
+#[test]
 fn init_writes_every_setting_with_its_meaning_and_keeps_what_a_config_already_says() {
     let fresh = Dir::new("init", &[(".env", "PORT=3000\n")]);
     let init = fresh.penv(KEY, &["init"], None);

@@ -12,17 +12,19 @@ mod error;
 pub mod folder;
 mod import;
 mod load;
-mod remember;
 mod render;
 mod settled;
 mod target;
+mod view;
 
-pub use detect::{candidates, layout_output, layout_root, output_path, package_of, suggested};
+pub use detect::{Scan, layout_output, layout_root, output_path, package_of, suggested};
 pub use error::Error;
 pub use folder::{BuiltIn, Roots, Source, Tree};
 pub use import::{Config, extends_of, import_line, join};
-pub use load::{BUILT_IN, available, detected, load};
-pub use remember::{MARK, OptionValue, hand_written, override_body};
+pub use load::{BUILT_IN, available, load, merge};
 pub use render::render;
 pub use settled::{CONFIG, Settled};
-pub use target::{BASE_TYPES, Check, INT_TYPE, Knob, Layout, Rule, Suggest, Target, word};
+pub use target::{
+    BASE_TYPES, Check, INT_TYPE, Knob, Layout, OptionValue, Rule, Suggest, Target, word,
+};
+pub use view::view;

@@ -10,8 +10,15 @@ pub struct Processes;
 
 impl Ancestry for Processes {
     fn parent_names(&self) -> Vec<String> {
-        parents()
+        chain().to_vec()
     }
+}
+
+/// The walk runs once per process: every command asks more than once, and on
+/// macOS each walk spawns `ps`.
+fn chain() -> &'static [String] {
+    static CHAIN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    CHAIN.get_or_init(parents)
 }
 
 #[cfg(target_os = "linux")]
@@ -88,4 +95,15 @@ fn parents() -> Vec<String> {
 fn parents() -> Vec<String> {
     let _ = MAX_DEPTH;
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_parent_chain_is_walked_once_per_process() {
+        assert!(std::ptr::eq(chain(), chain()));
+        assert_eq!(Processes.parent_names(), chain());
+    }
 }

@@ -314,7 +314,9 @@ pub enum Command {
 
     /// Replace penv with the latest release
     Upgrade {
-        /// Only report what the latest release is
+        /// latest (the default), next for prereleases too, or a version such as 1.2.0
+        channel: Option<String>,
+        /// Only report what that release is
         #[arg(long)]
         check: bool,
     },

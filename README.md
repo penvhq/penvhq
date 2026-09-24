@@ -41,8 +41,23 @@ COPY --from=ghcr.io/penvhq/penv:1 /penv /usr/local/bin/penv
 | Verification | release checksum always; checksum signature where OpenSSL 1.1.1+ is available |
 | Pin a release | `PENV_VERSION=v1.2.3` |
 | Install elsewhere | `PENV_INSTALL_DIR=<dir>` |
-| Upgrade | `penv upgrade` |
+| Upgrade | `penv upgrade`, see below |
 | Image | [packaging/docker](./packaging/docker/README.md) |
+
+### Upgrading
+
+`penv upgrade` reads a channel, downloads the binary for your platform and replaces the running one, after checking the release's signature and checksum.
+
+```bash
+penv upgrade                 # latest: the newest plain release, what the installers give
+penv upgrade next            # next: the newest release, prereleases included
+penv upgrade 1.2.0           # exactly this version, older than yours or not (v1.2.0 works too)
+penv upgrade next --check    # say what that channel holds and change nothing
+```
+
+`latest` and `next` only move forward; a named version is installed whichever way it lies, which is how you pin or step back. Once on a prerelease, `penv upgrade` leaves you there until a plain release overtakes it; `penv upgrade next` follows the prereleases. A penv installed by npm, Homebrew, Nix, winget or Scoop is upgraded by that manager: `npm i -g @penvhq/cli@next` for prereleases, `@latest` for plain ones.
+
+To install a prerelease on a fresh machine, pin it: `curl -fsSL https://penv.cloud/install | PENV_VERSION=v1.3.0-beta.1 sh`.
 
 ## Quick Start
 

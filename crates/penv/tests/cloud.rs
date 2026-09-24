@@ -68,6 +68,21 @@ const AGENT_MARKERS: [&str; 14] = [
     "ROO_ACTIVE",
 ];
 
+/// Credentials the machine running the suite may carry, so a test decides for
+/// itself which identity penv finds.
+const AMBIENT_CREDENTIALS: [&str; 10] = [
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "ID_TOKEN",
+    "PENV_OIDC_TOKEN",
+];
+
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// A scratch project directory. Its name is the project name `push` offers.
@@ -119,9 +134,17 @@ impl Workspace {
             .env_remove("XDG_CACHE_HOME")
             .env_remove("SSL_CERT_FILE")
             .env_remove("HOME");
+        // Ambient AWS keys would be a credential the test never chose.
+        for name in [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        ] {
+            command.env_remove(name);
+        }
         // The suite itself may be running under an agent, and these tests decide
         // for themselves which sessions are one.
-        for marker in AGENT_MARKERS {
+        for marker in AGENT_MARKERS.iter().chain(&AMBIENT_CREDENTIALS) {
             command.env_remove(marker);
         }
         command
@@ -776,6 +799,12 @@ fn a_denied_request_is_exit_two_and_an_expired_one_is_asked_again() {
 
     let denied = Mock::new();
     denied.on(
+        "GET",
+        &status_path(),
+        200,
+        &status_body("STRIPE_SECRET_KEY", "denied"),
+    );
+    denied.on(
         "POST",
         &redeem_path(),
         409,
@@ -796,6 +825,12 @@ fn a_denied_request_is_exit_two_and_an_expired_one_is_asked_again() {
     assert_eq!(stdout(&output), "", "a refusal prints nothing at all");
 
     let expired = Mock::new();
+    expired.on(
+        "GET",
+        &status_path(),
+        200,
+        &status_body("STRIPE_SECRET_KEY", "expired"),
+    );
     expired.on(
         "POST",
         &redeem_path(),
@@ -823,6 +858,56 @@ fn a_denied_request_is_exit_two_and_an_expired_one_is_asked_again() {
         "{error}"
     );
     assert_eq!(stdout(&output), "", "an exit 4 prints nothing at all");
+}
+
+/// The key is read before the id is spent. When that read fails, or names no
+/// key, nothing says the approval is for this key, so it is not redeemed.
+#[test]
+fn an_approval_whose_key_cannot_be_read_is_left_unspent() {
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    for (status, answer, code) in [
+        (
+            503,
+            json!({ "error": "unavailable" }).to_string(),
+            "server_error",
+        ),
+        (
+            404,
+            json!({ "error": "not_found" }).to_string(),
+            "no_approval",
+        ),
+        (
+            200,
+            json!({ "id": APPROVAL, "status": "approved", "url": APPROVAL_URL }).to_string(),
+            "approval_unreadable",
+        ),
+    ] {
+        let mock = Mock::new();
+        mock.on("GET", &status_path(), status, &answer);
+        mock.on(
+            "POST",
+            &redeem_path(),
+            200,
+            &json!({ "key": "STRIPE_SECRET_KEY", "value": SECRET }).to_string(),
+        );
+        let output = workspace.run(
+            &mock,
+            &[
+                "--agent",
+                "reveal",
+                "STRIPE_SECRET_KEY",
+                "--approval",
+                APPROVAL,
+            ],
+        );
+        assert_ne!(output.status.code(), Some(0), "{code}");
+        assert_eq!(json_of(&stderr(&output))["error"], code);
+        assert_eq!(stdout(&output), "", "{code}: nothing is printed");
+        assert!(
+            mock.hits("POST", &redeem_path()).is_empty(),
+            "{code}: the approval was spent anyway"
+        );
+    }
 }
 
 #[test]
@@ -954,6 +1039,28 @@ fn login_is_refused_in_an_agent_session() {
 
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(json_of(&stderr(&output))["error"], "agent_session");
+    assert!(mock.requests().is_empty(), "it never asked");
+}
+
+/// A sign-in on a host with no keychain would mint a 30-day credential with
+/// nowhere to keep it, so the device flow never starts there.
+#[cfg(target_os = "linux")]
+#[test]
+fn login_on_a_host_with_no_keychain_never_starts_the_device_flow() {
+    let mock = Mock::new();
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let output = workspace
+        .command(&mock)
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/nonexistent/penv-test-bus",
+        )
+        .arg("login")
+        .output()
+        .expect("penv runs");
+
+    assert_ne!(output.status.code(), Some(0));
+    assert_eq!(json_of(&stderr(&output))["error"], "no_keychain");
     assert!(mock.requests().is_empty(), "it never asked");
 }
 
@@ -1142,6 +1249,28 @@ fn pull_with_no_header_and_several_projects_lists_them_when_it_cannot_ask() {
         "{error}"
     );
     assert_eq!(workspace.read(".env.schema"), local_schema());
+}
+
+#[test]
+fn i_am_human_from_an_agent_or_through_a_pipe_does_not_speak_for_a_person() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+
+    let flagged = workspace.run(&mock, &["--agent", "pull", "--i-am-human"]);
+    assert_eq!(flagged.status.code(), Some(2), "{}", stderr(&flagged));
+    assert_eq!(json_of(&stderr(&flagged))["error"], "agent_session");
+
+    let detected = workspace
+        .command(&mock)
+        .env("CLAUDECODE", "1")
+        .args(["--json", "pull", "--i-am-human"])
+        .output()
+        .expect("penv runs");
+    assert_eq!(detected.status.code(), Some(2), "{}", stderr(&detected));
+    assert_eq!(json_of(&stderr(&detected))["error"], "agent_session");
+    assert!(!workspace.path().join(".env").exists());
+    assert!(mock.hits("GET", ENVS).is_empty(), "it never asked");
 }
 
 #[test]

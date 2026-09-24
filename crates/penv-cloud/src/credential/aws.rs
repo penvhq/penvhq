@@ -143,6 +143,17 @@ impl Obtain for AwsIam {
     fn obtain(&self, api: &Api, now: u64) -> Result<Bearer> {
         api.exchange_aws(&self.sign(now), now)
     }
+
+    /// The keys themselves: a session's keys change with the session, and so
+    /// does the cache that opens for them.
+    fn identity(&self) -> Option<String> {
+        Some(format!(
+            "aws:{}:{}:{}",
+            self.access_key_id,
+            self.secret_access_key,
+            self.session_token.as_deref().unwrap_or_default()
+        ))
+    }
 }
 
 fn mac(key: &[u8], data: &[u8]) -> Vec<u8> {

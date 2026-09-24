@@ -15,6 +15,18 @@ pub const BASE_TYPES: [&str; 7] = [
 /// The `integer` entry, used when a number carries `isInt`.
 pub const INT_TYPE: &str = "integer";
 
+/// A value an `[options]` knob was settled to.
+pub type OptionValue = toml::Value;
+
+/// A target name is a word: it becomes a path segment and a file name.
+pub(crate) fn is_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 /// How `gen --check` compiles what the target rendered. `{file}` in an argument
 /// is the rendered file.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -224,6 +236,15 @@ pub fn parse(
             message: "[check] has an empty command".into(),
         });
     }
+    // Each one is written beside the rendered file in a scratch directory.
+    for extra in file.check.iter().flat_map(|c| c.files.keys()) {
+        if extra.is_empty() || extra.contains(['/', '\\', ':']) || extra == "." || extra == ".." {
+            return Err(Error::Malformed {
+                dir: dir.to_string(),
+                message: format!("[check.files] names {extra}, which is not a plain file name"),
+            });
+        }
+    }
     for knob in &file.option {
         if !knob.values.is_empty() && !knob.values.contains(&knob.default) {
             return Err(Error::Malformed {
@@ -236,11 +257,21 @@ pub fn parse(
             });
         }
     }
-    for key in file.options.keys() {
-        if !file.option.iter().any(|knob| &knob.name == key) {
+    for (key, value) in &file.options {
+        let Some(knob) = file.option.iter().find(|knob| &knob.name == key) else {
             return Err(Error::Malformed {
                 dir: dir.to_string(),
                 message: format!("[options] {key} has no [[option]] block saying what it changes"),
+            });
+        };
+        if !knob.values.is_empty() && !knob.values.contains(value) {
+            let allowed: Vec<String> = knob.values.iter().map(toml::Value::to_string).collect();
+            return Err(Error::Malformed {
+                dir: dir.to_string(),
+                message: format!(
+                    "[options] {key} = {value} is not one of {}",
+                    allowed.join(", ")
+                ),
             });
         }
     }
@@ -254,12 +285,13 @@ pub fn parse(
                 ),
             });
         }
+        // `contains` is read inside the files, so a rule with none never matches.
         for rule in &suggest.rule {
-            if rule.files.is_empty() && rule.contains.is_none() {
+            if rule.files.is_empty() {
                 return Err(Error::Malformed {
                     dir: dir.to_string(),
                     message: format!(
-                        "a [[suggest.rule]] for {} names neither files nor contains",
+                        "a [[suggest.rule]] for {} names no files to look in",
                         suggest.option
                     ),
                 });
@@ -534,9 +566,78 @@ about = "Pydantic types for urls and secrets."
             &format!("name = \"ts\"\noutput = \"a\"\n[options]\nruntime = \"node\"\n{RUNTIME}[[suggest]]\noption = \"runtime\"\nprompt = \"which?\"\n[[suggest.rule]]\nvalue = \"vite\"\n"),
         )
         .unwrap_err();
+        assert!(error.to_string().contains("names no files"), "{error}");
+    }
+
+    #[test]
+    fn a_rule_that_reads_inside_no_file_is_a_broken_folder() {
+        let error = read(
+            "ts",
+            &format!("name = \"ts\"\noutput = \"a\"\n[options]\nruntime = \"node\"\n{RUNTIME}[[suggest]]\noption = \"runtime\"\nprompt = \"which?\"\n[[suggest.rule]]\nvalue = \"vite\"\ncontains = \"vite\"\n"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("names no files"), "{error}");
+    }
+
+    #[test]
+    fn an_option_value_the_knob_does_not_take_is_refused_by_name() {
+        let error = read(
+            "ts",
+            &format!("name = \"ts\"\noutput = \"a\"\n[options]\nruntime = \"bun\"\n{RUNTIME}"),
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("runtime = \"bun\""), "{message}");
         assert!(
-            error.to_string().contains("neither files nor contains"),
-            "{error}"
+            message.contains("\"node\", \"vite\", \"deno\""),
+            "{message}"
+        );
+
+        let error = read(
+            "py",
+            &format!("name = \"py\"\noutput = \"a\"\n[options]\npydantic = \"false\"\n{PYDANTIC}"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("pydantic = \"false\" is not one of false, true"),
+            "a string is not the boolean it spells: {error}"
+        );
+
+        let free = read(
+            "ts",
+            "name = \"ts\"\noutput = \"a\"\n[options]\nheader = \"anything\"\n[[option]]\nname = \"header\"\ndefault = \"\"\nabout = \"Free text.\"\n",
+        );
+        assert!(free.is_ok(), "a knob with no values takes any value");
+    }
+
+    #[test]
+    fn a_check_file_is_a_plain_name_beside_the_output() {
+        for name in [
+            "../../home/u/.bashrc",
+            "/etc/passwd",
+            "a/b.ts",
+            "..",
+            "C:x",
+            "",
+        ] {
+            let error = read(
+                "ts",
+                &format!("name = \"ts\"\noutput = \"a\"\n[check]\ncommand = [\"tsc\"]\n[check.files]\n{} = \"x\"\n", toml::Value::String(name.into())),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("[check.files]"),
+                "{name}: {error}"
+            );
+        }
+        assert!(
+            read(
+                "ts",
+                "name = \"ts\"\noutput = \"a\"\n[check]\ncommand = [\"tsc\"]\n[check.files]\n\"globals.d.ts\" = \"x\"\n",
+            )
+            .is_ok()
         );
     }
 

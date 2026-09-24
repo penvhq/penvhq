@@ -71,7 +71,7 @@ pub fn prepare(
             return Err(refuse(
                 "cannot_seal",
                 format!(
-                    "{} has @hosts, and its type leaves no room for a placeholder: a matches rule, a type other than string, or a maxLength too short for 16 random characters.",
+                    "{} has @hosts, and its type leaves no room for a placeholder: a matches rule, a type other than string, or a maxLength too short for 24 random characters.",
                     key.name
                 ),
                 format!(
@@ -241,16 +241,61 @@ fn files_dir() -> Result<PathBuf, CliError> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
-    // Folders from earlier runs hold only a certificate; clear them anyway.
+    // Folders of runs that have ended hold only a certificate; clear them
+    // anyway, but never one a run still going reads its trust bundle from.
     if let Ok(entries) = std::fs::read_dir(&base) {
+        let running = running_pids();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("sealed-") && entry.path() != dir {
+            if stale(&name, std::process::id(), running.as_deref()) {
                 let _ = std::fs::remove_dir_all(entry.path());
             }
         }
     }
     Ok(dir)
+}
+
+/// Whether `name` is the folder of a sealed run that has ended. Without a
+/// list of running processes, none is.
+fn stale(name: &str, own: u32, running: Option<&[u32]>) -> bool {
+    let Some(pid) = name
+        .strip_prefix("sealed-")
+        .and_then(|p| p.parse::<u32>().ok())
+    else {
+        return false;
+    };
+    pid != own && running.is_some_and(|r| !r.contains(&pid))
+}
+
+/// The ids of running processes, where the system lists them cheaply.
+#[cfg(target_os = "linux")]
+fn running_pids() -> Option<Vec<u32>> {
+    let entries = std::fs::read_dir("/proc").ok()?;
+    Some(
+        entries
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse().ok())
+            .collect(),
+    )
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn running_pids() -> Option<Vec<u32>> {
+    let out = std::process::Command::new("ps")
+        .args(["-Ao", "pid="])
+        .output()
+        .ok()?;
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
+    })
+}
+
+#[cfg(not(unix))]
+fn running_pids() -> Option<Vec<u32>> {
+    None
 }
 
 fn write_private(path: &Path, body: &str) -> Result<(), CliError> {
@@ -336,28 +381,45 @@ fn database(
                     ));
                 }
             };
+            if super::url::query(&url.rest, "channel_binding").as_deref() == Some("require") {
+                return Err(refuse(
+                    "cannot_seal",
+                    format!(
+                        "{}'s URL has channel_binding=require, and penv logs in to the database with SCRAM-SHA-256 without channel binding.",
+                        key.name
+                    ),
+                    format!(
+                        "Use channel_binding=prefer, or remove @hosts from {}.",
+                        key.name
+                    ),
+                ));
+            }
+            let auth = match super::url::query(&url.rest, "require_auth") {
+                Some(text) => super::postgres::require_auth(&text).map_err(|e| {
+                    refuse(
+                        "cannot_seal",
+                        format!("{}'s URL has {e}.", key.name),
+                        "Use password, md5, scram-sha-256 or none, each with or without a leading !.",
+                    )
+                })?,
+                None => super::postgres::Auth::ANY,
+            };
             let port = super::postgres::start(super::postgres::Target {
                 host: url.host.clone(),
                 port: url.port.unwrap_or(5432),
+                user: url.user.clone(),
                 password: url.password.clone(),
                 placeholder: placeholder.clone(),
                 tls,
+                auth,
             })
             .map_err(|e| failed(e.to_string()))?;
-            // The loopback leg is plain and answered with a cleartext password
-            // request, so options that forbid that on the command's side go.
-            let mut rest = super::url::with_query(&url.rest, "sslmode", "disable");
-            if super::url::query(&rest, "channel_binding").is_some() {
-                rest = super::url::with_query(&rest, "channel_binding", "disable");
-            }
-            if super::url::query(&rest, "require_auth").is_some() {
-                rest = super::url::with_query(&rest, "require_auth", "password");
-            }
             let child = format!(
-                "{}://{}:{}@127.0.0.1:{port}{rest}",
+                "{}://{}:{}@127.0.0.1:{port}{}",
                 url.scheme,
                 super::url::encode(&url.user),
-                placeholder
+                placeholder,
+                postgres_child_rest(&url.rest)
             );
             Ok((child, url.host))
         }
@@ -393,6 +455,22 @@ fn database(
             format!("Remove @hosts from {}.", key.name),
         )),
     }
+}
+
+/// The path and query the command's Postgres URL keeps. The loopback leg is
+/// plain and answered with a cleartext password request, so every TLS and GSS
+/// option goes (libpq refuses `sslrootcert=system` beside `sslmode=disable`),
+/// and options that forbid a cleartext answer are relaxed.
+fn postgres_child_rest(rest: &str) -> String {
+    let rest = super::url::without_query(rest, |k| k.starts_with("ssl") || k == "gssencmode");
+    let mut rest = super::url::with_query(&rest, "sslmode", "disable");
+    if super::url::query(&rest, "channel_binding").is_some() {
+        rest = super::url::with_query(&rest, "channel_binding", "disable");
+    }
+    if super::url::query(&rest, "require_auth").is_some() {
+        rest = super::url::with_query(&rest, "require_auth", "password");
+    }
+    rest
 }
 
 /// The Mozilla roots compiled into penv, as PEM.
@@ -450,6 +528,36 @@ mod tests {
             assert_eq!(loaded, webpki_root_certs::TLS_SERVER_ROOT_CERTS.len());
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn only_folders_of_runs_that_ended_are_stale() {
+        let running = [10, 20];
+        assert!(stale("sealed-30", 10, Some(&running)));
+        assert!(
+            !stale("sealed-20", 10, Some(&running)),
+            "another run still going"
+        );
+        assert!(!stale("sealed-10", 10, Some(&running)), "this run");
+        assert!(
+            !stale("sealed-30", 10, None),
+            "no process list, no deleting"
+        );
+        assert!(!stale("other", 10, Some(&running)));
+    }
+
+    #[test]
+    fn a_postgres_child_url_keeps_no_tls_or_gss_option() {
+        assert_eq!(
+            postgres_child_rest(
+                "/app?sslmode=verify-full&sslrootcert=system&sslnegotiation=direct&gssencmode=require&application_name=x"
+            ),
+            "/app?application_name=x&sslmode=disable"
+        );
+        assert_eq!(
+            postgres_child_rest("/app?channel_binding=prefer&require_auth=scram-sha-256"),
+            "/app?sslmode=disable&channel_binding=disable&require_auth=password"
+        );
     }
 
     #[test]

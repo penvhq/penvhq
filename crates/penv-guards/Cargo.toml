@@ -11,8 +11,10 @@ description = "Harness guard loading and additive, non-weakening config merging.
 minijinja.workspace = true
 penv-targets.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# A merged config keeps the key order its owner wrote.
+serde_json = { workspace = true, features = ["preserve_order"] }
 toml.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
 penv-schema.workspace = true

@@ -81,6 +81,8 @@
     $sums = "penv-$version-$triple.sha256"
     $download = "$releaseBase/releases/download/$version"
     if (-not $installDir) { $installDir = Join-Path $env:USERPROFILE '.penv\bin' }
+    # Absolute, so the PATH entry means the same folder from every shell.
+    $installDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($installDir)
 
     $work = Join-Path ([IO.Path]::GetTempPath()) ("penv-install-" + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $work -Force | Out-Null

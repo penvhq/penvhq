@@ -8,10 +8,8 @@ homepage.workspace = true
 description = "Language target loading and rendering over the schema JSON."
 
 [dependencies]
+penv-schema.workspace = true
 minijinja.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
-
-[dev-dependencies]
-penv-schema.workspace = true

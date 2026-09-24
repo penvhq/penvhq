@@ -3,15 +3,16 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
+use super::http::{Streamer, Swaps};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{
-    ClientConfig, ClientConnection, DigitallySignedStruct, RootCertStore, SignatureScheme,
-    StreamOwned,
+    ClientConfig, ClientConnection, Connection, DigitallySignedStruct, RootCertStore,
+    SignatureScheme, StreamOwned,
 };
 
 pub enum Upstream {
@@ -149,100 +150,239 @@ impl ServerCertVerifier for AnyCertificate {
     }
 }
 
-/// Bytes both ways until either side closes. A TLS upstream is one object, so
-/// both directions share it behind a lock, reading it with a short timeout so
-/// a write is never held up for long.
-pub fn pipe(client: TcpStream, up: Upstream) -> io::Result<()> {
-    pipe_with(client, up, |bytes: &[u8]| bytes.to_vec())
+impl Upstream {
+    pub fn halves(self) -> io::Result<(ReadHalf, WriteHalf)> {
+        match self {
+            Upstream::Plain(sock) => halves(None, sock),
+            Upstream::Tls(stream) => {
+                let StreamOwned { conn, sock } = *stream;
+                halves(Some(conn.into()), sock)
+            }
+        }
+    }
 }
 
-/// `pipe`, with each read from the client passed through `rewrite` on its way
-/// up. `rewrite` keeps its own state, so a message split across reads is seen whole.
+/// TLS state shared by the two halves of one connection.
+struct Shared {
+    conn: Mutex<Connection>,
+    /// Held while encrypted bytes go out, so records leave in the order made.
+    sending: Mutex<()>,
+}
+
+/// A connection's reading side. Over TLS it waits on the socket holding no
+/// lock and takes the shared state only to decrypt what arrived, so the other
+/// direction is never held up by a read.
+pub struct ReadHalf {
+    tls: Option<Arc<Shared>>,
+    sock: TcpStream,
+    /// Bytes read from the socket and not yet given to TLS.
+    backlog: Vec<u8>,
+}
+
+/// A connection's writing side.
+pub struct WriteHalf {
+    tls: Option<Arc<Shared>>,
+    sock: TcpStream,
+}
+
+/// Split `sock`, carrying `conn` when it is TLS, into halves each direction
+/// can block on alone.
+pub fn halves(conn: Option<Connection>, sock: TcpStream) -> io::Result<(ReadHalf, WriteHalf)> {
+    sock.set_read_timeout(None)?;
+    let tls = conn.map(|conn| {
+        Arc::new(Shared {
+            conn: Mutex::new(conn),
+            sending: Mutex::new(()),
+        })
+    });
+    Ok((
+        ReadHalf {
+            tls: tls.clone(),
+            sock: sock.try_clone()?,
+            backlog: Vec::new(),
+        },
+        WriteHalf { tls, sock },
+    ))
+}
+
+fn poisoned() -> io::Error {
+    io::Error::other("a sealed connection's lock was poisoned")
+}
+
+impl Shared {
+    fn lock(&self) -> io::Result<MutexGuard<'_, Connection>> {
+        self.conn.lock().map_err(|_| poisoned())
+    }
+
+    /// Send what `conn` has encrypted, letting go of it before the socket can block.
+    fn send(&self, mut conn: MutexGuard<'_, Connection>, sock: &mut TcpStream) -> io::Result<()> {
+        let mut out = Vec::new();
+        while conn.wants_write() {
+            conn.write_tls(&mut out)?;
+        }
+        if out.is_empty() {
+            return Ok(());
+        }
+        let _order = self.sending.lock().map_err(|_| poisoned())?;
+        drop(conn);
+        sock.write_all(&out)
+    }
+}
+
+impl Read for ReadHalf {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let Some(tls) = self.tls.clone() else {
+            return self.sock.read(buf);
+        };
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let mut conn = tls.lock()?;
+            match conn.reader().read(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                other => return other,
+            }
+            if !self.backlog.is_empty() {
+                // Feed a record at a time, stopping once there is plaintext, so
+                // rustls's buffer of it never overfills.
+                let mut fed = &self.backlog[..];
+                let mut state = Ok(());
+                while !fed.is_empty() {
+                    conn.read_tls(&mut fed)?;
+                    match conn.process_new_packets() {
+                        Ok(io) if io.plaintext_bytes_to_read() > 0 => break,
+                        Ok(_) => {}
+                        Err(e) => {
+                            state = Err(io::Error::new(io::ErrorKind::InvalidData, e));
+                            break;
+                        }
+                    }
+                }
+                let used = self.backlog.len() - fed.len();
+                self.backlog.drain(..used);
+                // Alerts and key updates the records called for.
+                tls.send(conn, &mut self.sock)?;
+                state?;
+                continue;
+            }
+            drop(conn);
+            let mut raw = [0u8; 16 * 1024];
+            let n = self.sock.read(&mut raw)?;
+            if n == 0 {
+                let mut conn = tls.lock()?;
+                conn.read_tls(&mut io::empty())?;
+                conn.process_new_packets()
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                continue;
+            }
+            self.backlog.extend_from_slice(&raw[..n]);
+        }
+    }
+}
+
+impl Write for WriteHalf {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let Some(tls) = &self.tls else {
+            return self.sock.write(buf);
+        };
+        let mut conn = tls.lock()?;
+        let n = conn.writer().write(buf)?;
+        tls.send(conn, &mut self.sock)?;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &self.tls {
+            None => self.sock.flush(),
+            Some(tls) => tls.send(tls.lock()?, &mut self.sock),
+        }
+    }
+}
+
+impl WriteHalf {
+    /// No more is coming this way: close_notify over TLS, then a half-close.
+    pub fn close(&mut self) {
+        if let Some(tls) = &self.tls
+            && let Ok(mut conn) = tls.lock()
+        {
+            conn.send_close_notify();
+            let _ = tls.send(conn, &mut self.sock);
+        }
+        let _ = self.sock.shutdown(Shutdown::Write);
+    }
+
+    /// End the connection both ways, which also wakes its read half.
+    pub fn end(&mut self) {
+        self.close();
+        let _ = self.sock.shutdown(Shutdown::Both);
+    }
+}
+
+/// One direction of a stream, rewritten: `push` each read as it arrives, keeping
+/// whatever state makes a message split across reads come out whole, and
+/// `finish` at the end.
+pub trait Rewrite: Send + 'static {
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8>;
+    fn finish(&mut self) -> Vec<u8> {
+        Vec::new()
+    }
+}
+
+impl Rewrite for Streamer {
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        Streamer::push(self, bytes)
+    }
+    fn finish(&mut self) -> Vec<u8> {
+        Streamer::finish(self)
+    }
+}
+
+/// Bytes both ways until either side closes.
+pub fn pipe(client: TcpStream, up: Upstream) -> io::Result<()> {
+    pipe_with(
+        client,
+        up,
+        Streamer::new(Swaps::default()),
+        Streamer::new(Swaps::default()),
+    )
+}
+
+/// `pipe`, with what the client sends passed through `rewrite` on its way up
+/// and what comes back through `down`.
 pub fn pipe_with(
     client: TcpStream,
     up: Upstream,
-    mut rewrite: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+    mut rewrite: impl Rewrite,
+    mut down: impl Rewrite,
 ) -> io::Result<()> {
-    match up {
-        Upstream::Plain(up) => {
-            let mut up_write = up.try_clone()?;
-            let mut client_read = client.try_clone()?;
-            let t = thread::spawn(move || {
-                let mut buf = [0u8; 16 * 1024];
-                loop {
-                    let n = match client_read.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => n,
-                    };
-                    if up_write.write_all(&rewrite(&buf[..n])).is_err() {
-                        break;
-                    }
-                }
-                let _ = up_write.shutdown(Shutdown::Write);
-            });
-            let mut up_read = up;
-            let mut client_write = client;
-            let _ = io::copy(&mut up_read, &mut client_write);
-            let _ = client_write.shutdown(Shutdown::Both);
-            let _ = t.join();
-            Ok(())
-        }
-        Upstream::Tls(stream) => {
-            stream
-                .sock
-                .set_read_timeout(Some(Duration::from_millis(20)))?;
-            let shared = Arc::new(Mutex::new(stream));
-            let writer = shared.clone();
-            let mut client_read = client.try_clone()?;
-            let t = thread::spawn(move || {
-                let mut buf = [0u8; 16 * 1024];
-                loop {
-                    let n = match client_read.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => n,
-                    };
-                    let out = rewrite(&buf[..n]);
-                    let Ok(mut up) = writer.lock() else { break };
-                    if up.write_all(&out).and_then(|_| up.flush()).is_err() {
-                        break;
-                    }
-                }
-                if let Ok(mut up) = writer.lock() {
-                    up.conn.send_close_notify();
-                    let _ = up.flush();
-                }
-            });
-            let mut client_write = client;
-            let mut buf = [0u8; 16 * 1024];
-            loop {
-                let read = {
-                    let Ok(mut up) = shared.lock() else { break };
-                    up.read(&mut buf)
-                };
-                match read {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if client_write.write_all(&buf[..n]).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                        ) =>
-                    {
-                        if t.is_finished() {
-                            break;
-                        }
-                        thread::sleep(Duration::from_millis(1));
-                    }
-                    Err(_) => break,
-                }
+    let (mut up_read, mut up_write) = up.halves()?;
+    let (mut client_read, mut client_write) = halves(None, client)?;
+    let t = thread::spawn(move || {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            let n = match client_read.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            if up_write.write_all(&rewrite.push(&buf[..n])).is_err() {
+                break;
             }
-            let _ = client_write.shutdown(Shutdown::Both);
-            let _ = t.join();
-            Ok(())
+        }
+        up_write.close();
+    });
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        let n = match up_read.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        if client_write.write_all(&down.push(&buf[..n])).is_err() {
+            break;
         }
     }
+    let _ = client_write.write_all(&down.finish());
+    client_write.end();
+    let _ = t.join();
+    Ok(())
 }

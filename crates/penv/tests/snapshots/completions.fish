@@ -108,5 +108,5 @@ complete -c penv -n '__fish_penv_at "env"' -a 'rename' -d 'Rename an environment
 complete -c penv -n '__fish_penv_at "env"' -a 'copy' -d 'Create an environment with another one'\''s keys; values are never copied'
 complete -c penv -n '__fish_penv_at "env"' -a 'rm' -d 'Delete an environment and every value in it, for good'
 complete -c penv -n '__fish_penv_at "machine"' -a 'enroll' -d 'Give this server its own identity, from a one-time secret made in the console'
-complete -c penv -n '__fish_penv_at "upgrade"' -l check -d 'Only report what the latest release is'
+complete -c penv -n '__fish_penv_at "upgrade"' -l check -d 'Only report what that release is'
 complete -c penv -n '__fish_penv_at "completions"' -a 'bash zsh fish powershell elvish'

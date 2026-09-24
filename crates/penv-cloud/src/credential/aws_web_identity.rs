@@ -7,15 +7,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
-use crate::api::{Api, Bearer};
+use crate::api::{Api, Bearer, checked_url, url_host};
 use crate::credential::{AwsIam, Obtain};
 use crate::error::{CloudError, Result};
 
 pub const TOKEN_FILE_VAR: &str = "AWS_WEB_IDENTITY_TOKEN_FILE";
 pub const ROLE_ARN_VAR: &str = "AWS_ROLE_ARN";
 pub const SESSION_NAME_VAR: &str = "AWS_ROLE_SESSION_NAME";
-/// The AWS SDKs' own endpoint overrides, service-specific first.
-pub const ENDPOINT_VARS: [&str; 2] = ["AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL"];
+/// The AWS SDKs' own override for the STS endpoint, and the only one read.
+pub const ENDPOINT_VAR: &str = "AWS_ENDPOINT_URL_STS";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AwsWebIdentity {
@@ -38,10 +38,8 @@ impl AwsWebIdentity {
     pub fn from_env(env: &BTreeMap<String, String>) -> Option<AwsWebIdentity> {
         let at = |key: &str| env.get(key).filter(|v| !v.is_empty()).cloned();
         let region = super::aws::region(env);
-        let endpoint = ENDPOINT_VARS
-            .iter()
-            .find_map(|v| at(v))
-            .unwrap_or_else(|| format!("https://sts.{region}.amazonaws.com"));
+        let endpoint =
+            at(ENDPOINT_VAR).unwrap_or_else(|| format!("https://sts.{region}.amazonaws.com"));
         Some(AwsWebIdentity {
             token_file: at(TOKEN_FILE_VAR)?,
             role_arn: at(ROLE_ARN_VAR)?,
@@ -53,6 +51,8 @@ impl AwsWebIdentity {
 
     fn assume(&self) -> Result<AwsIam> {
         let failed = |why: &str| CloudError::Credential(format!("STS web identity {why}"));
+        // The token goes over https, or to loopback, and to no one in front of a host.
+        let url = checked_url(&format!("{}/", self.endpoint))?;
         let token = std::fs::read_to_string(&self.token_file)
             .map_err(|_| failed("token file could not be read"))?;
         let body = format!(
@@ -61,16 +61,8 @@ impl AwsWebIdentity {
             form(&self.session_name),
             form(token.trim())
         );
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .tls_config(crate::tls::config())
-            .timeout_global(Some(Duration::from_secs(10)))
-            .http_status_as_error(false)
-            // The web identity token goes to STS and nowhere a redirect points.
-            .max_redirects(0)
-            .build()
-            .into();
-        let mut response = agent
-            .post(&format!("{}/", self.endpoint))
+        let mut response = agent(&url)
+            .post(&url)
             .header(
                 "Content-Type",
                 "application/x-www-form-urlencoded; charset=utf-8",
@@ -99,6 +91,39 @@ impl Obtain for AwsWebIdentity {
     fn obtain(&self, api: &Api, now: u64) -> Result<Bearer> {
         self.assume()?.obtain(api, now)
     }
+
+    /// The role and the token the platform wrote, read from the file and never
+    /// sent anywhere for this.
+    fn identity(&self) -> Option<String> {
+        let token = std::fs::read_to_string(&self.token_file).ok()?;
+        Some(format!(
+            "aws-web-identity:{}:{}",
+            self.role_arn,
+            token.trim()
+        ))
+    }
+}
+
+/// A loopback endpoint is called directly, never handed to a proxy with the
+/// token. Public STS keeps the environment's proxy, which an egress-filtered
+/// cluster needs to reach it at all, as the AWS SDKs do.
+fn agent(url: &str) -> ureq::Agent {
+    let loopback = url_host(url)
+        .is_some_and(|host| matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]"));
+    let proxy = if loopback {
+        None
+    } else {
+        ureq::Proxy::try_from_env()
+    };
+    ureq::Agent::config_builder()
+        .tls_config(crate::tls::config())
+        .proxy(proxy)
+        .timeout_global(Some(Duration::from_secs(10)))
+        .http_status_as_error(false)
+        // The web identity token goes to STS and nowhere a redirect points.
+        .max_redirects(0)
+        .build()
+        .into()
 }
 
 /// The text of the first `<name>` element.
@@ -168,6 +193,47 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(got.endpoint, "http://127.0.0.1:9");
+    }
+
+    #[test]
+    fn only_the_sts_override_is_read() {
+        let got = AwsWebIdentity::from_env(&env(&[
+            (TOKEN_FILE_VAR, "/t"),
+            (ROLE_ARN_VAR, "r"),
+            ("AWS_ENDPOINT_URL", "https://elsewhere.example.test"),
+        ]))
+        .unwrap();
+        assert_eq!(got.endpoint, "https://sts.us-east-1.amazonaws.com");
+    }
+
+    #[test]
+    fn the_web_identity_token_never_travels_over_plain_http_or_to_user_info() {
+        for endpoint in [
+            "http://sts.evil.test",
+            "https://u:secretFAKE@sts.evil.test",
+            "ftp://sts.evil.test",
+        ] {
+            let got = AwsWebIdentity::from_env(&env(&[
+                (TOKEN_FILE_VAR, "/no/such/token"),
+                (ROLE_ARN_VAR, "r"),
+                (ENDPOINT_VAR, endpoint),
+            ]))
+            .unwrap();
+            let error = got.assume().unwrap_err();
+            assert!(matches!(error, CloudError::Url(_)), "{endpoint}: {error:?}");
+            assert!(!error.to_string().contains("secretFAKE"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_loopback_endpoint_is_called_directly_and_never_through_a_proxy() {
+        for url in [
+            "http://127.0.0.1:9/",
+            "http://localhost/",
+            "http://[::1]:9/",
+        ] {
+            assert!(agent(url).config().proxy().is_none(), "{url}");
+        }
     }
 
     #[test]

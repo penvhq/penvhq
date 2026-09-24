@@ -58,28 +58,84 @@ pub fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
     })
 }
 
-/// A file that will hold values: nobody but this account may read it. Windows
-/// keeps the directory's inherited ACL, which is the user's own profile.
+/// Refuse a write under `root` that a symbolic link would carry somewhere
+/// else: a committed `out -> ~/.bashrc` passes any check made on the text of
+/// the path. Makes the parent directories it checks.
+pub fn within(root: &Path, path: &Path) -> Result<(), CliError> {
+    let refused = || {
+        CliError::new(
+            "output_outside_repo",
+            format!(
+                "{} leads out of {} through a symbolic link.",
+                show(path),
+                show(root)
+            ),
+            "Replace the link with a directory, or name another path.",
+        )
+        .with_exit(crate::error::Exit::Validation)
+    };
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CliError::new(
+                "unwritable_file",
+                format!("{} could not be created: {e}.", show(parent)),
+                "Check the directory and its permissions.",
+            )
+        })?;
+        let (Ok(real_root), Ok(real_parent)) = (root.canonicalize(), parent.canonicalize()) else {
+            return Err(refused());
+        };
+        if !real_parent.starts_with(&real_root) {
+            return Err(refused());
+        }
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(refused());
+    }
+    Ok(())
+}
+
+/// A file that will hold values: nobody but this account may read it, a file
+/// written before with wider access included. The contents land in a private
+/// file beside it and are renamed into place, so a reader never sees half a file.
+/// Windows keeps the directory's inherited ACL, which is the user's own profile.
 pub fn write_private_file(path: &Path, contents: &str) -> Result<(), CliError> {
     use std::io::Write;
 
+    let failed = |e: std::io::Error| {
+        CliError::new(
+            "unwritable_file",
+            format!("{} could not be written: {e}.", show(path)),
+            "Check the directory and its permissions.",
+        )
+    };
+    // A linked value file keeps its link: the file it points at is replaced.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or_default();
+    let temp = target.with_file_name(format!(".{name}.{}.{nanos}.tmp", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options
-        .open(path)
-        .and_then(|mut file| file.write_all(contents.as_bytes()))
-        .map_err(|e| {
-            CliError::new(
-                "unwritable_file",
-                format!("{} could not be written: {e}.", show(path)),
-                "Check the directory and its permissions.",
-            )
-        })
+    let written = options.open(&temp).and_then(|mut file| {
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()
+    });
+    if let Err(e) = written.and_then(|()| std::fs::rename(&temp, &target)) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(failed(e));
+    }
+    Ok(())
 }
 
 pub fn write_file_making_parents(path: &Path, contents: &str) -> Result<(), CliError> {
@@ -203,6 +259,34 @@ mod tests {
         let shown = show(&PathBuf::from("repo").join(".claude/settings.json"));
         assert!(!(shown.contains('/') && shown.contains('\\')), "{shown}");
         assert!(shown.contains(std::path::MAIN_SEPARATOR), "{shown}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_value_file_written_before_with_wider_access_ends_up_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("penv-private-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, "OLD=1\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_private_file(&path, "A_KEY=fake_value\n").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "A_KEY=fake_value\n"
+        );
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "a pull must not leave values readable by others"
+        );
+        assert_eq!(left.len(), 1, "no temporary file is left beside it");
     }
 
     #[cfg(unix)]

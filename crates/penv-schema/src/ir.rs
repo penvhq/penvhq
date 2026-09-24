@@ -324,7 +324,12 @@ impl fmt::Display for Type {
         if self.members.is_empty() && self.constraints.is_empty() {
             return Ok(());
         }
-        let mut args: Vec<String> = self.members.iter().map(|m| quote(m)).collect();
+        // A bare member holding `=` would read back as a constraint.
+        let mut args: Vec<String> = self
+            .members
+            .iter()
+            .map(|m| if m.contains('=') { quoted(m) } else { quote(m) })
+            .collect();
         args.extend(
             self.constraints
                 .iter()
@@ -336,11 +341,15 @@ impl fmt::Display for Type {
 
 /// The one quoting rule: decorator values, type arguments and defaults all use it.
 pub(crate) fn quote(v: &str) -> String {
-    if v.is_empty() || v.contains([' ', '\t', ',', '(', ')', '#', '"', '\'']) {
-        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+    if v.is_empty() || v.contains([' ', '\t', ',', '(', ')', '#', '"', '\'', '`']) {
+        quoted(v)
     } else {
         v.to_string()
     }
+}
+
+fn quoted(v: &str) -> String {
+    format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// A problem in the schema file itself, located for the editor.

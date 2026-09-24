@@ -28,6 +28,7 @@ pub fn run(
 ) -> Result<Report, CliError> {
     let (schema_path, schema) = load_schema(cwd)?;
     let dir = schema_path.parent().unwrap_or(cwd).to_path_buf();
+    refuse_shadowing(&dir)?;
     let guards = known(&dir);
     for name in named {
         if !guards.iter().any(|(g, _)| &g.name == name) {
@@ -61,7 +62,10 @@ pub fn run(
                 continue;
             }
             let path = dir.join(&entry.path);
-            let status = act(guard, entry, &path, &json, check)?;
+            if !check {
+                crate::files::within(&dir, &path)?;
+            }
+            let (status, overridden) = act(guard, entry, &path, &json, check)?;
             failed |= check && status != CURRENT;
             rows.push(vec![
                 guard.name.clone(),
@@ -69,7 +73,12 @@ pub fn run(
                 entry.path.clone(),
                 status.to_string(),
             ]);
-            files.push(json!({ "path": entry.path, "status": status, "written": !check }));
+            files.push(json!({
+                "path": entry.path,
+                "status": status,
+                "written": !check,
+                "overridden": overridden,
+            }));
         }
 
         if selected && !check {
@@ -133,6 +142,25 @@ pub fn run(
     })
 }
 
+/// A repository folder named after a built-in guard stops the run rather than
+/// quietly dropping that harness from the list.
+pub(crate) fn refuse_shadowing(dir: &Path) -> Result<(), CliError> {
+    let roots = Roots::new(show(dir), home());
+    for built_in in penv_guards::BUILT_IN {
+        if let Err(error @ penv_guards::Error::Shadows { .. }) =
+            penv_guards::load(&Disk, &roots, built_in.name)
+        {
+            return Err(CliError::new(
+                "guard_failed",
+                error.to_string(),
+                "Rename or remove the folder under .penv/guards, then run penv guard again.",
+            )
+            .with_exit(Exit::Validation));
+        }
+    }
+    Ok(())
+}
+
 /// Every harness penv knows here, and whether this machine has it.
 pub fn known(dir: &Path) -> Vec<(Guard, bool)> {
     let roots = Roots::new(show(dir), home());
@@ -159,6 +187,10 @@ pub fn write_selected(dir: &Path, schema: &Value, names: &[String]) -> Vec<PathB
         }
         for entry in guard.project_writes() {
             let path = dir.join(&entry.path);
+            if let Err(error) = crate::files::within(dir, &path) {
+                crate::ui::warn(&error.message);
+                continue;
+            }
             let Ok(fragment) = render(&guard, entry, schema) else {
                 continue;
             };
@@ -178,6 +210,8 @@ pub fn write_selected(dir: &Path, schema: &Value, names: &[String]) -> Vec<PathB
 const CURRENT: &str = "current";
 const STALE: &str = "stale";
 const MISSING: &str = "missing";
+/// A value already in the file stands where a rule would go; it is left alone.
+const OVERRIDDEN: &str = "overridden by the existing file";
 
 /// Merge one write, and put it on disk unless this is a check.
 fn act(
@@ -186,7 +220,7 @@ fn act(
     path: &Path,
     schema: &Value,
     check: bool,
-) -> Result<&'static str, CliError> {
+) -> Result<(&'static str, Vec<String>), CliError> {
     let fragment = render(guard, entry, schema)?;
     let existing = std::fs::read_to_string(path).ok();
     let present = existing.is_some();
@@ -202,11 +236,13 @@ fn act(
     if !check && outcome.changed {
         put(entry, path, &outcome.content)?;
     }
-    Ok(match (present, outcome.changed) {
+    let status = match (present, outcome.changed) {
+        _ if !outcome.blocked.is_empty() => OVERRIDDEN,
         (false, _) => MISSING,
         (true, true) => STALE,
         (true, false) => CURRENT,
-    })
+    };
+    Ok((status, outcome.blocked))
 }
 
 fn put(entry: &Write, path: &Path, content: &str) -> Result<(), CliError> {

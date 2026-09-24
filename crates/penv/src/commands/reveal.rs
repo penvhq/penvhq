@@ -93,21 +93,45 @@ fn ask(cloud: &Cloud, bearer: &Bearer, at: &Address, name: &str) -> CliError {
 /// wait, to give up, or to ask again.
 fn redeem(cloud: &Cloud, bearer: &Bearer, name: &str, id: &str) -> Result<Report, CliError> {
     // Which key the approval is for is read before it is spent: redeeming one
-    // that was asked for another key would print a value nobody approved.
-    let asked = cloud.api.approval(bearer, id).ok();
-    if let Some(key) = asked
-        .as_ref()
-        .and_then(|approval| approval.key.as_deref())
-        .filter(|key| *key != name)
-    {
-        return Err(mismatch(name, key, id));
+    // that was asked for another key would print a value nobody approved. An id
+    // whose key cannot be read is not spent either.
+    let asked = match cloud.api.approval(bearer, id) {
+        Ok(asked) => asked,
+        Err(CloudError::Api(api)) if api.code == "not_found" => {
+            return Err(again(
+                "no_approval",
+                name,
+                id,
+                format!("approval {id} is not on this server."),
+            ));
+        }
+        Err(other) => return Err(refuse(other, None)),
+    };
+    match asked.key.as_deref() {
+        Some(key) if key == name => {}
+        Some(key) => return Err(mismatch(name, key, id)),
+        None => {
+            return Err(CliError::new(
+                "approval_unreadable",
+                format!(
+                    "the server did not say which key approval {id} is for, so it was left unspent."
+                ),
+                format!("Run penv reveal {name} for a new approval."),
+            )
+            .with_exit(Exit::Confirmation)
+            .with("approval", json!(id)));
+        }
     }
 
     let revealed = match cloud.api.approval_redeem(bearer, id) {
         Ok(revealed) => revealed,
         Err(CloudError::Api(api)) => {
             return Err(match api.code.as_str() {
-                "approval_pending" => pending(name, id, asked.as_ref()),
+                "approval_pending" => waiting(
+                    name,
+                    &asked,
+                    format!("approval {id} for {name} is not yet approved."),
+                ),
                 "approval_denied" => CliError::new(
                     "approval_denied",
                     format!("the console refused the reveal of {name}."),
@@ -140,7 +164,7 @@ fn redeem(cloud: &Cloud, bearer: &Bearer, name: &str, id: &str) -> Result<Report
         Err(other) => return Err(refuse(other, None)),
     };
 
-    // A server that named no key on the status route is caught here instead.
+    // The redemption names its key too, and it must be the same one.
     if revealed.key != name {
         return Err(mismatch(name, &revealed.key, id));
     }
@@ -148,18 +172,6 @@ fn redeem(cloud: &Cloud, bearer: &Bearer, name: &str, id: &str) -> Result<Report
         json!({ "key": revealed.key, "value": revealed.value }),
         revealed.value,
     ))
-}
-
-/// A request nobody has answered yet. The status route says where the page is;
-/// without it the id is all there is to hand back.
-fn pending(name: &str, id: &str, approval: Option<&Approval>) -> CliError {
-    let message = format!("approval {id} for {name} is not yet approved.");
-    match approval {
-        Some(approval) => waiting(name, approval, message),
-        None => CliError::new("approval_required", message, replay(name, id))
-            .with_exit(Exit::Confirmation)
-            .with("approval", json!(id)),
-    }
 }
 
 /// An approval belongs to the key it was asked for. Spending it on another key
