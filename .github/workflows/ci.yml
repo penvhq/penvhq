@@ -5,6 +5,9 @@ on:
   push:
     branches: [main, v1-rust]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -24,3 +27,17 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo test --workspace
+
+  # The installers and the npm launcher ship in every release, so they are
+  # tested before one is cut.
+  installers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: sh install.test.sh
+      - run: node --test npm/launcher.test.mjs

@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -68,6 +68,17 @@ test("the exit code the binary answers with is the launcher's", () => {
   const entry = installed({ withBinary: true });
   assert.equal(run(entry, ["-e", "process.exit(3)"]).status, 3);
   assert.equal(run(entry, ["-e", "process.exit(0)"]).status, 0);
+});
+
+test("a SIGTERM sent to the launcher reaches penv, and penv's exit code is the answer", { skip: process.platform === "win32" }, async () => {
+  const entry = installed({ withBinary: true });
+  const script = "process.on('SIGTERM', () => process.exit(7)); process.stdout.write('ready'); setInterval(() => {}, 1000)";
+  const launcher = spawn(process.execPath, [entry, "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+  await new Promise((ready) => launcher.stdout.once("data", ready));
+  launcher.kill("SIGTERM");
+  const [code, signal] = await new Promise((done) => launcher.on("exit", (c, s) => done([c, s])));
+  assert.equal(signal, null);
+  assert.equal(code, 7);
 });
 
 test("a missing platform package names it and the installer that needs no npm", () => {

@@ -6,13 +6,15 @@ on:
     tags: ["v[0-9]*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # The release is created once here as a draft, so the six build jobs only ever
   # upload into it and nothing is downloadable until the sign job publishes it.
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: The tag is the workspace version
@@ -63,8 +65,12 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
           - { os: windows-latest, target: aarch64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -107,18 +113,25 @@ jobs:
 
   # Every checksum file is signed with the release key, so an installer and an
   # upgrade can tell a penv release from a file somebody put in its place.
+  # No third-party action runs in this job: every step shares the runner with the
+  # one that holds the key.
   sign:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+        with:
+          persist-credentials: false
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      # A boolean, so the key itself enters only the step that signs.
       - name: The release key is a secret this repository holds
         env:
-          PENV_SIGNING_KEY: ${{ secrets.PENV_SIGNING_KEY }}
+          HAS_KEY: ${{ secrets.PENV_SIGNING_KEY != '' }}
         run: |
-          if [ -z "${PENV_SIGNING_KEY:-}" ]; then
+          if [ "$HAS_KEY" != true ]; then
             echo "::error::no PENV_SIGNING_KEY secret, and an unsigned release is never published. Run cargo run -p penv-release -- keygen, put the private line in the PENV_SIGNING_KEY secret, and tag again."
             exit 1
           fi
@@ -141,10 +154,10 @@ jobs:
           for file in sums/*.sha256; do
             ./target/debug/penv-release sign "$file"
           done
-      - uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          files: sums/*.sig
+      - name: Upload the signatures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" sums/*.sig --clobber
       # The command manifest is the release asset the docs generator, the completions and the agent
       # skill read, so it is emitted by the binary this release ships rather than described anywhere.
       - name: The command manifest this release speaks
@@ -156,10 +169,7 @@ jobs:
             --pattern "penv-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl" --output penv
           chmod +x penv
           ./penv help --json > manifest.json
-      - uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          files: manifest.json
+          gh release upload "$GITHUB_REF_NAME" manifest.json --clobber
       # The signatures and the manifest are up, so the release becomes one people can download.
       - name: Publish the release
         env:
@@ -185,7 +195,7 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
       - run: node --test npm/launcher.test.mjs
-      - run: node npm/pack.mjs --version ${{ github.ref_name }} --binaries dist --out npm/build
+      - run: node npm/pack.mjs --version "$GITHUB_REF_NAME" --binaries dist --out npm/build
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

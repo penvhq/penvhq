@@ -207,6 +207,17 @@ test('finding 2: an environment named feature/foo is one path segment, in penvBu
   assert.deepEqual(since(before), ['/api/v1/envs/acme/api/feature%2Ffoo']);
 });
 
+test('an environment named only with dots is refused before any request', async () => {
+  const before = requests.length;
+  const dots = await load([
+    `# @plugin(${PLUGIN})`, '# @penv=acme/api', `# @initPenv(token=$PENV_TOKEN, url="${URL_ROOT}")`,
+    '# @setValuesBulk(penvBulk(".."))', '# ---', '# @type=penvToken', 'PENV_TOKEN=', 'DATABASE_URL=',
+  ].join('\n'));
+  assert.notEqual(dots.code, 0, dots.out);
+  assert.match(dots.out, /only of dots/);
+  assert.deepEqual(since(before), []);
+});
+
 test('finding 3: cacheTtl applies to penvBulk(); without it every load reads', async (t) => {
   // On macOS varlock decrypts its cache through a Secure Enclave daemon. On GitHub's
   // macOS runners the daemon fails to bind its socket ("Address already in use", seen
