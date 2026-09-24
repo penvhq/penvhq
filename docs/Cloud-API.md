@@ -64,8 +64,11 @@ GET  /api/v1/envs/{org}/{project}/{environment}     If-None-Match honoured
        "keys": [ { "path": "", "name": "DATABASE_URL", "kind": "static", "version": 3,
                    "updatedAt": "2026-09-22T14:05:00Z",     not yet served; the CLI reads it for @rotate (Design section 8)
                    "schema": { <one key of the .env.schema JSON IR> },
-                   "value": "..." } ],
-       "skipped": [ "path/name" ]      dynamic keys and keys with no version; absent when empty
+                   "value": "..." },
+                 { "path": "", "name": "DB_PASSWORD", "kind": "static", "version": 4,
+                   "redacted": true } ],    write-only environment, identity not a workload: present, no "value"
+       "skipped": [ "path/name" ],     dynamic keys and keys with no version; absent when empty
+       "writeOnly": true               the environment is write-only; absent otherwise
      }
   requires secret:reveal; `?values=false` lists with schema only and requires secret:read
 
@@ -83,6 +86,29 @@ DELETE /api/v1/envs/{org}/{project}/{environment}/keys/{path...}/{name}   unset
 ```
 
 Every address and key segment is percent-encoded by the client; environment names are free-form. The per-key schema is stored in `parameters.meta` as the same JSON object the CLI emits for that key in `penv schema --json`, minus `name`: `type {name, raw, members, constraints}`, `required`, `sensitive`, `default`, `description`, `example`, `docs`, `since`, `deprecated` (a string note), `rotate`, `dynamic` (boolean), `dynamicFrom`, `hosts` (below). The client omits absent fields; the server treats `null` as absent. Anything else is `400 schema_invalid`. Writes to a dynamic key answer `409 dynamic`. The console renders and edits it. `must_encrypt` follows `sensitive`.
+
+### Write-only environments
+
+An environment the console marks write-only (Pro plan and above) hands plaintext to workload identities only: a `pck_` exchanged from OIDC, AWS IAM or a bound keypair. A person's `pcu_` and a static `pck_` token get each key with `"redacted": true` and no `value`; `path`, `name`, `kind`, `version`, `updatedAt` and `schema` are still sent. The `ETag` changes when the flag flips.
+
+| Route | Write-only, identity not a workload |
+|---|---|
+| `GET /envs/...` | `200`, `"writeOnly": true`, each key `"redacted": true` with no `value` |
+| `GET /secrets/...` | `409 { "error": "redacted" }` |
+| `POST /approvals` | `409 { "error": "redacted" }`: an approval cannot release a write-only value |
+
+A redacted key has a value. The CLI never reports it as missing and never tells anyone to `penv set` it.
+
+| Command | A redacted key no local layer supplies |
+|---|---|
+| `run`, `bundle` | refused: `redacted`, exit 6, naming every such key and the environment |
+| `pull` | writes the comment `# penv:redacted KEY` in place of a value line; JSON `"redacted": [names]` |
+| `check` | a note, not a failure; JSON `"redacted": [names]` |
+| `ls` | value `redacted` |
+| `why KEY` | state `redacted`, set in the cloud environment and withheld |
+| `reveal KEY` | refused: `redacted`, exit 6 |
+
+A value in `.env.<env>.local` (or any value file, or the process environment) wins over redaction on that machine.
 
 ### `hosts`
 
@@ -150,7 +176,7 @@ Slugs are derived from names server-side; an ambiguous address is refused, never
 | 401 | `expired` (say so: run `penv login` again), `unauthorized` |
 | 403 | `forbidden`, `denied` |
 | 404 | `not_found` |
-| 409 | `dynamic`, `cloned`, `quota_exceeded`, `ambiguous`, `approval_pending`, `approval_denied`, `approval_expired`, `approval_redeemed` |
+| 409 | `dynamic`, `cloned`, `quota_exceeded`, `ambiguous`, `approval_pending`, `approval_denied`, `approval_expired`, `approval_redeemed`, `redacted` (the CLI exits 6) |
 | 429 | `rate_limited`, `slow_down`, both with `retry-after` seconds |
 | 503 | `unavailable`, retry once |
 | other 5xx | one retry after one second, then exit 1 naming the status |

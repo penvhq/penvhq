@@ -275,6 +275,10 @@ pub struct CloudKey {
     /// When the value was last written. `@rotate` counts from it.
     #[serde(default, rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    /// Present and withheld: the environment is write-only and this identity is
+    /// not a workload. Never the same as no value.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub redacted: bool,
 }
 
 impl fmt::Debug for CloudKey {
@@ -285,6 +289,7 @@ impl fmt::Debug for CloudKey {
             .field("kind", &self.kind)
             .field("version", &self.version)
             .field("updated_at", &self.updated_at)
+            .field("redacted", &self.redacted)
             .finish_non_exhaustive()
     }
 }
@@ -334,6 +339,13 @@ pub struct EnvBody {
     pub keys: Vec<CloudKey>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<String>,
+    /// Only workload identities read this environment's values.
+    #[serde(
+        default,
+        rename = "writeOnly",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub write_only: bool,
 }
 
 /// What a conditional GET came back with.
@@ -1295,6 +1307,7 @@ mod tests {
             schema: Some(json!({ "type": "port" })),
             value: Some("3000".into()),
             updated_at: Some("2026-09-22T10:00:00Z".into()),
+            redacted: false,
         };
         let sent = key.to_write();
         assert_eq!(sent.get("updatedAt"), None);
@@ -1406,7 +1419,7 @@ mod tests {
         };
         let body = EnvBody {
             keys: vec![key],
-            skipped: Vec::new(),
+            ..EnvBody::default()
         };
         let fetched = Fetched::Body {
             etag: None,
@@ -1416,6 +1429,60 @@ mod tests {
             assert!(!shown.contains("FAKE"), "{shown}");
             assert!(shown.contains("STRIPE_SECRET_KEY"), "{shown}");
         }
+    }
+
+    #[test]
+    fn a_redacted_key_is_present_without_a_value_and_absent_means_readable() {
+        let body: EnvBody = serde_json::from_value(json!({
+            "keys": [
+                { "path": "", "name": "DB_PASSWORD", "kind": "static", "version": 4, "redacted": true },
+                { "path": "", "name": "PORT", "kind": "static", "version": 1, "value": "3000" },
+            ],
+            "writeOnly": true,
+        }))
+        .unwrap();
+        assert!(body.write_only);
+        assert!(body.keys[0].redacted);
+        assert_eq!(body.keys[0].value, None);
+        assert_eq!(body.keys[0].version, Some(4));
+        assert!(!body.keys[1].redacted);
+
+        let plain: EnvBody = serde_json::from_value(json!({
+            "keys": [{ "name": "PORT", "value": "3000" }],
+        }))
+        .unwrap();
+        assert!(!plain.write_only);
+        assert!(!plain.keys[0].redacted);
+    }
+
+    #[test]
+    fn the_write_only_flags_ride_the_cache_and_are_left_out_when_false() {
+        let body = EnvBody {
+            keys: vec![CloudKey {
+                name: "DB_PASSWORD".into(),
+                redacted: true,
+                ..CloudKey::default()
+            }],
+            write_only: true,
+            ..EnvBody::default()
+        };
+        let stored = serde_json::to_value(&body).unwrap();
+        assert_eq!(stored["writeOnly"], true);
+        assert_eq!(stored["keys"][0]["redacted"], true);
+        assert_eq!(serde_json::from_value::<EnvBody>(stored).unwrap(), body);
+
+        let plain = serde_json::to_value(EnvBody::default()).unwrap();
+        assert_eq!(plain.get("writeOnly"), None);
+    }
+
+    #[test]
+    fn a_write_never_claims_a_key_is_redacted() {
+        let key = CloudKey {
+            name: "DB_PASSWORD".into(),
+            redacted: true,
+            ..CloudKey::default()
+        };
+        assert_eq!(key.to_write().get("redacted"), None);
     }
 
     #[test]

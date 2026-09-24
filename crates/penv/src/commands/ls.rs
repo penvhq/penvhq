@@ -32,10 +32,14 @@ pub fn run(
         .clone()
         .or_else(|| (!resolved.layers.is_empty()).then(|| resolved.layers.names()));
     let tainted = resolved.tainted.clone();
+    let redacted = resolved.redacted;
     let values = resolved.values;
 
+    // Withheld is a value that exists, so it never reads as missing.
     let present = |name: &str| {
-        if values.get(name).is_some_and(|v: &String| !v.is_empty()) {
+        if redacted.iter().any(|r| r == name) {
+            "redacted"
+        } else if values.get(name).is_some_and(|v: &String| !v.is_empty()) {
             "present"
         } else {
             "missing"
@@ -70,7 +74,7 @@ pub fn run(
                 "name": key.name,
                 "type": key.ty.to_string(),
                 "required": key.required,
-                                "sensitive": source::is_sensitive(&schema, &tainted, &key.name),
+                "sensitive": source::is_sensitive(&schema, &tainted, &key.name),
                 "value": present(&key.name),
             })).collect::<Vec<_>>(),
         }),

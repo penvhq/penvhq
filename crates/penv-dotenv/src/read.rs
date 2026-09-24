@@ -25,6 +25,9 @@ pub struct Dotenv {
     pub warnings: Vec<Warning>,
     /// Every assignment as (key, first line, last line), repeats included.
     pub assignments: Vec<(String, u32, u32)>,
+    /// Keys a `# penv:redacted KEY` line names, in file order, each once:
+    /// present in penv-cloud and withheld from whoever pulled the file.
+    pub redacted: Vec<String>,
 }
 
 impl Dotenv {
@@ -90,6 +93,11 @@ pub fn read(input: &str) -> Dotenv {
         let line = lines[i];
         i += 1;
         let trimmed = line.trim();
+        if let Some(key) = redacted_marker(trimmed)
+            && !out.redacted.iter().any(|k| k == key)
+        {
+            out.redacted.push(key.to_string());
+        }
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
@@ -183,6 +191,15 @@ pub fn read(input: &str) -> Dotenv {
         }
     }
     out
+}
+
+/// The comment `pull` writes for a key it could not read the value of.
+pub const REDACTED_MARKER: &str = "# penv:redacted ";
+
+/// The key a `# penv:redacted KEY` line names. Anything else is a plain comment.
+pub fn redacted_marker(line: &str) -> Option<&str> {
+    let key = line.strip_prefix(REDACTED_MARKER)?;
+    is_plausible_key(key).then_some(key)
 }
 
 /// A name a `.env` line can set. A line of base64 is a valid identifier too, so

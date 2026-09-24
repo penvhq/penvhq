@@ -12,5 +12,5 @@ pub use cascade::{
 };
 pub use gitignore::{GitignoreUpdate, IGNORE_LINES, ensure_ignored};
 pub use infer::{infer, infer_type};
-pub use read::{Dotenv, Entry, Warning, read};
-pub use write::{WriteError, remove, upsert, write};
+pub use read::{Dotenv, Entry, REDACTED_MARKER, Warning, read, redacted_marker};
+pub use write::{WriteError, remove, upsert, write, write_redacted};

@@ -40,7 +40,7 @@ Output is JSON when stdout is not a terminal or when you pass `--agent`.
 | 3 | validation failed | run `penv check` and fix the schema or ask for the value |
 | 4 | confirmation required | the user must approve; wait |
 | 5 | no credential | ask the user to run `penv login`, or to provide `PENV_TOKEN` in CI |
-| 6 | environment refused | the user's account may not read that environment; ask them |
+| 6 | environment refused | the user's account may not read that environment, or the keys named are write-only (`redacted`); ask them |
 
 ## Adding an environment variable
 

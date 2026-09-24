@@ -715,3 +715,72 @@ fn a_whole_number_is_a_number_and_only_a_port_key_is_a_port() {
     assert_eq!(ty("PORT"), BaseType::Port);
     assert_eq!(ty("DB_PORT"), BaseType::Port);
 }
+
+#[test]
+fn a_redacted_marker_names_its_key_and_never_becomes_a_value() {
+    let read =
+        penv_dotenv::read("PORT=3000\n# penv:redacted DB_PASSWORD\n# penv:redacted STRIPE_KEY\n");
+    assert_eq!(read.redacted, ["DB_PASSWORD", "STRIPE_KEY"]);
+    assert_eq!(read.get("DB_PASSWORD"), None);
+    assert_eq!(read.get("STRIPE_KEY"), None);
+    assert!(!read.raw().contains_key("DB_PASSWORD"));
+    assert_eq!(read.values().len(), 1);
+    assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+}
+
+#[test]
+fn a_malformed_redacted_marker_is_a_plain_comment() {
+    for line in [
+        "#penv:redacted DB_PASSWORD",
+        "# penv:redacted",
+        "# penv:redacted ",
+        "# penv:redacted DB PASSWORD",
+        "# penv:redacted DB_PASSWORD=x",
+        "# penv:redacted 1KEY",
+        "# penv:redacted aB3dE5gH7jK9mN1pQ3sT5vX7",
+        "# penv:REDACTED DB_PASSWORD",
+        "# penv:redacted  DB_PASSWORD",
+    ] {
+        let read = penv_dotenv::read(&format!("{line}\n"));
+        assert!(read.redacted.is_empty(), "{line}: {:?}", read.redacted);
+        assert!(read.entries.is_empty(), "{line}");
+    }
+}
+
+#[test]
+fn a_marker_line_inside_a_quoted_value_is_part_of_that_value() {
+    let read = penv_dotenv::read("NOTE=\"first\n# penv:redacted DB_PASSWORD\nlast\"\n");
+    assert!(read.redacted.is_empty(), "{:?}", read.redacted);
+    assert_eq!(read.entries.len(), 1);
+}
+
+#[test]
+fn the_writer_puts_each_redacted_key_after_the_values_and_reads_back() {
+    let written =
+        penv_dotenv::write_redacted(&[("PORT", "3000")], &["DB_PASSWORD", "STRIPE_KEY"]).unwrap();
+    assert_eq!(
+        written,
+        "PORT=3000\n# penv:redacted DB_PASSWORD\n# penv:redacted STRIPE_KEY\n"
+    );
+    let read = penv_dotenv::read(&written);
+    assert_eq!(read.redacted, ["DB_PASSWORD", "STRIPE_KEY"]);
+    assert_eq!(read.values().len(), 1);
+
+    assert!(penv_dotenv::write_redacted(&[("PORT", "1")], &["PORT"]).is_err());
+    assert!(penv_dotenv::write_redacted(&[], &["db password"]).is_err());
+}
+
+#[test]
+fn a_value_set_over_a_marker_replaces_it_and_unset_takes_it_away() {
+    let source = "PORT=3000\n# penv:redacted DB_PASSWORD\n# a note\n";
+    let set = penv_dotenv::upsert(source, "DB_PASSWORD", "local_FAKE").unwrap();
+    assert_eq!(set, "PORT=3000\nDB_PASSWORD=local_FAKE\n# a note\n");
+    assert!(penv_dotenv::read(&set).redacted.is_empty());
+
+    let (unset, found) = penv_dotenv::remove(source, "DB_PASSWORD");
+    assert!(found);
+    assert_eq!(unset, "PORT=3000\n# a note\n");
+
+    let other = penv_dotenv::upsert(source, "PORT", "4000").unwrap();
+    assert_eq!(other, "PORT=4000\n# penv:redacted DB_PASSWORD\n# a note\n");
+}

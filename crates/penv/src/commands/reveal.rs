@@ -52,19 +52,21 @@ fn read(cloud: &Cloud, bearer: &Bearer, at: &Address, name: &str) -> Result<Repo
         ));
     };
 
-    let value = body
-        .keys
-        .iter()
-        .find(|key| key.name == name)
-        .and_then(|key| key.value.clone())
-        .ok_or_else(|| {
-            CliError::new(
-                "no_value",
-                format!("{name} has no value in {at}."),
-                format!("Run penv ls to see the keys, or penv set {name} to give it one."),
-            )
-            .with_exit(Exit::Validation)
-        })?;
+    let found = body.keys.iter().find(|key| key.name == name);
+    if found.is_some_and(|key| key.redacted) {
+        return Err(refuse(
+            penv_cloud::error::ApiError::new(409, "redacted").into(),
+            Some(at),
+        ));
+    }
+    let value = found.and_then(|key| key.value.clone()).ok_or_else(|| {
+        CliError::new(
+            "no_value",
+            format!("{name} has no value in {at}."),
+            format!("Run penv ls to see the keys, or penv set {name} to give it one."),
+        )
+        .with_exit(Exit::Validation)
+    })?;
 
     Ok(Report::new(json!({ "key": name, "value": value }), value))
 }

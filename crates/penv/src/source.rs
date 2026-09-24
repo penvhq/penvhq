@@ -287,6 +287,9 @@ pub struct Layers {
     /// Each file read, with the keys it sets a value for itself, whether or not
     /// that value is the one that wins.
     pub keys: Vec<(PathBuf, Vec<String>)>,
+    /// Keys a `# penv:redacted KEY` marker names that neither its own file nor
+    /// a later one sets, with the file holding the marker.
+    pub redacted: BTreeMap<String, PathBuf>,
 }
 
 impl Layers {
@@ -350,6 +353,13 @@ pub fn layers(dir: &Path, files: &[String]) -> Result<Layers, CliError> {
         }
         out.warnings
             .extend(read.warnings.into_iter().map(|w| (path.clone(), w)));
+        // A value wins over a marker in its own file or an earlier one.
+        out.redacted.retain(|name, _| !own.contains(name));
+        for name in read.redacted {
+            if !own.contains(&name) {
+                out.redacted.insert(name, path.clone());
+            }
+        }
         out.keys.push((path.clone(), own));
         out.read.push(path);
     }
@@ -452,6 +462,9 @@ pub struct Resolved {
     pub generated: Vec<(String, PathBuf)>,
     /// `random()` keys left for the first `penv run` to generate.
     pub pending: Vec<String>,
+    /// Keys present in penv-cloud and withheld because the environment is
+    /// write-only, which no local layer supplies. Never the same as missing.
+    pub redacted: Vec<String>,
     /// The deploy bundle read in place of the cloud, when `PENV_BUNDLE_KEY` opened one.
     pub bundle: Option<PathBuf>,
     /// What `values` was computed from, so a sealed run can compute it again.
@@ -508,6 +521,7 @@ pub fn values_with(
     // A deploy bundle, when PENV_BUNDLE_KEY opens one, stands where the cloud
     // would: the deploy's values, with any value file and the process over it.
     let bundle = crate::bundle::read(dir, environment, env)?;
+    let mut withheld = Vec::new();
     out.layers = match (bundle, own(schema)) {
         (Some((file, values)), _) => {
             let mut layered = overlay(&values, local);
@@ -529,6 +543,7 @@ pub fn values_with(
             match fetcher.values(&at) {
                 Ok(cloud) => {
                     out.cloud = Some(at.to_string());
+                    withheld = fetcher.redacted(&at)?;
                     overlay(&cloud, local)
                 }
                 Err(error) if error.code == "offline" && !local.is_empty() => {
@@ -541,6 +556,25 @@ pub fn values_with(
     };
 
     process_wins(&mut out.layers, schema, env, out.cloud.is_some());
+    // The cloud decides what it withholds; a marker speaks only where no cloud
+    // or bundle was read.
+    let marked: Vec<String> = match (&out.cloud, &out.bundle) {
+        (Some(_), _) => withheld,
+        (None, Some(_)) => Vec::new(),
+        (None, None) => out.layers.redacted.keys().cloned().collect(),
+    };
+    let process = Path::new("the process environment");
+    out.redacted = marked
+        .into_iter()
+        .filter(|name| {
+            let set = out.layers.raw.get(name).is_some_and(|r| !r.text.is_empty());
+            let supplied = match out.cloud {
+                Some(_) => set,
+                None => set && out.layers.origin.get(name).is_some_and(|p| p == process),
+            };
+            !supplied && schema.current_env.as_deref() != Some(name.as_str())
+        })
+        .collect();
     // The key `@currentEnv` names holds the environment this run is for, however
     // it was chosen, so `--env production` and `$APP_ENV` never disagree.
     if let Some(key) = &schema.current_env {
@@ -589,6 +623,38 @@ pub fn sealed_values(resolved: &Resolved, env: &Env, placeholders: &[(String, St
         raw.insert(name.clone(), Raw::literal(placeholder.clone()));
     }
     resolve_full(&raw, env.as_map(), &resolved.environment, &resolved.fetched).values
+}
+
+/// The refusal for keys a command would receive and cannot: penv-cloud holds
+/// them write-only. `None` when every key has a value to hand over.
+pub fn withheld(resolved: &Resolved) -> Option<CliError> {
+    let names = &resolved.redacted;
+    if names.is_empty() {
+        return None;
+    }
+    let env = &resolved.environment;
+    let listed = names.join(", ");
+    let local = format!(".env.{env}.local");
+    let (verb, them, values) = if names.len() == 1 {
+        ("is", "it", "value")
+    } else {
+        ("are", "them", "values")
+    };
+    let fix = if resolved.cloud.is_some() {
+        format!(
+            "Run it where a workload identity (OIDC, AWS IAM or bound keypair) reads the environment, or set {them} in {local}."
+        )
+    } else {
+        format!("Set {listed} in {local}. penv-cloud keeps the {env} {values} write-only.")
+    };
+    Some(
+        CliError::new(
+            "redacted",
+            format!("{listed} in {env} {verb} write-only in penv-cloud."),
+            fix,
+        )
+        .with_exit(Exit::EnvironmentRefused),
+    )
 }
 
 /// Say on stderr what a resolution did that the person did not write down.
@@ -839,18 +905,50 @@ fn reference(
             write_private_file(&own_file, "")?;
             created.push(own_file);
         }
-        return Ok(computed(files()?.raw));
+        let local = files()?;
+        if local.redacted.contains_key(key) {
+            return Err(withheld_reference(written, key, &env_name, false));
+        }
+        return Ok(computed(local.raw));
     };
     let at = Address::new(&org, &project, &env_name);
-    let cloud = match fetcher.values(&at) {
-        Ok(values) => values,
-        Err(error) if error.code == "offline" && same_project => Values::new(),
+    let (cloud, redacted) = match fetcher.values(&at) {
+        Ok(values) => (values, fetcher.redacted(&at)?),
+        Err(error) if error.code == "offline" && same_project => (Values::new(), Vec::new()),
         Err(error) => return Err(error),
     };
+    let redacted = redacted.iter().any(|name| name == key);
     if !same_project {
+        if redacted {
+            return Err(withheld_reference(written, key, &env_name, true));
+        }
         return Ok(cloud.get(key).cloned().unwrap_or_default());
     }
-    Ok(computed(overlay(&cloud, files()?).raw))
+    let local = files()?;
+    if redacted && local.raw.get(key).is_none_or(|r| r.text.is_empty()) {
+        return Err(withheld_reference(written, key, &env_name, true));
+    }
+    Ok(computed(overlay(&cloud, local).raw))
+}
+
+/// `penv(...)` named a key penv-cloud holds write-only for this identity.
+fn withheld_reference(written: &str, key: &str, env_name: &str, cloud: bool) -> CliError {
+    let local = format!(".env.{env_name}.local");
+    let fix = if cloud {
+        format!(
+            "Run it where a workload identity (OIDC, AWS IAM or bound keypair) reads {env_name}, or set {key} in {local}."
+        )
+    } else {
+        format!("Set {key} in {local}. penv-cloud keeps the {env_name} value write-only.")
+    };
+    CliError::new(
+        "redacted",
+        format!(
+            "{key} in {env_name} is write-only in penv-cloud, so penv({written}) cannot read it."
+        ),
+        fix,
+    )
+    .with_exit(Exit::EnvironmentRefused)
 }
 
 fn no_header(written: &str) -> CliError {
@@ -1023,6 +1121,61 @@ mod tests {
         assert_eq!(read.read.len(), 2);
         assert_eq!(read.raw["A_KEY"].text, "base");
         assert_eq!(read.raw["B_KEY"].text, "staging");
+    }
+
+    #[test]
+    fn a_marker_stands_at_its_file_s_place_in_the_cascade() {
+        let d = dir();
+        std::fs::write(d.join(".env"), "A_KEY=dev\nB_KEY=dev\n").unwrap();
+        std::fs::write(
+            d.join(".env.production"),
+            "# penv:redacted A_KEY\n# penv:redacted B_KEY\n# penv:redacted C_KEY\nC_KEY=here\n",
+        )
+        .unwrap();
+        std::fs::write(d.join(".env.production.local"), "B_KEY=mine\n").unwrap();
+        let read = layers(&d, &penv_dotenv::cascade("production")).unwrap();
+        // A lower file's value does not stand in; a later file's or the same
+        // file's does.
+        assert_eq!(read.redacted.keys().collect::<Vec<_>>(), ["A_KEY"]);
+        assert_eq!(read.redacted["A_KEY"], d.join(".env.production"));
+    }
+
+    #[test]
+    fn the_refusal_names_every_withheld_key_and_the_fix_for_where_it_ran() {
+        let mut resolved = Resolved {
+            environment: "production".into(),
+            ..Resolved::default()
+        };
+        assert!(
+            withheld(&resolved).is_none(),
+            "nothing withheld, nothing refused"
+        );
+
+        resolved.redacted = vec!["DB_PASSWORD".into(), "STRIPE_KEY".into()];
+        resolved.cloud = Some("acme/api/production".into());
+        let cloud = withheld(&resolved).unwrap();
+        assert_eq!(cloud.code, "redacted");
+        assert_eq!(cloud.exit, Exit::EnvironmentRefused);
+        assert_eq!(
+            cloud.message,
+            "DB_PASSWORD, STRIPE_KEY in production are write-only in penv-cloud."
+        );
+        assert_eq!(
+            cloud.fix,
+            "Run it where a workload identity (OIDC, AWS IAM or bound keypair) reads the environment, or set them in .env.production.local."
+        );
+
+        resolved.redacted = vec!["DB_PASSWORD".into()];
+        resolved.cloud = None;
+        let local = withheld(&resolved).unwrap();
+        assert_eq!(
+            local.message,
+            "DB_PASSWORD in production is write-only in penv-cloud."
+        );
+        assert_eq!(
+            local.fix,
+            "Set DB_PASSWORD in .env.production.local. penv-cloud keeps the production value write-only."
+        );
     }
 
     #[test]

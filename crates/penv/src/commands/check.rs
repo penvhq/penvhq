@@ -68,11 +68,19 @@ pub fn run(
             let mut local = source::layers(dir, &penv_dotenv::cascade(&environment))?;
             source::process_wins(&mut local, &schema, env, false);
             let (values, errors) = source::finish(&schema, local.raw.clone(), env, &environment);
+            let process = Path::new("the process environment");
+            let redacted = local
+                .redacted
+                .keys()
+                .filter(|name| local.origin.get(*name).is_none_or(|p| p != process))
+                .cloned()
+                .collect();
             source::Resolved {
                 environment: environment.clone(),
                 values,
                 errors,
                 layers: local,
+                redacted,
                 ..Default::default()
             }
         }
@@ -101,6 +109,15 @@ pub fn run(
             validate_key(key, values.get(name).map(String::as_str))
         }
     };
+    // A withheld value exists; there is nothing here to validate it against.
+    violations.retain(|v| !resolved.redacted.contains(&v.key));
+    for key in &resolved.redacted {
+        if only.is_none_or(|name| name == key) {
+            notes.push(format!(
+                "{key} in {environment} is write-only in penv-cloud: it has a value, withheld from this identity, so it was not validated"
+            ));
+        }
+    }
     for error in resolved.errors.iter().filter(|e| e.soft) {
         if only.is_none_or(|name| name == error.key) {
             notes.push(error.message.clone());
@@ -301,6 +318,7 @@ pub fn run(
     );
     json["rotation"] = json!(rotation.iter().map(|r| r.json.clone()).collect::<Vec<_>>());
     json["notes"] = json!(notes);
+    json["redacted"] = json!(resolved.redacted);
     let mut report = Report::new(json, lines.join("\n"));
     if only.is_none() {
         // Guard coverage is part of a check; a stale guard is reported, never failed on.

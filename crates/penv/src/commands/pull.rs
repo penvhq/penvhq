@@ -80,10 +80,20 @@ pub fn run(
     // One value the file cannot hold must not cost the rest of the pull.
     let mut stored: Vec<(String, String)> = Vec::new();
     let mut left_out: Vec<String> = Vec::new();
+    // Present in the cloud and withheld from this identity: a marker, never a value.
+    let mut redacted: Vec<&str> = Vec::new();
     let encrypt = crate::config::Config::load(&dir)
         .map(|c| c.encrypt())
         .unwrap_or(false);
     for key in &body.keys {
+        if key.redacted {
+            match penv_dotenv::write_redacted(&[], &[key.name.as_str()]) {
+                Ok(_) if !redacted.contains(&key.name.as_str()) => redacted.push(&key.name),
+                Ok(_) => {}
+                Err(e) => left_out.push(e.to_string()),
+            }
+            continue;
+        }
         let Some(value) = key.value.as_deref() else {
             continue;
         };
@@ -102,7 +112,7 @@ pub fn run(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let contents = penv_dotenv::write(&pairs)
+    let contents = penv_dotenv::write_redacted(&pairs, &redacted)
         .map_err(|e| CliError::new("unwritable_value", e.to_string(), "Run penv pull again."))?;
 
     // Development is `.env`; every other environment is its own layer, which
@@ -140,10 +150,21 @@ pub fn run(
             "Left-out keys stay in the cloud, and penv run still passes them to your command.",
         ));
     }
-    if !body.skipped.is_empty() {
+    if !redacted.is_empty() {
         lines.push(style.dim(&format!(
-            "No value in the cloud yet, so not written: {}. Set one with penv set <KEY>.",
-            body.skipped.join(", ")
+            "Write-only in penv-cloud, written as a redacted marker: {}",
+            redacted.join(", ")
+        )));
+    }
+    let skipped: Vec<&String> = body
+        .skipped
+        .iter()
+        .filter(|name| !redacted.contains(&name.as_str()))
+        .collect();
+    if !skipped.is_empty() {
+        lines.push(style.dim(&format!(
+            "Not written, as the cloud generates each on demand or holds no value for it: {}. Give a missing one a value with penv set <KEY>.",
+            skipped.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
         )));
     }
 
@@ -152,7 +173,8 @@ pub fn run(
             "address": at.to_string(),
             "env": show(&env_path),
             "keys": pairs.len(),
-            "skipped": body.skipped,
+            "skipped": skipped,
+            "redacted": redacted,
             "left_out": left_out,
             "gitignore": { "path": show(&ignore_path), "added": update.added },
         }),
