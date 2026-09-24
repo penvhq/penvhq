@@ -344,6 +344,29 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 format!("{} matches more than one project or environment.", if where_.is_empty() { "that name" } else { &where_ }),
                 "Rename one of them in the console, then run this again.",
             ),
+            (_, "project_taken") => CliError::new(
+                "project_taken",
+                "a project with that name already exists in this workspace.",
+                "Pick another name, or point @penv= at the existing project.",
+            )
+            .with_exit(Exit::Validation),
+            (_, "org_ambiguous") => CliError::new(
+                "org_ambiguous",
+                "more than one workspace answers to the org in @penv=, and both trust this identity.",
+                "Rename one of the two workspaces in the console so their slugs differ, then run this again.",
+            )
+            .with_exit(Exit::Auth),
+            (_, "undecryptable") => CliError::new(
+                "undecryptable",
+                format!("the cloud holds a value for {} but cannot decrypt it; the workspace's key may have been revoked or its KMS access removed.", if where_.is_empty() { "this key" } else { &where_ }),
+                "Check the workspace's encryption key in the console, or set the value again with penv set.",
+            ),
+            (_, "name_invalid") => CliError::new(
+                "name_invalid",
+                "the cloud stores upper-case key names only: A-Z, 0-9 and _, not starting with a digit.",
+                "Rename the key in .env.schema and your code, then run this again.",
+            )
+            .with_exit(Exit::Validation),
             (_, "exists") => CliError::new(
                 "exists",
                 "that name is already taken in this project.",
@@ -629,6 +652,25 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn each_cloud_refusal_the_cli_can_act_on_is_named_for_what_it_means() {
+        let at = Address::new("acme", "api", "production");
+        for (status, code, says) in [
+            (
+                409,
+                "project_taken",
+                "a project with that name already exists",
+            ),
+            (409, "org_ambiguous", "more than one workspace answers"),
+            (409, "undecryptable", "cannot decrypt it"),
+            (400, "name_invalid", "upper-case key names only"),
+        ] {
+            let error = refuse(ApiError::new(status, code).into(), Some(&at));
+            assert_eq!(error.code, code);
+            assert!(error.message.contains(says), "{code}: {}", error.message);
+        }
     }
 
     #[test]

@@ -18,6 +18,9 @@ const SERVICE: &str = "sts";
 const ALGORITHM: &str = "AWS4-HMAC-SHA256";
 const BODY: &str = "Action=GetCallerIdentity&Version=2011-06-15";
 const CONTENT_TYPE: &str = "application/x-www-form-urlencoded; charset=utf-8";
+/// The workspace the login is for. The server requires it signed, so a
+/// `GetCallerIdentity` signed for another service cannot be replayed to it.
+pub const ORG_HEADER: &str = "x-penv-cloud-org";
 
 /// `AWS_REGION`, then `AWS_DEFAULT_REGION`, then us-east-1. A value that is not
 /// shaped like a region (letters, digits and dashes) is ignored: it becomes part
@@ -43,6 +46,7 @@ pub struct AwsIam {
     secret_access_key: String,
     session_token: Option<String>,
     region: String,
+    org: Option<String>,
 }
 
 impl AwsIam {
@@ -57,7 +61,14 @@ impl AwsIam {
             secret_access_key: secret_access_key.into(),
             session_token,
             region: region.into(),
+            org: None,
         }
+    }
+
+    /// The workspace, by slug or id, that the signed request names.
+    pub fn for_org(mut self, org: Option<&str>) -> AwsIam {
+        self.org = org.map(str::to_string);
+        self
     }
 
     /// The variables every AWS runtime sets. A role gives all three.
@@ -68,6 +79,7 @@ impl AwsIam {
             secret_access_key: at(SECRET_KEY_VAR)?,
             session_token: at(SESSION_TOKEN_VAR),
             region: region(env),
+            org: None,
         })
     }
 
@@ -87,6 +99,9 @@ impl AwsIam {
         headers.insert("x-amz-date".into(), timestamp.clone());
         if let Some(token) = &self.session_token {
             headers.insert("x-amz-security-token".into(), token.clone());
+        }
+        if let Some(org) = &self.org {
+            headers.insert(ORG_HEADER.into(), org.clone());
         }
 
         let signed_headers = headers.keys().cloned().collect::<Vec<_>>().join(";");
@@ -259,6 +274,21 @@ mod tests {
             hex(&key),
             "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9"
         );
+    }
+
+    #[test]
+    fn the_workspace_is_signed_so_the_login_cannot_be_replayed_elsewhere() {
+        let aws = AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1").for_org(Some("acme"));
+        let signed = aws.sign(1_369_353_600);
+        assert_eq!(signed.headers[ORG_HEADER], "acme");
+        assert!(
+            signed.headers["authorization"]
+                .contains("SignedHeaders=content-type;host;x-amz-date;x-penv-cloud-org,"),
+            "{}",
+            signed.headers["authorization"]
+        );
+        let plain = AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1").sign(1_369_353_600);
+        assert!(!plain.headers.contains_key(ORG_HEADER));
     }
 
     #[test]

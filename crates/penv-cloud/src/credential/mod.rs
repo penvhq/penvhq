@@ -50,7 +50,7 @@ impl Obtain for Bearer {
 
 /// The order the design fixes: the variable, the person's login, the enrolled
 /// keypair, the platform's OIDC token, then AWS (keys, web identity, container).
-/// `org` is the OIDC audience. A keychain that will not answer is passed over,
+/// `org` is the OIDC audience and the workspace an AWS login signs. A keychain that will not answer is passed over,
 /// and named only when nothing else applies.
 pub fn resolve<'a>(
     env: &BTreeMap<String, String>,
@@ -70,13 +70,13 @@ pub fn resolve<'a>(
     // The AWS SDKs' own order: keys in the environment, web identity (EKS
     // IRSA), then the container endpoint (ECS task roles, EKS Pod Identity).
     if let Some(aws) = AwsIam::from_env(env) {
-        return Ok(Box::new(aws));
+        return Ok(Box::new(aws.for_org(org)));
     }
     if let Some(aws) = AwsWebIdentity::from_env(env) {
-        return Ok(Box::new(aws));
+        return Ok(Box::new(aws.for_org(org)));
     }
     if let Some(aws) = AwsContainer::from_env(env) {
-        return Ok(Box::new(aws));
+        return Ok(Box::new(aws.for_org(org)));
     }
     Err(unreadable.unwrap_or(CloudError::NoCredential))
 }
