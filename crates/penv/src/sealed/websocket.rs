@@ -7,13 +7,12 @@
 
 use std::io::{self, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use rustls::{ClientConnection, ServerConnection, StreamOwned};
 
 use super::http::Swaps;
+use super::upstream::halves;
 
 type Client = StreamOwned<ServerConnection, TcpStream>;
 type Upstream = StreamOwned<ClientConnection, TcpStream>;
@@ -48,8 +47,7 @@ fn read_frame(r: &mut impl Read) -> io::Result<Frame> {
     if masked {
         r.read_exact(&mut mask)?;
     }
-    let mut payload = vec![0u8; len as usize];
-    r.read_exact(&mut payload)?;
+    let mut payload = super::read_len(r, len as usize)?;
     if masked {
         for (i, b) in payload.iter_mut().enumerate() {
             *b ^= mask[i % 4];
@@ -87,14 +85,9 @@ pub fn rewrite_frame(frame: &mut Vec<u8>, opcode: u8, swaps: &Swaps) {
     }
 }
 
-fn locked_read<S: Read>(stream: &Mutex<S>, buf: &mut [u8]) -> io::Result<usize> {
-    let mut s = stream.lock().map_err(|_| io::Error::other("poisoned"))?;
-    s.read(buf)
-}
-
 /// Pass the upgraded connection both ways until either side closes. Each TLS
-/// stream is one object shared by the two directions, read under a short
-/// socket timeout so the other direction's writes are never held up long.
+/// stream is split so each direction blocks on its own socket; when one
+/// direction ends, it ends the other side's connection, which ends the other.
 pub fn splice(
     from_client: BufReader<Client>,
     from_upstream: BufReader<Upstream>,
@@ -104,90 +97,20 @@ pub fn splice(
     let upstream_early = from_upstream.buffer().to_vec();
     let client = from_client.into_inner();
     let upstream = from_upstream.into_inner();
-    client
-        .sock
-        .set_read_timeout(Some(Duration::from_millis(20)))?;
-    upstream
-        .sock
-        .set_read_timeout(Some(Duration::from_millis(20)))?;
-    let client = Arc::new(Mutex::new(client));
-    let upstream = Arc::new(Mutex::new(upstream));
+    let (mut client_read, mut client_write) = halves(Some(client.conn.into()), client.sock)?;
+    let (up_read, mut up_write) = halves(Some(upstream.conn.into()), upstream.sock)?;
 
     // Command to server: bytes as they are.
-    let (c, u) = (client.clone(), upstream.clone());
     let up = thread::spawn(move || {
-        if !client_early.is_empty() && u.lock().map(|mut s| s.write_all(&client_early)).is_err() {
-            return;
-        }
-        let mut buf = [0u8; 16 * 1024];
-        loop {
-            match locked_read(&c, &mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let Ok(mut s) = u.lock() else { break };
-                    if s.write_all(&buf[..n]).and_then(|_| s.flush()).is_err() {
-                        break;
-                    }
-                }
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    thread::sleep(Duration::from_millis(1));
-                }
-                Err(_) => break,
-            }
-        }
+        let _ = io::copy(
+            &mut io::Cursor::new(client_early).chain(&mut client_read),
+            &mut up_write,
+        );
+        up_write.end();
     });
 
-    // Server to command: frame by frame, swapped. A reader that waits out the
-    // short timeouts turns the shared stream back into a blocking one.
-    struct Patient {
-        early: Vec<u8>,
-        stream: Arc<Mutex<Upstream>>,
-        done: Arc<std::sync::atomic::AtomicBool>,
-    }
-    impl Read for Patient {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            if !self.early.is_empty() {
-                let n = buf.len().min(self.early.len());
-                buf[..n].copy_from_slice(&self.early[..n]);
-                self.early.drain(..n);
-                return Ok(n);
-            }
-            loop {
-                match locked_read(&self.stream, buf) {
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                        ) =>
-                    {
-                        if self.done.load(std::sync::atomic::Ordering::Relaxed) {
-                            return Ok(0);
-                        }
-                        thread::sleep(Duration::from_millis(1));
-                    }
-                    other => return other,
-                }
-            }
-        }
-    }
-    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut reader = Patient {
-        early: upstream_early,
-        stream: upstream.clone(),
-        done: done.clone(),
-    };
-    let watcher = {
-        let done = done.clone();
-        thread::spawn(move || {
-            let _ = up.join();
-            done.store(true, std::sync::atomic::Ordering::Relaxed);
-        })
-    };
+    // Server to command: frame by frame, swapped.
+    let mut reader = io::Cursor::new(upstream_early).chain(up_read);
     // A message split into fragments is joined and sent as one frame, which
     // RFC 6455 lets an intermediary do when no extension is in use, so a value
     // split across fragments is still swapped.
@@ -220,18 +143,12 @@ pub fn splice(
         let opcode = frame.fin_rsv_opcode & 0x0f;
         frame.fin_rsv_opcode |= 0x80;
         rewrite_frame(&mut frame.payload, opcode, &swaps);
-        let Ok(mut c) = client.lock() else { break };
-        if write_frame(&mut *c, &frame).is_err() || opcode == 0x8 {
+        if write_frame(&mut client_write, &frame).is_err() || opcode == 0x8 {
             break;
         }
     }
-    done.store(true, std::sync::atomic::Ordering::Relaxed);
-    if let Ok(mut c) = client.lock() {
-        c.conn.send_close_notify();
-        let _ = c.flush();
-        let _ = c.sock.shutdown(std::net::Shutdown::Both);
-    }
-    let _ = watcher.join();
+    client_write.end();
+    let _ = up.join();
     Ok(())
 }
 
@@ -242,7 +159,7 @@ mod tests {
 
     #[test]
     fn a_server_frame_round_trips_and_its_text_is_swapped() {
-        let swaps = Swaps(vec![(
+        let swaps = Swaps::new(vec![(
             b"sk_real_value".to_vec(),
             b"PLACEHOLDER_xyz".to_vec(),
         )]);

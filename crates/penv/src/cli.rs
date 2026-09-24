@@ -17,17 +17,15 @@ pub const HELP: &str = "{about}
 Everyday
   run        Run a command with your secrets loaded into it
   ls         List your keys and show which ones have a value
-    why        Say where a key's value comes from, never the value
-    encrypt    Encrypt the secrets in your .env files
-  bundle     Write an encrypted file of one environment's values for a deploy
-
-  decrypt    Write the .env files' secrets back in plain text
-
+  why        Say where a key's value comes from, never the value
   set        Save one value (typed hidden, never shown)
   unset      Delete one value
   reveal     Show one value; an AI agent needs your approval first
   check      Find problems in .env.schema and missing values
   scan       Find secret values committed to files
+  encrypt    Encrypt the secrets in your .env files
+  decrypt    Write the .env files' secrets back in plain text
+  bundle     Write an encrypted file of one environment's values for a deploy
 
 Move values
   pull       Write a .env file from the cloud
@@ -314,7 +312,9 @@ pub enum Command {
 
     /// Replace penv with the latest release
     Upgrade {
-        /// Only report what the latest release is
+        /// latest (the default), next for prereleases too, or a version such as 1.2.0
+        channel: Option<String>,
+        /// Only report what that release is
         #[arg(long)]
         check: bool,
     },
@@ -336,6 +336,10 @@ pub enum Command {
     /// Print the schema as JSON
     #[command(hide = true)]
     Schema,
+
+    /// Serve .env.schema to an editor over the Language Server Protocol on stdio
+    #[command(hide = true)]
+    Lsp,
 
     /// Show help for a command
     Help {

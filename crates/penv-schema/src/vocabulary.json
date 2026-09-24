@@ -1,0 +1,190 @@
+{
+  "decorators": [
+    {
+      "name": "penv",
+      "origin": "penv",
+      "scope": "header",
+      "form": "@penv=org/project",
+      "insert": "penv=${1:org}/${2:project}",
+      "doc": "Links this schema to a cloud project. `@penv=<provider>:org/project` reads it from another provider ([docs/PROVIDERS.md](https://github.com/penvhq/penvhq/blob/main/docs/PROVIDERS.md)). Without it, penv runs in local mode from the `.env` files beside the schema."
+    },
+    {
+      "name": "schema",
+      "origin": "penv",
+      "scope": "header",
+      "form": "@schema=1",
+      "insert": "schema=${1:1}",
+      "complete": false,
+      "doc": "The grammar version this schema is written for. `.penv/config.toml` holds it now; a value here is still read."
+    },
+    {
+      "name": "defaultSensitive",
+      "origin": "env-spec",
+      "scope": "header",
+      "form": "@defaultSensitive=true|false",
+      "insert": "defaultSensitive=${1|true,false|}",
+      "doc": "Whether a key is sensitive when it says nothing itself. A bundler-prefixed key (`NEXT_PUBLIC_`, `VITE_`, ...) is never sensitive by default."
+    },
+    {
+      "name": "defaultRequired",
+      "origin": "env-spec",
+      "scope": "header",
+      "form": "@defaultRequired=true|false|infer",
+      "insert": "defaultRequired=${1|true,false,infer|}",
+      "doc": "`true`: a key with no default needs a value. `false`: no key does unless marked. `infer`: a key with a value in the schema is required."
+    },
+    {
+      "name": "currentEnv",
+      "origin": "env-spec",
+      "scope": "header",
+      "form": "@currentEnv=$APP_ENV",
+      "insert": "currentEnv=\\$${1:APP_ENV}",
+      "doc": "The key that names the environment when neither `--env` nor `PENV_ENV` is set."
+    },
+    {
+      "name": "import",
+      "origin": "env-spec",
+      "scope": "header",
+      "form": "@import(path, KEY, ...)",
+      "insert": "import(${1:../.env.schema})",
+      "doc": "Reads the keys of another schema. Name keys after the path to take only those."
+    },
+    {
+      "name": "assert",
+      "origin": "penv",
+      "scope": "both",
+      "form": "@assert(expression, \"message\")",
+      "insert": "assert(${1:expression}, \"${2:message}\")",
+      "doc": "`penv check` and `penv run` fail with the message when the expression is false."
+    },
+    {
+      "name": "type",
+      "origin": "env-spec",
+      "scope": "item",
+      "form": "@type=string|number|boolean|url|email|port|enum(...)",
+      "insert": "type=${1|string,number,boolean,url,email,port,enum|}",
+      "doc": "Validated before the command starts. Constraints go in brackets: `string(startsWith=sk_)`, `number(min=1, max=10)`, `enum(a, b)`."
+    },
+    {
+      "name": "required",
+      "origin": "env-spec",
+      "scope": "item",
+      "form": "@required | @required=forEnv(env, ...)",
+      "insert": "required",
+      "doc": "The key needs a value. `@required=forEnv(production)` needs one only in the environments named."
+    },
+    {
+      "name": "optional",
+      "origin": "env-spec",
+      "scope": "item",
+      "form": "@optional | @optional=forEnv(env, ...)",
+      "insert": "optional",
+      "doc": "The key may be empty. `@optional=forEnv(development)` allows that only in the environments named."
+    },
+    {
+      "name": "sensitive",
+      "origin": "env-spec",
+      "scope": "item",
+      "form": "@sensitive | @sensitive=false",
+      "insert": "sensitive",
+      "doc": "Masked in the output of every `penv run`. `@sensitive=false` marks a value that may be shown. A bundler-prefixed key cannot be sensitive."
+    },
+    {
+      "name": "example",
+      "origin": "env-spec",
+      "scope": "item",
+      "form": "@example=value",
+      "insert": "example=${1:value}",
+      "doc": "A sample value for people reading the schema. Never used as the value."
+    },
+    {
+      "name": "docs",
+      "origin": "env-spec",
+      "scope": "item",
+      "form": "@docs=url",
+      "insert": "docs=${1:https://}",
+      "doc": "Where this key is documented."
+    },
+    {
+      "name": "deprecated",
+      "origin": "env-spec",
+      "scope": "item",
+      "form": "@deprecated | @deprecated=reason",
+      "insert": "deprecated",
+      "doc": "Marks the key as on its way out."
+    },
+    {
+      "name": "dynamic",
+      "origin": "env-spec",
+      "scope": "item",
+      "form": "@dynamic",
+      "insert": "dynamic",
+      "doc": "The spec's marker for a value read at runtime. penv keeps it and does not act on it."
+    },
+    {
+      "name": "static",
+      "origin": "env-spec",
+      "scope": "item",
+      "form": "@static",
+      "insert": "static",
+      "doc": "The spec's marker for a value fixed at build time. penv keeps it and does not act on it."
+    },
+    {
+      "name": "hosts",
+      "origin": "penv",
+      "scope": "item",
+      "form": "@hosts(api.example.com, \"*.example.com\")",
+      "insert": "hosts(${1:api.example.com})",
+      "doc": "Seals the value. An agent's process holds a placeholder shaped by `@type`, and `penv run` puts the real value in only on the way to these hosts. At most 32."
+    },
+    {
+      "name": "rotate",
+      "origin": "penv",
+      "scope": "item",
+      "form": "@rotate=90d",
+      "insert": "rotate=${1:90d}",
+      "doc": "`penv check` reminds you to rotate the value once it is older than this. Units, largest first: `y`, `m` (months), `w`, `d`, `h`, `min`, `s`, as in `1y6m`, `90d`, `12h`, `30min`."
+    },
+    { "name": "generateTypes", "origin": "varlock", "scope": "header", "form": "@generateTypes(...)", "insert": "", "complete": false, "doc": "varlock's. penv reads past it; `penv gen` writes typed files." },
+    { "name": "plugin", "origin": "varlock", "scope": "header", "form": "@plugin(...)", "insert": "", "complete": false, "doc": "varlock's. penv loads no plugins; providers are compiled in." },
+    { "name": "redactLogs", "origin": "varlock", "scope": "header", "form": "@redactLogs", "insert": "", "complete": false, "doc": "varlock's. penv reads past it; every `penv run` masks sensitive values." },
+    { "name": "preventLeaks", "origin": "varlock", "scope": "header", "form": "@preventLeaks", "insert": "", "complete": false, "doc": "varlock's. penv reads past it." },
+    { "name": "envFlag", "origin": "varlock", "scope": "header", "form": "@envFlag=KEY", "insert": "", "complete": false, "doc": "varlock's older name for `@currentEnv`. penv reads past it." },
+    { "name": "setValuesBulk", "origin": "varlock", "scope": "header", "form": "@setValuesBulk(...)", "insert": "", "complete": false, "doc": "varlock's. penv reads past it." },
+    { "name": "disable", "origin": "varlock", "scope": "header", "form": "@disable", "insert": "", "complete": false, "doc": "varlock's. penv reads past it." }
+  ],
+  "functions": [
+    { "name": "ref", "origin": "env-spec", "form": "ref(KEY)", "insert": "ref(${1:KEY})", "doc": "Another key's value. `${KEY}` inside text does the same." },
+    { "name": "concat", "origin": "env-spec", "form": "concat(a, b, ...)", "insert": "concat(${1})", "doc": "Joins its arguments into one string." },
+    { "name": "fallback", "origin": "env-spec", "form": "fallback(a, b, ...)", "insert": "fallback(${1})", "doc": "The first argument that is not empty." },
+    { "name": "if", "origin": "env-spec", "form": "if(condition, then, else?)", "insert": "if(${1:condition}, ${2:then}, ${3:else})", "doc": "`then` when the condition is true, otherwise `else` or empty. `false`, `0` and empty are false." },
+    { "name": "eq", "origin": "env-spec", "form": "eq(a, b)", "insert": "eq(${1:a}, ${2:b})", "doc": "`true` when both are the same text." },
+    { "name": "not", "origin": "env-spec", "form": "not(a)", "insert": "not(${1})", "doc": "`true` when the argument is false, `0` or empty." },
+    { "name": "isEmpty", "origin": "env-spec", "form": "isEmpty(a)", "insert": "isEmpty(${1})", "doc": "`true` when the argument is empty." },
+    { "name": "forEnv", "origin": "env-spec", "form": "forEnv(env, ...)", "insert": "forEnv(${1:production})", "doc": "`true` when the current environment is one of those named." },
+    { "name": "penv", "origin": "penv", "form": "penv(env/KEY) | penv(org/project/env/KEY) | penv()", "insert": "penv(${1:production}/${2:KEY})", "doc": "A value read from the provider. `env/KEY` uses the project `@penv=` names; `penv()` reads this key from the current environment." },
+    { "name": "match", "origin": "penv", "form": "match(subject, label: value, _: value)", "insert": "match(${1:subject}, ${2:label}: ${3:value}, _: ${4:value})", "doc": "The value of the case whose label equals the subject; `_` is the case taken when none does." },
+    { "name": "and", "origin": "penv", "form": "and(a, b, ...)", "insert": "and(${1})", "doc": "`true` when every argument is true." },
+    { "name": "or", "origin": "penv", "form": "or(a, b, ...)", "insert": "or(${1})", "doc": "`true` when any argument is true." },
+    { "name": "startsWith", "origin": "penv", "form": "startsWith(value, prefix)", "insert": "startsWith(${1:value}, ${2:prefix})", "doc": "`true` when the value starts with the prefix." },
+    { "name": "endsWith", "origin": "penv", "form": "endsWith(value, suffix)", "insert": "endsWith(${1:value}, ${2:suffix})", "doc": "`true` when the value ends with the suffix." },
+    { "name": "random", "origin": "penv", "form": "random(N)", "insert": "random(${1:32})", "doc": "N random characters, generated once by `penv run` and kept in `.env.local`." }
+  ],
+  "filters": [
+    { "name": "urlencode", "origin": "penv", "form": "${KEY | urlencode}", "doc": "Percent-encodes the value for a URL." },
+    { "name": "base64", "origin": "penv", "form": "${KEY | base64}", "doc": "The value in standard base64." },
+    { "name": "lower", "origin": "penv", "form": "${KEY | lower}", "doc": "The value in lowercase." },
+    { "name": "upper", "origin": "penv", "form": "${KEY | upper}", "doc": "The value in uppercase." },
+    { "name": "trim", "origin": "penv", "form": "${KEY | trim}", "doc": "The value without surrounding whitespace." }
+  ],
+  "types": [
+    { "name": "string", "doc": "Any text. Constraints: `startsWith`, `endsWith`, `minLength`, `maxLength`, `matches`." },
+    { "name": "number", "doc": "A number. Constraints: `min`, `max`, `isInt`, `precision`." },
+    { "name": "boolean", "doc": "`true` or `false`." },
+    { "name": "url", "doc": "An absolute URL." },
+    { "name": "email", "doc": "An email address." },
+    { "name": "port", "doc": "A TCP port, 1 to 65535. Constraints: `min`, `max`." },
+    { "name": "enum", "doc": "One of the members listed: `enum(development, staging, production)`." }
+  ],
+  "rotate": ["30d", "90d", "180d", "1y", "6m", "1w", "12h", "30min"]
+}

@@ -60,6 +60,11 @@ pub enum CloudError {
     #[error("{0}")]
     Url(String),
 
+    #[error(
+        "the {0} name is made only of dots, which a proxy reads as a step up the path rather than a name"
+    )]
+    DotSegment(&'static str),
+
     #[error("the keychain could not be used: {0}")]
     Keychain(String),
 

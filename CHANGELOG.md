@@ -2,7 +2,17 @@
 
 ## Unreleased
 
+### Added
+- **Editor support.** `penv lsp` serves `.env.schema` over the Language Server Protocol: the problems `penv check` reports for the schema, completion and hover for every decorator, function and filter (marked penv, @env-spec or varlock-only), go-to-definition for key references, and an outline. It reads no value file and sends no request.
+- **penv for VS Code**, published from `packages/vscode` to the Marketplace and Open VSX. It runs `penv lsp`, finds the platform binary behind an npm install, and runs beside varlock's @env-spec extension.
+- `penv upgrade [latest|next|<version>]`: `next` follows prereleases, a version pins or steps back. `latest` stays the default.
+
+### Changed
+- A prerelease no longer becomes the release `/install` and `penv upgrade` give, once a plain release exists.
+
 ### Fixed
+- An AWS login (keys, web identity or a container role) signs the workspace in `x-penv-cloud-org`, which penv.cloud requires; without it every AWS exchange was refused.
+- A taken project name and an org slug two workspaces share each get their own message (`project_taken`, `org_ambiguous`) instead of "matches more than one project or environment"; a value the cloud cannot decrypt (`undecryptable`) and a lowercase key name on push (`name_invalid`) are named too.
 - `gen ts` declared `inlined` when no public key used it (`noUnusedLocals`), and `Response.json` lacked `override` (`noImplicitOverride`). The targets job now type-checks the output with both on.
 
 ## 1.0.0-beta.2

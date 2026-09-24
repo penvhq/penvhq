@@ -1,0 +1,109 @@
+name: vscode extension
+
+on:
+  pull_request:
+    paths:
+      - "packages/vscode/**"
+      - "crates/penv-schema/**"
+      - "crates/penv/src/commands/lsp.rs"
+      - "crates/penv/src/source.rs"
+      - ".github/workflows/vscode.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/vscode/**"
+      - "crates/penv-schema/**"
+      - "crates/penv/src/commands/lsp.rs"
+      - "crates/penv/src/source.rs"
+      - ".github/workflows/vscode.yml"
+    tags: ["vscode-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vscode-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The extension inside a real VS Code, against the penv built from this commit,
+  # found on PATH the way a user's is.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        vscode: ["1.90.0", stable]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build -p penv
+      - run: echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - working-directory: packages/vscode
+        run: npm ci
+      - working-directory: packages/vscode
+        run: npm run typecheck
+      - working-directory: packages/vscode
+        run: npm test
+      - name: Inside VS Code ${{ matrix.vscode }}
+        working-directory: packages/vscode
+        env:
+          VSCODE_VERSION: ${{ matrix.vscode }}
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:vscode
+          else
+            npm run test:vscode
+          fi
+
+  # A tag vscode-vX.Y.Z publishes that version to the VS Code Marketplace and Open
+  # VSX once every test passes. The tag must match package.json.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/vscode-v')
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/vscode
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: The tag is the package version
+        run: |
+          set -euo pipefail
+          tagged=${GITHUB_REF_NAME#vscode-v}
+          declared=$(node -p "require('./package.json').version")
+          if [ "$tagged" != "$declared" ]; then
+            echo "::error::tag $GITHUB_REF_NAME is $tagged and package.json says $declared"
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm run build
+      - run: npx vsce package --no-dependencies --out penv.vsix
+      - name: Publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${VSCE_PAT:-}" ] || missing="$missing VSCE_PAT"
+          [ -n "${OVSX_PAT:-}" ] || missing="$missing OVSX_PAT"
+          if [ -n "$missing" ]; then
+            echo "::error::missing secret(s):$missing"
+            exit 1
+          fi
+          npx vsce publish --packagePath penv.vsix
+          npx ovsx publish penv.vsix

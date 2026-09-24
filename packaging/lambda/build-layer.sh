@@ -15,8 +15,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/layer/bin"
-PENV_VERSION="$version" PENV_TARGET="$target" PENV_INSTALL_DIR="$work/layer/bin" PENV_ALLOW_ROOT=1 \
-  sh "$here/../../install.sh" >&2
+said=$(PENV_VERSION="$version" PENV_TARGET="$target" PENV_INSTALL_DIR="$work/layer/bin" PENV_ALLOW_ROOT=1 \
+  sh "$here/../../install.sh" 2>&1) || { printf '%s\n' "$said" >&2; exit 1; }
+printf '%s\n' "$said" >&2
+# install.sh installs on the digest alone when it cannot check a signature; a
+# layer is never built that way, as the image is not.
+case $said in
+  *"signature not checked"*) echo "build-layer.sh: install OpenSSL 1.1.1 or newer so the release signature is checked" >&2; exit 1 ;;
+esac
 install -m 0755 "$here/penv-wrapper" "$work/layer/penv-wrapper"
 out="$(pwd)/penv-lambda-layer-$arch.zip"
 rm -f "$out"

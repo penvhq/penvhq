@@ -10,6 +10,7 @@ pub mod init;
 mod login;
 mod logout;
 mod ls;
+mod lsp;
 mod machine;
 mod project;
 mod pull;
@@ -179,13 +180,14 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             environment.as_deref(),
             env,
         ),
-        Some(Command::Hook { harness }) => hook::run(harness, cwd),
-        Some(Command::Upgrade { check }) => upgrade::run(out, *check),
+        Some(Command::Hook { harness }) => hook::run(harness),
+        Some(Command::Upgrade { channel, check }) => upgrade::run(out, channel.as_deref(), *check),
         Some(Command::Completions { shell }) => completions(
             shell,
             cli.json || cli.format == Some(crate::cli::Format::Json),
         ),
         Some(Command::Schema) => schema(cwd),
+        Some(Command::Lsp) => lsp::run(),
         Some(Command::Help { command }) => help(command.as_deref()),
     }
 }

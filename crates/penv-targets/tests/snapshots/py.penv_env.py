@@ -6,43 +6,80 @@ import os
 from typing import Any, Callable, Literal
 
 
-def _require(name: str) -> str:
-    value = os.environ.get(name)
-    if value is None or value == "":
-        raise RuntimeError(f"{name} is not set; run penv check")
-    return value
-
-
-def _maybe(cast: Callable[[str], Any], name: str, default: str | None) -> Any:
+def _raw(name: str, default: str | None, required: bool, problems: list[str]) -> Any:
     value = os.environ.get(name)
     if value is None or value == "":
         value = default
-    return None if value is None else cast(value)
+    if value is None or value == "":
+        if required:
+            problems.append(f"{name} is not set; run penv check")
+        return None
+    return value
+
+
+# The parse error is dropped, not chained: its message would carry the value.
+def _parsed(name: str, value: str | None, parse: Callable[[str], Any], want: str, problems: list[str]) -> Any:
+    if value is None:
+        return None
+    try:
+        return parse(value)
+    except (ValueError, TypeError):
+        problems.append(f"{name} is not {want}")
+        return None
+
+
+def _port(raw: str) -> int:
+    port = int(raw)
+    if not 1 <= port <= 65535:
+        raise ValueError("out of range")
+    return port
 
 
 def _flag(raw: str) -> bool:
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+    word = raw.strip().lower()
+    if word in ("1", "true", "yes", "on"):
+        return True
+    if word in ("0", "false", "no", "off"):
+        return False
+    raise ValueError("not a boolean")
+
+
+def _one_of(*members: str) -> Callable[[str], str]:
+    def parse(raw: str) -> str:
+        if raw not in members:
+            raise ValueError("not a member")
+        return raw
+
+    return parse
 
 
 class Env:
+    """Every variable .env.schema declares, read and checked once. The error
+    names each problem, never a value."""
+
     def __init__(self) -> None:
+        problems: list[str] = []
         # Where the service keeps its own rows.
-        self.DATABASE_URL: str = _require("DATABASE_URL")
-        self.STRIPE_SECRET_KEY: str = _require("STRIPE_SECRET_KEY")
+        self.DATABASE_URL: str = _raw("DATABASE_URL", None, True, problems)
+        self.STRIPE_SECRET_KEY: str = _raw("STRIPE_SECRET_KEY", None, True, problems)
         # Where the browser is sent back to after a redirect.
-        self.NEXT_PUBLIC_APP_URL: str | None = _maybe(str, "NEXT_PUBLIC_APP_URL", "http://localhost:3000")
-        self.PORT: int | None = _maybe(int, "PORT", "3000")
-        self.NODE_ENV: Literal["development", "staging", "production"] | None = _maybe(str, "NODE_ENV", "development")
+        self.NEXT_PUBLIC_APP_URL: str = _raw("NEXT_PUBLIC_APP_URL", "http://localhost:3000", False, problems)
+        self.PORT: int = _parsed("PORT", _raw("PORT", "3000", False, problems), _port, "a port", problems)
+        self.NODE_ENV: Literal["development", "staging", "production"] = _parsed("NODE_ENV", _raw("NODE_ENV", "development", False, problems), _one_of("development", "staging", "production"), "one of development, staging, production", problems)
         # The tier this deployment serves.
-        self.PLAN_TIER: Literal["free", "pro", "enterprise"] = _require("PLAN_TIER")
+        self.PLAN_TIER: Literal["free", "pro", "enterprise"] = _parsed("PLAN_TIER", _raw("PLAN_TIER", None, True, problems), _one_of("free", "pro", "enterprise"), "one of free, pro, enterprise", problems)
         # How long a cached value stays fresh.
-        self.CACHE_TTL_SECONDS: float | None = _maybe(float, "CACHE_TTL_SECONDS", "1.5")
-        self.MAX_RETRIES: int = int(_require("MAX_RETRIES"))
-        self.FEATURE_BILLING: bool | None = _maybe(_flag, "FEATURE_BILLING", "false")
-        self.DEBUG_TRACING: bool = _flag(_require("DEBUG_TRACING"))
+        self.CACHE_TTL_SECONDS: float = _parsed("CACHE_TTL_SECONDS", _raw("CACHE_TTL_SECONDS", "1.5", False, problems), float, "a number", problems)
+        self.MAX_RETRIES: int = _parsed("MAX_RETRIES", _raw("MAX_RETRIES", None, True, problems), int, "an integer", problems)
+        self.FEATURE_BILLING: bool = _parsed("FEATURE_BILLING", _raw("FEATURE_BILLING", "false", False, problems), _flag, "a boolean", problems)
+        self.DEBUG_TRACING: bool = _parsed("DEBUG_TRACING", _raw("DEBUG_TRACING", None, True, problems), _flag, "a boolean", problems)
         # Where failures are mailed.
-        self.ALERTS_EMAIL: str | None = _maybe(str, "ALERTS_EMAIL", "ops@example.test")
-        self.SUPPORT_NOTE: str | None = _maybe(str, "SUPPORT_NOTE", None)
+        self.ALERTS_EMAIL: str = _raw("ALERTS_EMAIL", "ops@example.test", False, problems)
+        self.SUPPORT_NOTE: str | None = _raw("SUPPORT_NOTE", None, False, problems)
+        # Built from the secret, so its prefix does not make it safe to inline.
+        self.NEXT_PUBLIC_CHECKOUT_TOKEN: str = _raw("NEXT_PUBLIC_CHECKOUT_TOKEN", None, True, problems)
+        if problems:
+            raise RuntimeError("; ".join(problems))
 
 
 env = Env()

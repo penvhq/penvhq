@@ -317,9 +317,9 @@ fn enrolling_stores_the_key_the_public_half_was_sent_for() {
     assert_eq!(der.len(), 44, "SPKI DER for Ed25519");
     assert!(store.get(keychain::KEYPAIR).unwrap().is_some());
     assert_eq!(
-        store.get(keychain::KEYPAIR_PENDING).unwrap(),
-        None,
-        "the pending key is finalised, not left behind"
+        store.items().len(),
+        1,
+        "the enrolled key and nothing else is left behind"
     );
 }
 
@@ -528,6 +528,37 @@ fn push_and_the_per_key_writes_speak_the_documented_shapes() {
     assert_eq!(
         api.key_unset(&bearer, &address(), &keys[0]).unwrap().etag,
         "\"ghi\""
+    );
+}
+
+#[test]
+fn an_ambiguous_answer_is_named_by_the_call_that_got_it() {
+    let mock = Mock::new();
+    let refused = &json!({ "error": "ambiguous" }).to_string();
+    mock.on("POST", "/api/v1/orgs/acme/projects", 409, refused);
+    mock.on("POST", "/api/v1/auth/oidc", 409, refused);
+    mock.on("POST", "/api/v1/auth/aws", 409, refused);
+    let api = api(&mock);
+    let code = |e: penv_cloud::CloudError| e.code().map(str::to_string);
+
+    let taken = api
+        .create_project(&Bearer::new("pcu_FAKE"), "acme", "API", &[])
+        .unwrap_err();
+    assert_eq!(code(taken).as_deref(), Some("project_taken"));
+    let oidc = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")]), Some("acme")).unwrap();
+    assert_eq!(
+        code(oidc.obtain(&api, NOW).unwrap_err()).as_deref(),
+        Some("org_ambiguous")
+    );
+    let aws = AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1").for_org(Some("acme"));
+    assert_eq!(
+        code(aws.obtain(&api, NOW).unwrap_err()).as_deref(),
+        Some("org_ambiguous")
+    );
+    assert_eq!(
+        mock.last("POST", "/api/v1/auth/aws").json()["headers"]["x-penv-cloud-org"],
+        "acme",
+        "the workspace travels, signed, with the AWS proof"
     );
 }
 
@@ -932,9 +963,180 @@ fn an_enrolment_that_never_lands_leaves_no_key_behind() {
     let store = MemoryKeychain::new();
     assert!(credential::enroll(&api(&mock), &store, "pce_secret_FAKE").is_err());
     assert_eq!(store.get(keychain::KEYPAIR).unwrap(), None);
+    assert!(store.items().is_empty(), "nothing is left behind");
+}
+
+// --- review fixes -------------------------------------------------------------
+
+#[test]
+fn a_keypair_exchange_waits_for_one_already_under_way_on_this_host() {
+    let mock = Mock::new();
+    challenge_and_grant(&mock, 8);
+    let store = MemoryKeychain::new();
+    enrolled(&store, 7);
+    let dir = scratch();
+
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(credential::LOCK_FILE))
+        .unwrap();
+    held.lock().unwrap();
+
+    let api = api(&mock);
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| {
+            BoundKeypair::from_keychain(&store)
+                .unwrap()
+                .unwrap()
+                .locked_in(Some(dir.clone()))
+                .obtain(&api, NOW)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            mock.requests().is_empty(),
+            "nothing is signed while another exchange holds the lock"
+        );
+        held.unlock().unwrap();
+        assert_eq!(waiting.join().unwrap().unwrap().token, "pck_EXCHANGED");
+    });
+}
+
+#[test]
+fn a_keypair_signs_the_generation_the_exchange_ahead_of_it_left() {
+    let mock = Mock::new();
+    challenge_and_grant(&mock, 9);
+    let store = MemoryKeychain::new();
+    enrolled(&store, 7);
+    let keypair = BoundKeypair::from_keychain(&store).unwrap().unwrap();
+    // Another command on this host exchanged in between and banked 8.
+    enrolled(&store, 8);
+
+    keypair.obtain(&api(&mock), NOW).unwrap();
     assert_eq!(
-        store.get(keychain::KEYPAIR_PENDING).unwrap(),
-        None,
-        "the pending key is cleared"
+        mock.last("POST", "/api/v1/auth/keypair").json()["generation"],
+        8,
+        "the counter is read again under the lock"
     );
+}
+
+/// Counts the exchanges, so a test can say none was needed.
+struct Counting<'a>(&'a dyn Obtain, std::cell::Cell<u32>);
+
+impl Obtain for Counting<'_> {
+    fn obtain(&self, api: &Api, now: u64) -> Result<Bearer> {
+        self.1.set(self.1.get() + 1);
+        self.0.obtain(api, now)
+    }
+
+    fn identity(&self) -> Option<String> {
+        self.0.identity()
+    }
+}
+
+#[test]
+fn an_exchanged_credential_opens_the_cache_it_filled_on_the_next_run() {
+    let dir = scratch();
+    let store = MemoryKeychain::new();
+    let mock = Mock::new();
+    challenge_and_grant(&mock, 8);
+    mock.on_with(
+        "GET",
+        ENVS,
+        200,
+        &body(&[("PORT", "3000")]),
+        &[("ETag", "\"one\"")],
+    );
+    enrolled(&store, 7);
+    let api = api(&mock);
+
+    let first_run = BoundKeypair::from_keychain(&store).unwrap().unwrap();
+    let cache = Cache::open(&dir, &mock.url(), &address(), &first_run, &store)
+        .unwrap()
+        .expect("a keypair has an identity to seal against");
+    let filled = cache.revalidate(&api, &first_run, NOW).unwrap();
+    assert_eq!(filled.source, Source::Server);
+
+    // The next run holds the next generation and will mint another bearer.
+    let next_run = BoundKeypair::from_keychain(&store).unwrap().unwrap();
+    let counting = Counting(&next_run, std::cell::Cell::new(0));
+    let cache = Cache::open(&dir, &mock.url(), &address(), &counting, &store)
+        .unwrap()
+        .unwrap();
+    let fresh = cache.revalidate(&api, &counting, NOW + 30).unwrap();
+    assert_eq!(
+        fresh.source,
+        Source::Cache,
+        "the file opens for this identity"
+    );
+    assert_eq!(counting.1.get(), 0, "a fresh answer mints no bearer");
+}
+
+#[test]
+fn offline_development_answers_from_the_cache_even_when_the_exchange_cannot_run() {
+    let dir = scratch();
+    let store = MemoryKeychain::new();
+    enrolled(&store, 7);
+    let keypair = BoundKeypair::from_keychain(&store).unwrap().unwrap();
+    let closed = Mock::closed_url();
+    let cache = Cache::open(&dir, &closed, &address(), &keypair, &store)
+        .unwrap()
+        .unwrap();
+    cache.write(&entry(NOW)).unwrap();
+
+    let resolved = cache
+        .revalidate(&Api::new(&closed).unwrap(), &keypair, NOW + 90)
+        .unwrap();
+    assert_eq!(resolved.source, Source::Cache);
+    assert!(resolved.offline_warning);
+}
+
+#[test]
+fn a_redirect_is_refused_and_named_as_one() {
+    let mock = Mock::new();
+    mock.on_with(
+        "GET",
+        ENVS,
+        302,
+        "",
+        &[("Location", "https://elsewhere.example/api/v1/envs")],
+    );
+    let error = api(&mock)
+        .env_get(&Bearer::new("pck_FAKE"), &address(), None, true)
+        .unwrap_err();
+    assert!(matches!(error, CloudError::Redirected { .. }), "{error:?}");
+}
+
+#[test]
+fn a_rewritten_cache_file_is_swapped_in_whole_and_private() {
+    let dir = scratch();
+    let store = MemoryKeychain::new();
+    let cache = Cache::open(&dir, "https://penv.cloud", &address(), &holder(), &store)
+        .unwrap()
+        .unwrap();
+    cache.write(&entry(NOW)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(cache.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    cache.write(&entry(NOW + 1)).unwrap();
+    assert_eq!(cache.read().unwrap().fetched_at, NOW + 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(cache.path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+    }
+    let parent = cache.path().parent().unwrap();
+    let left: Vec<_> = std::fs::read_dir(parent)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left.len(), 1, "no temporary file is left behind: {left:?}");
 }

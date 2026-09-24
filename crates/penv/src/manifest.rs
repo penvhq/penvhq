@@ -70,7 +70,7 @@ const META: &[Meta] = &[
         path: "pull",
         implemented: true,
         reveals_values: true,
-        exit_codes: &[0, 1, 2, 5, 6],
+        exit_codes: &[0, 1, 2, 3, 5, 6],
         human_flags: &["i-am-human"],
         env_flags: &[("env", "PENV_ENV")],
         ..DEFAULT_META
@@ -112,6 +112,8 @@ const META: &[Meta] = &[
     Meta {
         path: "bundle",
         implemented: true,
+        // It prints the key that opens every value.
+        reveals_values: true,
         exit_codes: &[0, 1, 2, 3, 5, 6],
         env_flags: &[("env", "PENV_ENV")],
         ..DEFAULT_META
@@ -271,6 +273,12 @@ const META: &[Meta] = &[
         path: "schema",
         implemented: true,
         exit_codes: &[0, 1, 3],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "lsp",
+        implemented: true,
+        exit_codes: &[0, 1],
         ..DEFAULT_META
     },
     Meta {

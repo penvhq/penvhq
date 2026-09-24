@@ -48,6 +48,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand 'completions' 'Print the shell completion script'
             cand 'hook' 'Run as a harness hook; a payload it cannot read is refused'
             cand 'schema' 'Print the schema as JSON'
+            cand 'lsp' 'Serve .env.schema to an editor over the Language Server Protocol on stdio'
             cand 'help' 'Show help for a command'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
@@ -286,7 +287,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;upgrade') {
-            cand '--check' 'Only report what the latest release is'
+            cand '--check' 'Only report what that release is'
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
@@ -310,6 +311,12 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;schema') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
+        if (eq $command 'penv;lsp') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'

@@ -6,7 +6,7 @@
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
-use super::http::Head;
+use super::http::{Head, raw};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -47,7 +47,8 @@ pub fn declared_hash(head: &Head) -> Result<Option<String>, &'static str> {
 }
 
 /// Replace the signature in `head`'s Authorization with one made with `secret`.
-pub fn resign(head: &mut Head, payload_hash: &str, secret: &str) -> Result<(), &'static str> {
+/// Returns the new signature.
+pub fn resign(head: &mut Head, payload_hash: &str, secret: &str) -> Result<String, &'static str> {
     let auth = head
         .get("authorization")
         .ok_or("no Authorization header")?
@@ -89,7 +90,7 @@ pub fn resign(head: &mut Head, payload_hash: &str, secret: &str) -> Result<(), &
     let canonical_uri = if *service == "s3" {
         path.to_string()
     } else {
-        encode(path, false)
+        encode(&raw(path), false)
     };
 
     let mut pairs: Vec<(String, String)> = query
@@ -109,7 +110,12 @@ pub fn resign(head: &mut Head, payload_hash: &str, secret: &str) -> Result<(), &
             .headers
             .iter()
             .filter(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.split_whitespace().collect::<Vec<_>>().join(" "))
+            .map(|(_, v)| {
+                v.split([' ', '\t'])
+                    .filter(|w| !w.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .collect();
         if values.is_empty() {
             return Err("a signed header the request does not carry");
@@ -122,7 +128,7 @@ pub fn resign(head: &mut Head, payload_hash: &str, secret: &str) -> Result<(), &
     );
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
-        sha256_hex(canonical_request.as_bytes())
+        sha256_hex(&raw(&canonical_request))
     );
     let k_date = hmac(format!("AWS4{secret}").as_bytes(), date.as_bytes());
     let k_region = hmac(&k_date, region.as_bytes());
@@ -133,14 +139,22 @@ pub fn resign(head: &mut Head, payload_hash: &str, secret: &str) -> Result<(), &
         "Authorization",
         format!("AWS4-HMAC-SHA256 Credential={credential}, SignedHeaders={signed}, Signature={signature}"),
     );
-    Ok(())
+    Ok(signature)
+}
+
+/// The signature a SigV4 Authorization header carries.
+pub fn signature(head: &Head) -> Option<String> {
+    let auth = head.get("authorization")?;
+    let (_, rest) = auth.rsplit_once("Signature=")?;
+    Some(rest.split(',').next().unwrap_or("").trim().to_string())
 }
 
 /// SigV4's URI encoding: unreserved characters as they are, everything else
 /// `%XX` in upper case; `/` too when `slash` is set (query parts).
-fn encode(text: &str, slash: bool) -> String {
-    text.bytes()
-        .map(|b| {
+fn encode(bytes: &[u8], slash: bool) -> String {
+    bytes
+        .iter()
+        .map(|&b| {
             if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) || (!slash && b == b'/') {
                 (b as char).to_string()
             } else {
@@ -150,8 +164,8 @@ fn encode(text: &str, slash: bool) -> String {
         .collect()
 }
 
-fn decode(text: &str) -> String {
-    let bytes = text.as_bytes();
+fn decode(text: &str) -> Vec<u8> {
+    let bytes = raw(text);
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -167,7 +181,7 @@ fn decode(text: &str) -> String {
         out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 #[cfg(test)]
@@ -199,11 +213,13 @@ mod tests {
         let mut h = head(
             "GET / HTTP/1.1\r\nHost: example.amazonaws.com\r\nX-Amz-Date: 20150830T123600Z\r\nAuthorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=placeholder\r\n\r\n",
         );
-        resign(&mut h, &sha256_hex(b""), SECRET).unwrap();
+        assert_eq!(super::signature(&h).as_deref(), Some("placeholder"));
+        let made = resign(&mut h, &sha256_hex(b""), SECRET).unwrap();
         assert_eq!(
             signature(&h),
             "5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
         );
+        assert_eq!(made, signature(&h));
 
         let mut h = head(
             "GET /?Param2=value2&Param1=value1 HTTP/1.1\r\nHost: example.amazonaws.com\r\nX-Amz-Date: 20150830T123600Z\r\nAuthorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=placeholder\r\n\r\n",

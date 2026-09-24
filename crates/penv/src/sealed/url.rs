@@ -101,6 +101,22 @@ pub fn with_query(rest: &str, name: &str, value: &str) -> String {
     format!("{path}?{}", pairs.join("&"))
 }
 
+/// `rest` without the query parameters whose names `drop` picks.
+pub fn without_query(rest: &str, drop: impl Fn(&str) -> bool) -> String {
+    let Some((path, q)) = rest.split_once('?') else {
+        return rest.to_string();
+    };
+    let kept: Vec<&str> = q
+        .split('&')
+        .filter(|p| !p.is_empty() && !drop(p.split('=').next().unwrap_or("")))
+        .collect();
+    if kept.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{}", kept.join("&"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +155,16 @@ mod tests {
         );
         assert!(parse("postgres://a:b@h1,h2/app").is_none());
         assert_eq!(parse("postgres://a:b@[::1]:6/x").unwrap().host, "::1");
+    }
+
+    #[test]
+    fn query_parameters_are_dropped_by_name() {
+        let ssl = |k: &str| k.starts_with("ssl");
+        assert_eq!(
+            without_query("/app?sslmode=require&sslrootcert=system&x=1", ssl),
+            "/app?x=1"
+        );
+        assert_eq!(without_query("/app?sslmode=require", ssl), "/app");
+        assert_eq!(without_query("/app", ssl), "/app");
     }
 }

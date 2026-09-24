@@ -60,14 +60,18 @@
     // Served bodies keep their byte length, so a Content-Length the app already
     // set still matches: two bytes kept, the rest replaced with "*".
     const enc = new TextEncoder();
-    const byteForms = forms.map((f) => enc.encode(f));
-    const indexOf = (hay, needle, from) => {
-      outer: for (let i = from; i <= hay.length - needle.length; i++) {
-        for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
-        return i;
-      }
-      return -1;
-    };
+    const hasBuffer = typeof Buffer !== "undefined";
+    const byteForms = forms.map((f) => (hasBuffer ? Buffer.from(f, "utf8") : enc.encode(f)));
+    // Buffer's native search where there is one; a byte loop only without it.
+    const indexOf = hasBuffer
+      ? (hay, needle, from) => Buffer.from(hay.buffer, hay.byteOffset, hay.byteLength).indexOf(needle, from)
+      : (hay, needle, from) => {
+          outer: for (let i = from; i <= hay.length - needle.length; i++) {
+            for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+            return i;
+          }
+          return -1;
+        };
     const maskBytes = (bytes) => {
       let out = null;
       for (const f of byteForms) {
@@ -95,23 +99,67 @@
       return chunk;
     };
 
-    // console: strings masked in place; an object that would print a secret is
-    // printed as its masked JSON instead. Log shippers (Sentry, Datadog, pino
-    // transports) wrap console after the app starts; each method is an accessor,
-    // so whatever is assigned later is wrapped too and receives masked arguments.
+    // console: strings masked in place; an Error is handed on as a copy with
+    // its message, stack and own fields masked; any other object that would
+    // print a secret is handed on as its masked JSON, or, for what JSON cannot
+    // show (a Map, a Set, a class instance), its masked inspection. Log shippers
+    // (Sentry, Datadog, pino transports) wrap console after the app starts; each
+    // method is an accessor, so whatever is assigned later is wrapped too and
+    // receives masked arguments.
+    let inspect = null;
+    try {
+      const util =
+        typeof require === "function"
+          ? require("util")
+          : typeof process !== "undefined" && process.getBuiltinModule && process.getBuiltinModule("node:util");
+      if (util && typeof util.inspect === "function") inspect = util.inspect;
+    } catch (_) {}
+    // A plain object as masked JSON, anything JSON cannot show as its masked
+    // inspection; the object itself when neither holds a value.
+    const maskObject = (a) => {
+      try {
+        const json = JSON.stringify(a);
+        if (typeof json === "string" && maskText(json) !== json) return maskText(json);
+      } catch (_) {}
+      if (inspect) {
+        try {
+          const shown = inspect(a);
+          if (maskText(shown) !== shown) return maskText(shown);
+        } catch (_) {}
+      }
+      return a;
+    };
+    const maskField = (v, depth) => {
+      if (typeof v === "string") return maskText(v);
+      if (v instanceof Error) return depth < 4 ? maskError(v, depth + 1) : v;
+      if (v && typeof v === "object") return maskObject(v);
+      return v;
+    };
+    const maskError = (e, depth) => {
+      const message = maskText(e.message);
+      const stack = maskText(e.stack);
+      const cause = e.cause instanceof Error && depth < 4 ? maskError(e.cause, depth + 1) : e.cause;
+      let changed = message !== e.message || stack !== e.stack || cause !== e.cause;
+      const own = {};
+      for (const k of Object.keys(e)) {
+        if (k === "cause") continue;
+        // An axios error carries config.headers.Authorization a level down.
+        own[k] = maskField(e[k], depth);
+        if (own[k] !== e[k]) changed = true;
+      }
+      if (!changed) return e;
+      const copy = new Error(message);
+      Object.setPrototypeOf(copy, Object.getPrototypeOf(e));
+      Object.defineProperty(copy, "stack", { value: stack, writable: true, configurable: true });
+      if (cause !== undefined) Object.defineProperty(copy, "cause", { value: cause, writable: true, configurable: true });
+      return Object.assign(copy, own);
+    };
     const maskArgs = (args) =>
       args.map((a) => {
         if (typeof a === "string") return maskText(a);
-        if (a && typeof a === "object") {
-          let json;
-          try {
-            json = JSON.stringify(a);
-          } catch (_) {
-            return a;
-          }
-          if (typeof json === "string" && maskText(json) !== json) return maskText(json);
-        }
-        return a;
+        if (!a || typeof a !== "object") return a;
+        if (a instanceof Error) return maskError(a, 0);
+        return maskObject(a);
       });
     const guard = (fn) => {
       if (typeof fn !== "function" || fn.__penvMasked) return fn;
@@ -142,6 +190,9 @@
       }
     }
 
+    // The chunk the HTTP layer just masked, which it hands straight to the
+    // socket: that write is not searched a second time.
+    let vetted;
     // Node and Bun's node:http, Deno's node:http compatibility: bodies the app serves.
     const patchHttp = (http) => {
       const proto = http && http.ServerResponse && http.ServerResponse.prototype;
@@ -151,15 +202,23 @@
       const end = proto.end;
       proto.write = function (chunk, ...rest) {
         try {
-          chunk = maskChunk(chunk);
+          chunk = vetted = maskChunk(chunk);
         } catch (_) {}
-        return write.call(this, chunk, ...rest);
+        try {
+          return write.call(this, chunk, ...rest);
+        } finally {
+          vetted = undefined;
+        }
       };
       proto.end = function (chunk, ...rest) {
         try {
-          if (chunk !== undefined && typeof chunk !== "function") chunk = maskChunk(chunk);
+          if (chunk !== undefined && typeof chunk !== "function") chunk = vetted = maskChunk(chunk);
         } catch (_) {}
-        return end.call(this, chunk, ...rest);
+        try {
+          return end.call(this, chunk, ...rest);
+        } finally {
+          vetted = undefined;
+        }
       };
     };
     // Below HTTP: every write on a connection a server accepted, so a raw
@@ -172,7 +231,7 @@
       const write = proto.write;
       proto.write = function (chunk, ...rest) {
         try {
-          if (this.server) chunk = maskChunk(chunk);
+          if (this.server && (chunk !== vetted || vetted === undefined)) chunk = maskChunk(chunk);
         } catch (_) {}
         return write.call(this, chunk, ...rest);
       };

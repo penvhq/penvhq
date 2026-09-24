@@ -32,12 +32,15 @@ pub fn placeholder(ty: &Type, bytes: &mut dyn FnMut(usize) -> Vec<u8>) -> Option
     };
     let min = number(ty, "minLength").unwrap_or(0);
     let max = number(ty, "maxLength");
+    if max.is_some_and(|max| min > max) {
+        return None;
+    }
     let fixed = prefix.chars().count() + suffix.chars().count();
     let mut random = RANDOM_LEN.max(min.saturating_sub(fixed));
     if let Some(max) = max {
         random = random.min(max.saturating_sub(fixed));
     }
-    if random < RANDOM_LEN.min(16) {
+    if random < RANDOM_LEN {
         return None;
     }
     let middle: String = bytes(random)
@@ -59,8 +62,9 @@ fn number(ty: &Type, name: &str) -> Option<usize> {
 }
 
 /// Domains under which anyone can get a name: country second levels and
-/// hosting platforms. `*.vercel.app` would send a value to every stranger's
-/// deploy, so a wildcard directly over one of these is refused.
+/// hosting platforms, after the private section of the public suffix list.
+/// `*.vercel.app` would send a value to every stranger's deploy, so a wildcard
+/// over one of these, or over a domain above one, is refused.
 pub const SHARED_SUFFIXES: &[&str] = &[
     "co.uk",
     "org.uk",
@@ -99,11 +103,41 @@ pub const SHARED_SUFFIXES: &[&str] = &[
     "onrender.com",
     "web.app",
     "firebaseapp.com",
+    "firebaseio.com",
     "appspot.com",
+    "run.app",
+    "a.run.app",
+    "cloudfunctions.net",
+    "storage.googleapis.com",
     "azurewebsites.net",
+    "scm.azurewebsites.net",
+    "azurestaticapps.net",
+    "azurecontainerapps.io",
+    "azureedge.net",
+    "azurefd.net",
+    "cloudapp.azure.com",
+    "cloudapp.net",
+    "trafficmanager.net",
+    "blob.core.windows.net",
+    "web.core.windows.net",
+    "file.core.windows.net",
+    "queue.core.windows.net",
+    "table.core.windows.net",
+    "dfs.core.windows.net",
     "cloudfront.net",
     "amazonaws.com",
-    "blob.core.windows.net",
+    "s3.amazonaws.com",
+    "compute.amazonaws.com",
+    "compute-1.amazonaws.com",
+    "elasticbeanstalk.com",
+    "awsapprunner.com",
+    "amplifyapp.com",
+    "on.aws",
+    "r2.dev",
+    "digitaloceanspaces.com",
+    "ondigitalocean.app",
+    "myshopify.com",
+    "blogspot.com",
     "ngrok.io",
     "ngrok-free.app",
     "trycloudflare.com",
@@ -119,13 +153,18 @@ pub const SHARED_SUFFIXES: &[&str] = &[
 
 /// `api.example.com`, `localhost`, `10.0.0.5` or `*.example.com`: lowercase
 /// labels, a wildcard only as the whole first label, with two labels after it
-/// and never directly over a shared suffix, and no scheme, port, path or user.
+/// and never over or above a shared suffix, and no scheme, port, path or user.
 pub fn is_host_pattern(host: &str) -> bool {
     let (wild, rest) = match host.strip_prefix("*.") {
         Some(rest) => (true, rest),
         None => (false, host),
     };
-    if wild && SHARED_SUFFIXES.contains(&rest) {
+    let above = format!(".{rest}");
+    if wild
+        && SHARED_SUFFIXES
+            .iter()
+            .any(|shared| *shared == rest || shared.ends_with(&above))
+    {
         return false;
     }
     let labels: Vec<&str> = rest.split('.').collect();
@@ -211,12 +250,47 @@ mod tests {
             .is_none()
         );
         assert!(placeholder(&Type::new(BaseType::Url), &mut random).is_none());
+        // At least RANDOM_LEN random characters, as the design asks: 16 was too few.
+        assert!(
+            placeholder(
+                &string(&[("startsWith", "x"), ("maxLength", "24")]),
+                &mut random
+            )
+            .is_none()
+        );
         let fits = placeholder(
-            &string(&[("startsWith", "x"), ("maxLength", "20")]),
+            &string(&[("startsWith", "x"), ("maxLength", "25")]),
             &mut random,
         )
         .unwrap();
-        assert_eq!(fits.len(), 20, "{fits}");
+        assert_eq!(fits.len(), 25, "{fits}");
+    }
+
+    #[test]
+    fn a_minimum_above_the_maximum_is_none() {
+        let mut random = counter();
+        let ty = string(&[("minLength", "60"), ("maxLength", "40")]);
+        assert!(placeholder(&ty, &mut random).is_none());
+    }
+
+    #[test]
+    fn a_wildcard_over_or_above_a_shared_zone_is_refused() {
+        for bad in [
+            "*.core.windows.net",
+            "*.windows.net",
+            "*.s3.amazonaws.com",
+            "*.run.app",
+            "*.a.run.app",
+            "*.on.aws",
+            "*.cloudapp.azure.com",
+            "*.azure.com",
+            "*.cloudfunctions.net",
+        ] {
+            assert!(!is_host_pattern(bad), "{bad}");
+        }
+        for ok in ["*.acme.co.uk", "*.myapp.vercel.app", "*.acme.dev"] {
+            assert!(is_host_pattern(ok), "{ok}");
+        }
     }
 
     #[test]

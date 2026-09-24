@@ -24,7 +24,9 @@ public record Env(
         boolean debugTracing,
         /* Where failures are mailed. */
         String alertsEmail,
-        Secret supportNote) {
+        Secret supportNote,
+        /* Built from the secret, so its prefix does not make it safe to inline. */
+        Secret nextPublicCheckoutToken) {
 
     /** A value that prints as [redacted]; {@code expose()} returns it. */
     public static final class Secret {
@@ -68,73 +70,75 @@ public record Env(
 
     /** Read and check every variable. The exception names each problem, never a value. */
     public static Env load() {
-        List<String> problems = new ArrayList<>();
-        String databaseUrlRaw = raw("DATABASE_URL", "", true, problems);
-        Secret databaseUrl = databaseUrlRaw == null ? null : new Secret(databaseUrlRaw);
-        String stripeSecretKeyRaw = raw("STRIPE_SECRET_KEY", "", true, problems);
-        Secret stripeSecretKey = stripeSecretKeyRaw == null ? null : new Secret(stripeSecretKeyRaw);
-        String nextPublicAppUrlRaw = raw("NEXT_PUBLIC_APP_URL", "http://localhost:3000", false, problems);
-        String nextPublicAppUrl = nextPublicAppUrlRaw;
-        String portRaw = raw("PORT", "3000", false, problems);
+        List<String> __penvProblems = new ArrayList<>();
+        String __penvRaw_databaseUrl = raw("DATABASE_URL", "", true, __penvProblems);
+        Secret databaseUrl = __penvRaw_databaseUrl == null ? null : new Secret(__penvRaw_databaseUrl);
+        String __penvRaw_stripeSecretKey = raw("STRIPE_SECRET_KEY", "", true, __penvProblems);
+        Secret stripeSecretKey = __penvRaw_stripeSecretKey == null ? null : new Secret(__penvRaw_stripeSecretKey);
+        String __penvRaw_nextPublicAppUrl = raw("NEXT_PUBLIC_APP_URL", "http://localhost:3000", false, __penvProblems);
+        String nextPublicAppUrl = __penvRaw_nextPublicAppUrl;
+        String __penvRaw_port = raw("PORT", "3000", false, __penvProblems);
         Integer port = null;
-        if (portRaw != null) {
+        if (__penvRaw_port != null) {
             try {
-                int n = Integer.parseInt(portRaw.trim());
-                if (n >= 1 && n <= 65535) {
-                    port = n;
+                int __penvN = Integer.parseInt(__penvRaw_port.trim());
+                if (__penvN >= 1 && __penvN <= 65535) {
+                    port = __penvN;
                 } else {
-                    problems.add("PORT" + " is not a port");
+                    __penvProblems.add("PORT" + " is not a port");
                 }
-            } catch (NumberFormatException e) {
-                problems.add("PORT" + " is not a port");
+            } catch (NumberFormatException __penvE) {
+                __penvProblems.add("PORT" + " is not a port");
             }
         }
-        String nodeEnvRaw = raw("NODE_ENV", "development", false, problems);
-        String nodeEnv = nodeEnvRaw;
+        String __penvRaw_nodeEnv = raw("NODE_ENV", "development", false, __penvProblems);
+        String nodeEnv = __penvRaw_nodeEnv;
         if (nodeEnv != null && !Set.of("development", "staging", "production").contains(nodeEnv)) {
-            problems.add("NODE_ENV" + " is not one of development, staging, production");
+            __penvProblems.add("NODE_ENV is not one of development, staging, production");
             nodeEnv = null;
         }
-        String planTierRaw = raw("PLAN_TIER", "", true, problems);
-        String planTier = planTierRaw;
+        String __penvRaw_planTier = raw("PLAN_TIER", "", true, __penvProblems);
+        String planTier = __penvRaw_planTier;
         if (planTier != null && !Set.of("free", "pro", "enterprise").contains(planTier)) {
-            problems.add("PLAN_TIER" + " is not one of free, pro, enterprise");
+            __penvProblems.add("PLAN_TIER is not one of free, pro, enterprise");
             planTier = null;
         }
-        String cacheTtlSecondsRaw = raw("CACHE_TTL_SECONDS", "1.5", false, problems);
+        String __penvRaw_cacheTtlSeconds = raw("CACHE_TTL_SECONDS", "1.5", false, __penvProblems);
         Double cacheTtlSeconds = null;
-        if (cacheTtlSecondsRaw != null) {
+        if (__penvRaw_cacheTtlSeconds != null) {
             try {
-                cacheTtlSeconds = Double.parseDouble(cacheTtlSecondsRaw.trim());
-            } catch (NumberFormatException e) {
-                problems.add("CACHE_TTL_SECONDS" + " is not a number");
+                cacheTtlSeconds = Double.parseDouble(__penvRaw_cacheTtlSeconds.trim());
+            } catch (NumberFormatException __penvE) {
+                __penvProblems.add("CACHE_TTL_SECONDS" + " is not a number");
             }
         }
-        String maxRetriesRaw = raw("MAX_RETRIES", "", true, problems);
+        String __penvRaw_maxRetries = raw("MAX_RETRIES", "", true, __penvProblems);
         Long maxRetries = null;
-        if (maxRetriesRaw != null) {
+        if (__penvRaw_maxRetries != null) {
             try {
-                maxRetries = Long.parseLong(maxRetriesRaw.trim());
-            } catch (NumberFormatException e) {
-                problems.add("MAX_RETRIES" + " is not an integer");
+                maxRetries = Long.parseLong(__penvRaw_maxRetries.trim());
+            } catch (NumberFormatException __penvE) {
+                __penvProblems.add("MAX_RETRIES" + " is not an integer");
             }
         }
-        String featureBillingRaw = raw("FEATURE_BILLING", "false", false, problems);
-        Boolean featureBilling = featureBillingRaw == null ? null : flag(featureBillingRaw);
-        if (featureBillingRaw != null && featureBilling == null) {
-            problems.add("FEATURE_BILLING" + " is not a boolean");
+        String __penvRaw_featureBilling = raw("FEATURE_BILLING", "false", false, __penvProblems);
+        Boolean featureBilling = __penvRaw_featureBilling == null ? null : flag(__penvRaw_featureBilling);
+        if (__penvRaw_featureBilling != null && featureBilling == null) {
+            __penvProblems.add("FEATURE_BILLING" + " is not a boolean");
         }
-        String debugTracingRaw = raw("DEBUG_TRACING", "", true, problems);
-        Boolean debugTracing = debugTracingRaw == null ? null : flag(debugTracingRaw);
-        if (debugTracingRaw != null && debugTracing == null) {
-            problems.add("DEBUG_TRACING" + " is not a boolean");
+        String __penvRaw_debugTracing = raw("DEBUG_TRACING", "", true, __penvProblems);
+        Boolean debugTracing = __penvRaw_debugTracing == null ? null : flag(__penvRaw_debugTracing);
+        if (__penvRaw_debugTracing != null && debugTracing == null) {
+            __penvProblems.add("DEBUG_TRACING" + " is not a boolean");
         }
-        String alertsEmailRaw = raw("ALERTS_EMAIL", "ops@example.test", false, problems);
-        String alertsEmail = alertsEmailRaw;
-        String supportNoteRaw = raw("SUPPORT_NOTE", "", false, problems);
-        Secret supportNote = supportNoteRaw == null ? null : new Secret(supportNoteRaw);
-        if (!problems.isEmpty()) {
-            throw new IllegalStateException(String.join("; ", problems));
+        String __penvRaw_alertsEmail = raw("ALERTS_EMAIL", "ops@example.test", false, __penvProblems);
+        String alertsEmail = __penvRaw_alertsEmail;
+        String __penvRaw_supportNote = raw("SUPPORT_NOTE", "", false, __penvProblems);
+        Secret supportNote = __penvRaw_supportNote == null ? null : new Secret(__penvRaw_supportNote);
+        String __penvRaw_nextPublicCheckoutToken = raw("NEXT_PUBLIC_CHECKOUT_TOKEN", "", true, __penvProblems);
+        Secret nextPublicCheckoutToken = __penvRaw_nextPublicCheckoutToken == null ? null : new Secret(__penvRaw_nextPublicCheckoutToken);
+        if (!__penvProblems.isEmpty()) {
+            throw new IllegalStateException(String.join("; ", __penvProblems));
         }
         return new Env(
                 databaseUrl,
@@ -148,6 +152,7 @@ public record Env(
                 featureBilling,
                 debugTracing,
                 alertsEmail,
-                supportNote);
+                supportNote,
+                nextPublicCheckoutToken);
     }
 }

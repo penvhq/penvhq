@@ -1,0 +1,82 @@
+{
+  "name": "penv",
+  "displayName": "penv",
+  "description": "Diagnostics, completion and hover for .env.schema from the penv binary: @rotate, @hosts, @assert, penv() and every @env-spec decorator penv reads.",
+  "version": "0.1.0",
+  "publisher": "penvhq",
+  "license": "MIT",
+  "homepage": "https://github.com/penvhq/penvhq/tree/main/packages/vscode#readme",
+  "bugs": "https://github.com/penvhq/penvhq/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/penvhq/penvhq.git",
+    "directory": "packages/vscode"
+  },
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "penv",
+    "env-spec",
+    ".env.schema",
+    "dotenv",
+    "secrets",
+    "varlock"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/.env.schema",
+    "onLanguage:env-spec",
+    "onLanguage:dotenv"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "penv.path can only be set in user settings, so a workspace cannot choose the program this extension starts."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "configuration": {
+      "title": "penv",
+      "properties": {
+        "penv.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "The `penv` binary to run. Empty finds it on `PATH`, including behind an `npm i -g @penvhq/cli` install."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "penv.restart",
+        "title": "penv: Restart language server"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --minify --outfile=dist/extension.js && esbuild src/find.ts --platform=node --format=cjs --target=node20 --outfile=dist/find.js && esbuild test/suite/index.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/test/suite/index.js && esbuild test/run.ts --bundle --platform=node --format=cjs --target=node20 --external:@vscode/test-electron --outfile=dist/test/run.js",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/find.test.mjs",
+    "test:vscode": "npm run build && node dist/test/run.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.25.0",
+    "ovsx": "^0.10.0",
+    "typescript": "^5.9.0"
+  }
+}

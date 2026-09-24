@@ -1,13 +1,15 @@
 //! Where the binary meets penv.cloud: the client, the keychain, the cache
 //! directory, and the one place a `CloudError` becomes an exit code.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use penv_agent::Detection;
 use penv_cloud::api::{Address, Api, Bearer};
 use penv_cloud::cache::Cache;
+use penv_cloud::credential::Obtain;
 use penv_cloud::error::CloudError;
-use penv_cloud::keychain::{Keyring, NoKeychain};
+use penv_cloud::keychain::{Keyring, NoKeychain, Remembering};
 use penv_cloud::{Clock, Keychain, SystemClock, credential};
 use penv_schema::{Key, Schema};
 use serde_json::Value;
@@ -36,7 +38,7 @@ impl Cloud {
             .map_err(|e| refuse(e, None))?
             .stamped(detection.name(), detection.session_id.as_deref());
         let keychain: Box<dyn Keychain> = match Keyring::open(api.base_url()) {
-            Some(keyring) => Box::new(keyring),
+            Some(keyring) => Box::new(Remembering::new(keyring)),
             None => Box::new(NoKeychain),
         };
         Ok(Cloud {
@@ -50,11 +52,23 @@ impl Cloud {
 
     /// The credential this host can prove, whichever kind that turns out to be.
     pub fn bearer(&self, env: &Env, org: Option<&str>) -> Result<Bearer, CliError> {
+        self.credential(env, org)?
+            .obtain(&self.api, self.now)
+            .map_err(|e| refuse(e, None))
+    }
+
+    /// Which credential this host would prove itself with, found without
+    /// asking the network.
+    pub fn credential(
+        &self,
+        env: &Env,
+        org: Option<&str>,
+    ) -> Result<Box<dyn Obtain + '_>, CliError> {
         if self.withhold_env {
             // Only what this machine holds for this root: its login or keypair.
-            let none = std::collections::BTreeMap::new();
-            return match credential::resolve(&none, self.keychain.as_ref(), org) {
-                Ok(kind) => kind.obtain(&self.api, self.now).map_err(|e| refuse(e, None)),
+            return match credential::resolve_held(self.keychain.as_ref(), self.cache_dir.clone())
+            {
+                Ok(kind) => Ok(kind),
                 Err(penv_cloud::CloudError::NoCredential)
                     if credential::present(env.as_map(), self.keychain.as_ref()) =>
                 {
@@ -74,9 +88,7 @@ impl Cloud {
                 Err(e) => Err(refuse(e, None)),
             };
         }
-        credential::resolve(env.as_map(), self.keychain.as_ref(), org)
-            .and_then(|kind| kind.obtain(&self.api, self.now))
-            .map_err(|e| refuse(e, None))
+        credential::resolve(env.as_map(), self.keychain.as_ref(), org).map_err(|e| refuse(e, None))
     }
 
     /// The `pcu_` a person's login left behind, and nothing else.
@@ -87,13 +99,19 @@ impl Cloud {
             .map_err(|e| refuse(e, None))
     }
 
-    /// The cache is sealed against the credential that filled it, so it opens
-    /// for this bearer and no other.
-    pub fn cache(&self, at: &Address, bearer: &Bearer) -> Option<Cache> {
+    /// The cache is sealed against the identity of the credential that filled
+    /// it, so it opens for that credential and no other.
+    pub fn cache(&self, at: &Address, credential: &dyn Obtain) -> Option<Cache> {
         let dir = self.cache_dir.as_deref()?;
-        Cache::open(dir, self.api.base_url(), at, bearer, self.keychain.as_ref())
-            .ok()
-            .flatten()
+        Cache::open(
+            dir,
+            self.api.base_url(),
+            at,
+            credential,
+            self.keychain.as_ref(),
+        )
+        .ok()
+        .flatten()
     }
 
     /// Everything this host kept for this server.
@@ -326,6 +344,29 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 format!("{} matches more than one project or environment.", if where_.is_empty() { "that name" } else { &where_ }),
                 "Rename one of them in the console, then run this again.",
             ),
+            (_, "project_taken") => CliError::new(
+                "project_taken",
+                "a project with that name already exists in this workspace.",
+                "Pick another name, or point @penv= at the existing project.",
+            )
+            .with_exit(Exit::Validation),
+            (_, "org_ambiguous") => CliError::new(
+                "org_ambiguous",
+                "more than one workspace answers to the org in @penv=, and both trust this identity.",
+                "Rename one of the two workspaces in the console so their slugs differ, then run this again.",
+            )
+            .with_exit(Exit::Auth),
+            (_, "undecryptable") => CliError::new(
+                "undecryptable",
+                format!("the cloud holds a value for {} but cannot decrypt it; the workspace's key may have been revoked or its KMS access removed.", if where_.is_empty() { "this key" } else { &where_ }),
+                "Check the workspace's encryption key in the console, or set the value again with penv set.",
+            ),
+            (_, "name_invalid") => CliError::new(
+                "name_invalid",
+                "the cloud stores upper-case key names only: A-Z, 0-9 and _, not starting with a digit.",
+                "Rename the key in .env.schema and your code, then run this again.",
+            )
+            .with_exit(Exit::Validation),
             (_, "exists") => CliError::new(
                 "exists",
                 "that name is already taken in this project.",
@@ -410,6 +451,13 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             "Set PENV_URL to an https address, or unset it.",
         ),
 
+        CloudError::DotSegment(part) => CliError::new(
+            "dot_name",
+            error.to_string(),
+            format!("Give the {part} a name with a letter or digit in it, in the console and in .env.schema."),
+        )
+        .with_exit(Exit::Validation),
+
         _ => CliError::new(
             "cloud_failed",
             error.to_string(),
@@ -433,7 +481,6 @@ pub fn cancelled(_: std::io::Error) -> CliError {
     )
 }
 
-/// Open the verification page. A session with no terminal only prints it.
 /// Settle which certificate authorities penv trusts before the first request:
 /// the compiled-in roots, or the bundle `SSL_CERT_FILE` names.
 pub fn trust(env: &Env, agent: bool) -> Result<(), CliError> {
@@ -446,9 +493,15 @@ pub fn trust(env: &Env, agent: bool) -> Result<(), CliError> {
     })
 }
 
-pub fn open_browser(url: &str) -> bool {
+/// Open a page the server named, when it is one penv would send a credential
+/// to on the same host as the API; anything else is only printed, for the
+/// person to open themselves. No shell ever reads the URL.
+pub fn open_browser(url: &str, base_url: &str) -> bool {
+    if !openable(url, base_url) {
+        return false;
+    }
     let (program, args): (&str, Vec<&str>) = if cfg!(windows) {
-        ("cmd", vec!["/C", "start", "", url])
+        ("rundll32", vec!["url.dll,FileProtocolHandler", url])
     } else if cfg!(target_os = "macos") {
         ("open", vec![url])
     } else {
@@ -462,6 +515,19 @@ pub fn open_browser(url: &str) -> bool {
         .is_ok()
 }
 
+/// https on the API's own host. Plain http only where the API itself is the
+/// loopback server a test or a local build runs.
+fn openable(url: &str, base_url: &str) -> bool {
+    let (Ok(url), Some(base_host)) = (
+        penv_cloud::api::checked_url(url),
+        penv_cloud::api::url_host(base_url),
+    ) else {
+        return false;
+    };
+    let secure = url.starts_with("https://") || base_url.starts_with("http://");
+    secure && penv_cloud::api::url_host(&url).is_some_and(|host| host == base_host)
+}
+
 /// The project name `push` offers for a directory.
 pub fn project_name(dir: &Path) -> String {
     dir.file_name()
@@ -471,7 +537,8 @@ pub fn project_name(dir: &Path) -> String {
 }
 
 /// Reads environments for one command: the cloud opens once, a bearer is minted
-/// once per org, and each address is read once through this host's cache.
+/// once per org and only when the server has to be asked, and each address is
+/// read once through this host's cache.
 pub struct Fetcher<'a> {
     env: &'a Env,
     detection: &'a Detection,
@@ -501,23 +568,29 @@ impl<'a> Fetcher<'a> {
             self.cloud = Some(Cloud::open(self.env, self.detection)?);
         }
         let cloud = self.cloud.as_ref().expect("opened above");
-        let bearer = match self
+        let minted = self
             .bearers
             .iter()
             .find(|(org, _)| org.eq_ignore_ascii_case(&at.org))
-        {
-            Some((_, bearer)) => bearer.clone(),
-            None => {
-                let bearer = cloud.bearer(self.env, Some(&at.org))?;
-                self.bearers.push((at.org.clone(), bearer.clone()));
-                bearer
-            }
+            .map(|(_, bearer)| bearer.clone());
+        let credential = Once {
+            kind: cloud.credential(self.env, Some(&at.org))?,
+            minted: RefCell::new(minted),
         };
-        let cache = cloud.cache(at, &bearer);
+        let cache = cloud.cache(at, &credential);
         let spinner = crate::ui::spinner(&format!("Reading {at}"));
-        let resolved = penv_cloud::cache::fetch(&cloud.api, &bearer, at, cache.as_ref(), cloud.now)
-            .map_err(|e| refuse(e, Some(at)))?;
+        let resolved =
+            penv_cloud::cache::fetch(&cloud.api, &credential, at, cache.as_ref(), cloud.now)
+                .map_err(|e| refuse(e, Some(at)))?;
         spinner.stop(&format!("Read {at}"));
+        if let Some(bearer) = credential.minted.into_inner()
+            && !self
+                .bearers
+                .iter()
+                .any(|(org, _)| org.eq_ignore_ascii_case(&at.org))
+        {
+            self.bearers.push((at.org.clone(), bearer));
+        }
         if resolved.offline_warning {
             crate::ui::warn(&format!(
                 "{at} could not be reached, so this used the development values penv saved last time."
@@ -542,6 +615,27 @@ impl<'a> Fetcher<'a> {
     }
 }
 
+/// A credential proved at most once per command, however many addresses ask.
+struct Once<'k> {
+    kind: Box<dyn Obtain + 'k>,
+    minted: RefCell<Option<Bearer>>,
+}
+
+impl Obtain for Once<'_> {
+    fn obtain(&self, api: &Api, now: u64) -> penv_cloud::Result<Bearer> {
+        if let Some(bearer) = self.minted.borrow().clone() {
+            return Ok(bearer);
+        }
+        let bearer = self.kind.obtain(api, now)?;
+        *self.minted.borrow_mut() = Some(bearer.clone());
+        Ok(bearer)
+    }
+
+    fn identity(&self) -> Option<String> {
+        self.kind.identity()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,6 +652,25 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn each_cloud_refusal_the_cli_can_act_on_is_named_for_what_it_means() {
+        let at = Address::new("acme", "api", "production");
+        for (status, code, says) in [
+            (
+                409,
+                "project_taken",
+                "a project with that name already exists",
+            ),
+            (409, "org_ambiguous", "more than one workspace answers"),
+            (409, "undecryptable", "cannot decrypt it"),
+            (400, "name_invalid", "upper-case key names only"),
+        ] {
+            let error = refuse(ApiError::new(status, code).into(), Some(&at));
+            assert_eq!(error.code, code);
+            assert!(error.message.contains(says), "{code}: {}", error.message);
+        }
     }
 
     #[test]
@@ -615,6 +728,35 @@ mod tests {
             address(&cloud, "development").unwrap().to_string(),
             "acme/api/development"
         );
+    }
+
+    #[test]
+    fn only_a_page_on_the_api_s_own_host_is_opened() {
+        let base = "https://penv.cloud";
+        assert!(openable("https://penv.cloud/device", base));
+        assert!(openable("https://PENV.cloud/device?code=AB&x=1", base));
+        for url in [
+            "https://evil.example/device",
+            "https://penv.cloud.evil.example/device",
+            "http://penv.cloud/device",
+            "https://u@penv.cloud/device",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "calc.exe",
+            "https://evil.example/&calc",
+        ] {
+            assert!(!openable(url, base), "{url}");
+        }
+        let local = "http://127.0.0.1:8787";
+        assert!(openable("http://127.0.0.1:8787/device", local));
+        assert!(!openable("http://localhost:8787/device", local));
+    }
+
+    #[test]
+    fn a_name_made_only_of_dots_says_which_part_to_rename() {
+        let refused = refuse(CloudError::DotSegment("environment"), None);
+        assert_eq!(refused.code, "dot_name");
+        assert!(refused.fix.contains("environment"), "{}", refused.fix);
     }
 
     #[test]

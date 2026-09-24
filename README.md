@@ -41,8 +41,23 @@ COPY --from=ghcr.io/penvhq/penv:1 /penv /usr/local/bin/penv
 | Verification | release checksum always; checksum signature where OpenSSL 1.1.1+ is available |
 | Pin a release | `PENV_VERSION=v1.2.3` |
 | Install elsewhere | `PENV_INSTALL_DIR=<dir>` |
-| Upgrade | `penv upgrade` |
+| Upgrade | `penv upgrade`, see below |
 | Image | [packaging/docker](./packaging/docker/README.md) |
+
+### Upgrading
+
+`penv upgrade` reads a channel, downloads the binary for your platform and replaces the running one, after checking the release's signature and checksum.
+
+```bash
+penv upgrade                 # latest: the newest plain release, what the installers give
+penv upgrade next            # next: the newest release, prereleases included
+penv upgrade 1.2.0           # exactly this version, older than yours or not (v1.2.0 works too)
+penv upgrade next --check    # say what that channel holds and change nothing
+```
+
+`latest` and `next` only move forward; a named version is installed whichever way it lies, which is how you pin or step back. Once on a prerelease, `penv upgrade` leaves you there until a plain release overtakes it; `penv upgrade next` follows the prereleases. A penv installed by npm, Homebrew, Nix, winget or Scoop is upgraded by that manager: `npm i -g @penvhq/cli@next` for prereleases, `@latest` for plain ones.
+
+To install a prerelease on a fresh machine, pin it: `curl -fsSL https://penv.cloud/install | PENV_VERSION=v1.3.0-beta.1 sh`.
 
 ## Quick Start
 
@@ -129,6 +144,15 @@ note declared in .env.schema and not mentioned in any source file: OLD_FLAG
 It reads the repository's source for `process.env`, `import.meta.env`, `Deno.env.get`, `os.environ`, `os.getenv`, `env::var`, `os.Getenv`, `System.getenv`, `Environment.GetEnvironmentVariable`, `ENV[]`, `getenv` and Prisma's `env()`. Platform variables (`NODE_ENV`, `VERCEL_*`, `CI`, ...) and files `penv gen` writes are left out. `penv check --strict` fails on an undeclared read.
 
 `penv why KEY` says which file, cloud environment or default a value came from, which files it overrides, which keys it is built on, and whether it is masked, public or sealed. It never prints the value.
+
+### Editors
+
+`penv lsp` serves `.env.schema` over the Language Server Protocol: the problems `penv check` reports for the schema, completion and hover for every decorator, function and filter (marked penv, @env-spec or varlock-only), go-to-definition for `$KEY` and `${KEY}`, and an outline. It reads no value file and sends no request.
+
+| Editor | Setup |
+|---|---|
+| VS Code, and editors that install from Open VSX | the **penv** extension: [packages/vscode](./packages/vscode/README.md) |
+| Neovim 0.11, Helix 25.07 | [config](./packages/vscode/README.md#other-editors) |
 
 ## Encryption at Rest
 
@@ -563,6 +587,7 @@ penv run -- npm run dev       # native; @plugin and @initPenv are ignored
 | `scan [PATH...] [--staged] [--install-hook]` | secret values in files |
 | `ls` | keys, types, presence |
 | `why KEY` | where a value comes from, never the value |
+| `lsp` | `.env.schema` for editors, over the Language Server Protocol on stdio |
 | `encrypt` / `decrypt` | convert the `.env` files' secrets |
 | `bundle [--env E]` | encrypted values for a deploy, opened by `PENV_BUNDLE_KEY` |
 | `gen ts\|py\|go\|rust\|php\|java\|csharp` | typed file |

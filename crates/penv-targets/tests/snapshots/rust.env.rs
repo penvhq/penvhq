@@ -50,62 +50,66 @@ pub struct Env {
     /// Where failures are mailed.
     pub alerts_email: String,
     pub support_note: Option<Secret>,
-}
-
-fn raw(name: &str, default: &str, required: bool, problems: &mut Vec<String>) -> Option<String> {
-    let value = std::env::var(name).ok().filter(|v| !v.is_empty());
-    let value = value.or_else(|| (!default.is_empty()).then(|| default.to_string()));
-    if value.is_none() && required {
-        problems.push(format!("{name} is not set; run penv check"));
-    }
-    value
-}
-
-fn parsed<T>(name: &str, want: &str, value: Option<String>, parse: impl Fn(&str) -> Option<T>, problems: &mut Vec<String>) -> Option<T> {
-    let value = value?;
-    let out = parse(&value);
-    if out.is_none() {
-        problems.push(format!("{name} is not {want}"));
-    }
-    out
-}
-
-fn flag(v: &str) -> Option<bool> {
-    match v.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
+    /// Built from the secret, so its prefix does not make it safe to inline.
+    pub next_public_checkout_token: Secret,
 }
 
 impl Env {
+    fn raw(name: &str, default: &str, required: bool, problems: &mut Vec<String>) -> Option<String> {
+        let value = std::env::var(name).ok().filter(|v| !v.is_empty());
+        let value = value.or_else(|| (!default.is_empty()).then(|| default.to_string()));
+        if value.is_none() && required {
+            problems.push(format!("{name} is not set; run penv check"));
+        }
+        value
+    }
+
+    fn parsed<T>(name: &str, want: &str, value: Option<String>, parse: impl Fn(&str) -> Option<T>, problems: &mut Vec<String>) -> Option<T> {
+        let value = value?;
+        let out = parse(&value);
+        if out.is_none() {
+            problems.push(format!("{name} is not {want}"));
+        }
+        out
+    }
+
+    fn flag(v: &str) -> Option<bool> {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        }
+    }
+
     /// Read and check every variable. The error names each problem, never a value.
     pub fn load() -> Result<Env, String> {
-        let mut problems = Vec::new();
-        let database_url = raw("DATABASE_URL", "", true, &mut problems);
+        let mut __penv_problems: Vec<String> = Vec::new();
+        let database_url = Self::raw("DATABASE_URL", "", true, &mut __penv_problems);
         let database_url = database_url.map(Secret);
-        let stripe_secret_key = raw("STRIPE_SECRET_KEY", "", true, &mut problems);
+        let stripe_secret_key = Self::raw("STRIPE_SECRET_KEY", "", true, &mut __penv_problems);
         let stripe_secret_key = stripe_secret_key.map(Secret);
-        let next_public_app_url = raw("NEXT_PUBLIC_APP_URL", "http://localhost:3000", false, &mut problems);
-        let port = raw("PORT", "3000", false, &mut problems);
-        let port = parsed("PORT", "a port", port, |v| v.parse::<u16>().ok().filter(|p| *p > 0), &mut problems);
-        let node_env = raw("NODE_ENV", "development", false, &mut problems);
-        let node_env = parsed("NODE_ENV", "one of development, staging, production", node_env, |v| ["development", "staging", "production"].contains(&v).then(|| v.to_string()), &mut problems);
-        let plan_tier = raw("PLAN_TIER", "", true, &mut problems);
-        let plan_tier = parsed("PLAN_TIER", "one of free, pro, enterprise", plan_tier, |v| ["free", "pro", "enterprise"].contains(&v).then(|| v.to_string()), &mut problems);
-        let cache_ttl_seconds = raw("CACHE_TTL_SECONDS", "1.5", false, &mut problems);
-        let cache_ttl_seconds = parsed("CACHE_TTL_SECONDS", "a number", cache_ttl_seconds, |v| v.parse::<f64>().ok(), &mut problems);
-        let max_retries = raw("MAX_RETRIES", "", true, &mut problems);
-        let max_retries = parsed("MAX_RETRIES", "an integer", max_retries, |v| v.parse::<i64>().ok(), &mut problems);
-        let feature_billing = raw("FEATURE_BILLING", "false", false, &mut problems);
-        let feature_billing = parsed("FEATURE_BILLING", "a boolean", feature_billing, flag, &mut problems);
-        let debug_tracing = raw("DEBUG_TRACING", "", true, &mut problems);
-        let debug_tracing = parsed("DEBUG_TRACING", "a boolean", debug_tracing, flag, &mut problems);
-        let alerts_email = raw("ALERTS_EMAIL", "ops@example.test", false, &mut problems);
-        let support_note = raw("SUPPORT_NOTE", "", false, &mut problems);
+        let next_public_app_url = Self::raw("NEXT_PUBLIC_APP_URL", "http://localhost:3000", false, &mut __penv_problems);
+        let port = Self::raw("PORT", "3000", false, &mut __penv_problems);
+        let port = Self::parsed("PORT", "a port", port, |v| v.parse::<u16>().ok().filter(|p| *p > 0), &mut __penv_problems);
+        let node_env = Self::raw("NODE_ENV", "development", false, &mut __penv_problems);
+        let node_env = Self::parsed("NODE_ENV", "one of development, staging, production", node_env, |v| ["development", "staging", "production"].contains(&v).then(|| v.to_string()), &mut __penv_problems);
+        let plan_tier = Self::raw("PLAN_TIER", "", true, &mut __penv_problems);
+        let plan_tier = Self::parsed("PLAN_TIER", "one of free, pro, enterprise", plan_tier, |v| ["free", "pro", "enterprise"].contains(&v).then(|| v.to_string()), &mut __penv_problems);
+        let cache_ttl_seconds = Self::raw("CACHE_TTL_SECONDS", "1.5", false, &mut __penv_problems);
+        let cache_ttl_seconds = Self::parsed("CACHE_TTL_SECONDS", "a number", cache_ttl_seconds, |v| v.parse::<f64>().ok(), &mut __penv_problems);
+        let max_retries = Self::raw("MAX_RETRIES", "", true, &mut __penv_problems);
+        let max_retries = Self::parsed("MAX_RETRIES", "an integer", max_retries, |v| v.parse::<i64>().ok(), &mut __penv_problems);
+        let feature_billing = Self::raw("FEATURE_BILLING", "false", false, &mut __penv_problems);
+        let feature_billing = Self::parsed("FEATURE_BILLING", "a boolean", feature_billing, Self::flag, &mut __penv_problems);
+        let debug_tracing = Self::raw("DEBUG_TRACING", "", true, &mut __penv_problems);
+        let debug_tracing = Self::parsed("DEBUG_TRACING", "a boolean", debug_tracing, Self::flag, &mut __penv_problems);
+        let alerts_email = Self::raw("ALERTS_EMAIL", "ops@example.test", false, &mut __penv_problems);
+        let support_note = Self::raw("SUPPORT_NOTE", "", false, &mut __penv_problems);
         let support_note = support_note.map(Secret);
-        if !problems.is_empty() {
-            return Err(problems.join("; "));
+        let next_public_checkout_token = Self::raw("NEXT_PUBLIC_CHECKOUT_TOKEN", "", true, &mut __penv_problems);
+        let next_public_checkout_token = next_public_checkout_token.map(Secret);
+        if !__penv_problems.is_empty() {
+            return Err(__penv_problems.join("; "));
         }
         Ok(Env {
             database_url: database_url.unwrap_or_default(),
@@ -120,6 +124,7 @@ impl Env {
             debug_tracing: debug_tracing.unwrap_or_default(),
             alerts_email: alerts_email.unwrap_or_default(),
             support_note,
+            next_public_checkout_token: next_public_checkout_token.unwrap_or_default(),
         })
     }
 }
