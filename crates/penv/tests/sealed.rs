@@ -62,9 +62,9 @@ fn answer(stream: &mut impl Write) {
 
 type Seen = Arc<Mutex<Vec<(Vec<String>, String)>>>;
 
-/// An HTTPS server for `localhost` with its own authority; returns the port,
-/// the authority's PEM and what it received.
-fn https_upstream() -> (u16, String, Seen) {
+/// A TLS server config for `localhost` under an authority of its own, and
+/// that authority's certificate.
+fn localhost_tls() -> (Arc<rustls::ServerConfig>, rcgen::Certificate) {
     let ca_key = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -84,7 +84,13 @@ fn https_upstream() -> (u16, String, Seen) {
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der())),
         )
         .unwrap();
-    let config = Arc::new(config);
+    (Arc::new(config), ca)
+}
+
+/// An HTTPS server for `localhost` with its own authority; returns the port,
+/// the authority's PEM and what it received.
+fn https_upstream() -> (u16, String, Seen) {
+    let (config, ca) = localhost_tls();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
@@ -118,6 +124,67 @@ fn http_upstream() -> (u16, Seen) {
         }
     });
     (port, seen)
+}
+
+// A read waiting on one half never holds up the other half's writes: the
+// echo server answers only as it is written to, so a lock held across a
+// blocking read would stall both directions for good.
+#[test]
+fn a_tls_connection_split_in_halves_carries_both_directions_at_once() {
+    use penv::sealed::upstream;
+    use std::io::Read;
+
+    let (config, ca) = localhost_tls();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        let conn = rustls::ServerConnection::new(config).unwrap();
+        let mut tls = rustls::StreamOwned::new(conn, tcp);
+        let mut buf = [0u8; 4096];
+        loop {
+            match tls.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tls.write_all(&buf[..n]).and_then(|_| tls.flush()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        tls.conn.send_close_notify();
+        let _ = tls.flush();
+    });
+
+    let roots = upstream::verified(&[CertificateDer::from(ca.der().to_vec())]).unwrap();
+    let tcp = upstream::tcp("localhost", port).unwrap();
+    let up = upstream::tls(tcp, "localhost", roots).unwrap();
+    let (mut read, mut write) = up.halves().unwrap();
+    let total = 4 * 1024 * 1024;
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let chunk: Vec<u8> = (0..=255u8).cycle().take(64 * 1024).collect();
+        for _ in 0..total / chunk.len() {
+            write.write_all(&chunk).unwrap();
+        }
+        write.close();
+    });
+    let started = std::time::Instant::now();
+    let mut got = 0usize;
+    let mut buf = [0u8; 16 * 1024];
+    while got < total {
+        let n = read.read(&mut buf).unwrap();
+        assert!(n > 0, "closed after {got} bytes");
+        assert!(
+            buf[..n]
+                .iter()
+                .enumerate()
+                .all(|(i, b)| *b == ((got + i) % 256) as u8)
+        );
+        got += n;
+    }
+    writer.join().unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
 }
 
 fn has_curl() -> bool {

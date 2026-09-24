@@ -1,16 +1,17 @@
 //! A sealed Redis URL. The command connects to a loopback port and
 //! authenticates with the placeholder; penv swaps the real password into `AUTH`
 //! and `HELLO ... AUTH` on the way to the server. Any other command carries the
-//! placeholder as it is, so it can never be stored or echoed as the value.
+//! placeholder as it is, so it can never be stored or echoed as the value, and
+//! a reply that holds the password carries the placeholder back instead.
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::thread;
 
 use rustls::ClientConfig;
 
-use super::upstream::{self, Upstream};
+use super::http::{Streamer, Swaps};
+use super::upstream::{self, Rewrite, Upstream};
 
 #[derive(Clone)]
 pub struct Target {
@@ -26,13 +27,8 @@ pub fn start(target: Target) -> io::Result<u16> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let target = Arc::new(target);
-    thread::spawn(move || {
-        for client in listener.incoming().flatten() {
-            let target = target.clone();
-            thread::spawn(move || {
-                let _ = serve(client, &target);
-            });
-        }
+    super::serve_each(listener, move |client| {
+        let _ = serve(client, &target);
     });
     Ok(port)
 }
@@ -43,11 +39,15 @@ fn serve(client: TcpStream, target: &Target) -> io::Result<()> {
         Some(config) => upstream::tls(tcp, &target.host, config.clone())?,
         None => Upstream::Plain(tcp),
     };
-    let mut rewriter = Rewriter::new(
+    let rewriter = Rewriter::new(
         target.placeholder.clone().into_bytes(),
         target.password.clone().into_bytes(),
     );
-    upstream::pipe_with(client, up, move |bytes| rewriter.push(bytes))
+    let replies = Replies::new(Swaps::new(vec![(
+        target.password.clone().into_bytes(),
+        target.placeholder.clone().into_bytes(),
+    )]));
+    upstream::pipe_with(client, up, rewriter, replies)
 }
 
 /// Client-to-server RESP, rewritten one whole command at a time.
@@ -55,6 +55,12 @@ pub struct Rewriter {
     placeholder: Vec<u8>,
     password: Vec<u8>,
     pending: Vec<u8>,
+}
+
+impl Rewrite for Rewriter {
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        Rewriter::push(self, bytes)
+    }
 }
 
 impl Rewriter {
@@ -117,6 +123,93 @@ impl Rewriter {
     }
 }
 
+/// Server-to-client RESP with the password swapped back to the placeholder,
+/// one whole reply element at a time so a string's declared length follows it.
+pub struct Replies {
+    swaps: Swaps,
+    pending: Vec<u8>,
+    /// Set once the stream stops parsing as RESP: swapped byte by byte from then on.
+    raw: Option<Streamer>,
+}
+
+impl Replies {
+    pub fn new(swaps: Swaps) -> Replies {
+        Replies {
+            swaps,
+            pending: Vec::new(),
+            raw: None,
+        }
+    }
+
+    fn go_raw(&mut self, out: &mut Vec<u8>, at: usize) {
+        let mut stream = Streamer::new(self.swaps.clone());
+        out.extend(stream.push(&self.pending[at..]));
+        self.pending.clear();
+        self.raw = Some(stream);
+    }
+}
+
+impl Rewrite for Replies {
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if let Some(raw) = self.raw.as_mut() {
+            return raw.push(bytes);
+        }
+        self.pending.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < self.pending.len() {
+            let Some((text, next)) = line(&self.pending, at) else {
+                if self.pending.len() - at > 64 * 1024 {
+                    self.go_raw(&mut out, at);
+                    return out;
+                }
+                break;
+            };
+            // Blob strings, blob errors, verbatim strings and streamed parts
+            // carry a length; a number there means that many bytes follow.
+            let len = match text.first() {
+                Some(b'$' | b'!' | b'=' | b';') => std::str::from_utf8(&text[1..])
+                    .ok()
+                    .and_then(|l| l.parse::<usize>().ok()),
+                _ => None,
+            };
+            let Some(len) = len else {
+                out.extend(self.swaps.apply(text));
+                out.extend(b"\r\n");
+                at = next;
+                continue;
+            };
+            if len > 512 << 20 {
+                self.go_raw(&mut out, at);
+                return out;
+            }
+            if self.pending.len() < next + len + 2 {
+                break;
+            }
+            if &self.pending[next + len..next + len + 2] != b"\r\n" {
+                self.go_raw(&mut out, at);
+                return out;
+            }
+            let body = self.swaps.apply(&self.pending[next..next + len]);
+            out.push(text[0]);
+            out.extend(body.len().to_string().into_bytes());
+            out.extend(b"\r\n");
+            out.extend(body);
+            out.extend(b"\r\n");
+            at = next + len + 2;
+        }
+        self.pending.drain(..at);
+        out
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        match self.raw.as_mut() {
+            Some(raw) => raw.finish(),
+            None => self.swaps.apply(&std::mem::take(&mut self.pending)),
+        }
+    }
+}
+
 enum Parsed {
     Command(Vec<Vec<u8>>, usize),
     Incomplete,
@@ -160,7 +253,8 @@ fn parse(buf: &[u8]) -> Parsed {
     else {
         return Parsed::Invalid;
     };
-    let mut args = Vec::with_capacity(count);
+    // The count is the peer's word; the list grows as the arguments arrive.
+    let mut args = Vec::with_capacity(count.min(16));
     for _ in 0..count {
         if at >= buf.len() {
             return Parsed::Incomplete;
@@ -235,5 +329,37 @@ mod tests {
             r.push(&two),
             [resp(&["PING"]), resp(&["AUTH", "secret"])].concat()
         );
+    }
+
+    fn replies() -> Replies {
+        Replies::new(Swaps::new(vec![(
+            b"fake-redis-pw".to_vec(),
+            b"penvphPLACEHOLDER".to_vec(),
+        )]))
+    }
+
+    #[test]
+    fn a_reply_holding_the_password_carries_the_placeholder_and_its_length_follows() {
+        let mut r = replies();
+        let reply = b"*3\r\n$4\r\nuser\r\n$18\r\nfake-redis-pw:rest\r\n-ERR bad fake-redis-pw\r\n";
+        let (a, b) = reply.split_at(20);
+        let mut out = r.push(a);
+        out.extend(r.push(b));
+        out.extend(r.finish());
+        assert_eq!(
+            out,
+            b"*3\r\n$4\r\nuser\r\n$22\r\npenvphPLACEHOLDER:rest\r\n-ERR bad penvphPLACEHOLDER\r\n"
+        );
+        assert_eq!(r.push(b"+OK\r\n"), b"+OK\r\n", "nothing held back");
+        assert_eq!(r.push(b"$-1\r\n:5\r\n"), b"$-1\r\n:5\r\n");
+    }
+
+    #[test]
+    fn replies_that_stop_being_resp_are_still_swapped() {
+        let mut r = replies();
+        let mut out = r.push(b"$3\r\nabcXYfake-redis");
+        out.extend(r.push(b"-pw"));
+        out.extend(r.finish());
+        assert!(!out.windows(13).any(|w| w == b"fake-redis-pw"));
     }
 }
