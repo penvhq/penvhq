@@ -305,8 +305,14 @@ pub fn run(
         for harness in guards.json["harnesses"].as_array().into_iter().flatten() {
             for file in harness["files"].as_array().into_iter().flatten() {
                 if file["status"] != "current" {
+                    // penv never weakens a value already there, so rerunning it cannot help.
+                    let fix = if file["overridden"].as_array().is_some_and(|o| !o.is_empty()) {
+                        "edit the value the file already holds there"
+                    } else {
+                        "run penv guard"
+                    };
                     report.text.push_str(&format!(
-                        "\n{} guard {} {} is {}; run penv guard",
+                        "\n{} guard {} {} is {}; {fix}",
                         style.dim("note"),
                         harness["name"].as_str().unwrap_or_default(),
                         file["path"].as_str().unwrap_or_default(),

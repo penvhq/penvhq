@@ -4,9 +4,9 @@ use penv_schema::{
 
 use crate::read::{Dotenv, is_plausible_key};
 
-/// Draft a schema from a `.env`. Every key is sensitive unless a bundler prefix
-/// says otherwise, and required unless a value too dull to be a secret is
-/// copied as its default.
+/// Draft a schema from a `.env`. Every key is sensitive and required unless a
+/// bundler prefix or a value too dull to be a secret says otherwise. A copied
+/// value sits in the committed schema, so it is no secret.
 pub fn infer(env: &Dotenv) -> Schema {
     let mut schema = Schema::default();
     for entry in env.entries.iter().filter(|e| is_plausible_key(&e.key)) {
@@ -17,12 +17,15 @@ pub fn infer(env: &Dotenv) -> Schema {
         let credential = names_a_credential(&entry.key);
         let copied = !entry.value.is_empty() && !credential && (prefixed || is_dull(&entry.value));
         let default = copied.then(|| entry.value.clone());
-        // The prefix alone decides sensitivity: the value reaches the browser either way.
+        // The prefix decides sensitivity: the value reaches the browser either way.
+        let sensitive = !prefixed && !copied;
         schema.keys.push(Key {
             name: entry.key.clone(),
             ty,
             required: default.is_none(),
-            sensitive: !prefixed,
+            sensitive,
+            // Written only where the prefix rule alone would not reach the same answer.
+            sensitive_decorator: (!prefixed && !sensitive).then_some(false),
             default,
             ..Key::default()
         });

@@ -280,7 +280,7 @@ fn infers_types_from_values() {
 }
 
 #[test]
-fn every_key_is_sensitive_unless_a_bundler_prefix_says_otherwise() {
+fn every_key_is_sensitive_unless_a_prefix_or_a_dull_value_says_otherwise() {
     let env = read(concat!(
         "STRIPE_SECRET_KEY=sk_test_0000000000
 ",
@@ -301,10 +301,7 @@ fn every_key_is_sensitive_unless_a_bundler_prefix_says_otherwise() {
         sensitive("DATABASE_URL"),
         "a connection string is never copied, however it is spelled"
     );
-    // Design §4: a dull value is copied as a default, which makes the key
-    // optional; sensitivity follows the prefix alone.
-    assert!(sensitive("APP_NAME"), "only a prefix makes a key public");
-    assert_eq!(schema.get("APP_NAME").unwrap().sensitive_decorator, None);
+    assert!(!sensitive("APP_NAME"), "a lowercase word is not a secret");
     assert!(
         !sensitive("NEXT_PUBLIC_ANALYTICS_ID"),
         "a bundler prefix ships the value to the browser anyway"
@@ -348,10 +345,7 @@ fn the_credential_words_match_their_plurals_in_both_spellings() {
     }
     let port = schema_key(&env, "PORT");
     assert_eq!(port.default.as_deref(), Some("3000"));
-    assert!(
-        port.sensitive,
-        "copying a default does not change sensitivity"
-    );
+    assert!(!port.sensitive);
 }
 
 fn schema_key(env: &penv_dotenv::Dotenv, name: &str) -> penv_schema::Key {
@@ -471,11 +465,7 @@ fn only_a_dull_value_is_copied_into_the_committed_schema() {
         "API_URL",
     ] {
         assert!(default(copied).is_some(), "{copied} lost its value");
-        assert_eq!(
-            sensitive(copied),
-            copied != "NEXT_PUBLIC_APP_URL",
-            "{copied}: only the prefix decides sensitivity"
-        );
+        assert!(!sensitive(copied), "{copied} is sensitive but was copied");
         assert!(
             !required(copied),
             "{copied} has a default, so it is optional"
