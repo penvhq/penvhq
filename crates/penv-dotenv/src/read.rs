@@ -5,6 +5,8 @@ pub struct Entry {
     pub key: String,
     pub value: String,
     pub line: u32,
+    /// The physical line the value ends on: `line` unless the value spans.
+    pub end: u32,
     /// Single-quoted or backticked: read as written, never expanded.
     pub literal: bool,
 }
@@ -21,6 +23,8 @@ pub struct Warning {
 pub struct Dotenv {
     pub entries: Vec<Entry>,
     pub warnings: Vec<Warning>,
+    /// Every assignment as (key, first line, last line), repeats included.
+    pub assignments: Vec<(String, u32, u32)>,
 }
 
 impl Dotenv {
@@ -90,7 +94,8 @@ pub fn read(input: &str) -> Dotenv {
             continue;
         }
 
-        let mut rest = trimmed;
+        // Only the start is trimmed: a quote left open keeps its trailing spaces.
+        let mut rest = line.trim_start();
         if let Some(stripped) = strip_export(rest) {
             out.warn(
                 line_no,
@@ -111,20 +116,23 @@ pub fn read(input: &str) -> Dotenv {
         let (name_part, value_part) = rest.split_at(eq);
         let value_part = &value_part[1..];
         let key = name_part.trim();
+        // The text before an = may be a line of some value, so it is named
+        // only when it could not be.
+        if !is_plausible_key(key) {
+            let message = if nameable(key) {
+                format!("{key:?} is not a usable key name and was skipped")
+            } else {
+                format!("line {line_no}: the text before = is not a usable key name")
+            };
+            out.warn(line_no, "invalid_key_name", message);
+            continue;
+        }
         if name_part != key || value_part.starts_with(' ') || value_part.starts_with('\t') {
             out.warn(
                 line_no,
                 "spaces_around_equals",
                 format!("{key} has whitespace around its ="),
             );
-        }
-        if !is_valid_key_name(key) {
-            out.warn(
-                line_no,
-                "invalid_key_name",
-                format!("{key:?} is not a usable key name and was skipped"),
-            );
-            continue;
         }
         if key != key.to_ascii_uppercase() {
             out.warn(
@@ -137,9 +145,20 @@ pub fn read(input: &str) -> Dotenv {
         let first = value_part.trim_start();
         // Where the value starts on this line, so an escape can be pointed at
         // without printing what it sits in.
-        let column = line.trim_end().len() - first.len() + 1;
+        let column = line.len() - first.len() + 1;
         let literal = first.starts_with(['\'', '`']);
-        let value = read_value(first, &lines, &mut i, line_no, column, &mut out);
+        let value = if first.starts_with('#') && first.len() < value_part.len() {
+            out.warn(
+                line_no,
+                "inline_comment",
+                "a comment after a value is not part of the safe subset",
+            );
+            String::new()
+        } else {
+            read_value(first, &lines, &mut i, line_no, column, &mut out)
+        };
+        let end = i as u32;
+        out.assignments.push((key.to_string(), line_no, end));
 
         match out.entries.iter_mut().find(|e| e.key == key) {
             Some(existing) => {
@@ -155,11 +174,35 @@ pub fn read(input: &str) -> Dotenv {
                 key: key.to_string(),
                 value,
                 line: line_no,
+                end,
                 literal,
             }),
         }
     }
     out
+}
+
+/// A name a `.env` line can set. A line of base64 is a valid identifier too, so
+/// a long name, or a mixed-case run with digits and no underscore, is not one.
+pub fn is_plausible_key(name: &str) -> bool {
+    is_valid_key_name(name) && name.len() <= 64 && !looks_encoded(name)
+}
+
+/// Short and plain enough to be a name someone typed, never key material.
+fn nameable(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 40
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        && !looks_encoded(text)
+}
+
+fn looks_encoded(text: &str) -> bool {
+    text.chars().any(|c| c.is_ascii_uppercase())
+        && text.chars().any(|c| c.is_ascii_lowercase())
+        && text.chars().any(|c| c.is_ascii_digit())
+        && !text.contains('_')
 }
 
 fn strip_export(line: &str) -> Option<&str> {
@@ -185,6 +228,9 @@ fn read_value(
         .next()
         .filter(|c| ['"', '\'', '`'].contains(c));
     let Some(quote) = quote else {
+        if first.starts_with("-----BEGIN ") && !first.contains("-----END") {
+            return read_pem(first, lines, i, line_no, out);
+        }
         let raw = strip_inline_comment(first, line_no, out);
         return raw.trim_end().to_string();
     };
@@ -225,6 +271,30 @@ fn read_value(
         body.push_str(lines[*i]);
         *i += 1;
     }
+}
+
+/// An unquoted PEM block pasted across lines: every line through the `-----END`
+/// one is the value, so no line of the key is read as a key of its own.
+fn read_pem(first: &str, lines: &[&str], i: &mut usize, line_no: u32, out: &mut Dotenv) -> String {
+    let mut value = first.trim_end().to_string();
+    while *i < lines.len() {
+        let line = lines[*i].trim();
+        *i += 1;
+        value.push('\n');
+        value.push_str(line);
+        if line.starts_with("-----END ") && line.ends_with("-----") {
+            break;
+        }
+    }
+    out.warn(
+        line_no,
+        "unquoted_multiline",
+        format!(
+            "the unquoted PEM block on lines {line_no} to {} was read as one value; double-quote it with \\n for each line break",
+            *i
+        ),
+    );
+    value
 }
 
 fn find_close(body: &str, quote: char) -> Option<usize> {

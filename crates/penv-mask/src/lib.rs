@@ -117,9 +117,12 @@ impl Masker {
             }
             match self.match_at(index) {
                 (Some(pattern), consumed) => {
+                    let Some(end) = self.overlapped_end(index, index + consumed, ending) else {
+                        break;
+                    };
                     out.extend_from_slice(&self.held[run..index]);
                     out.extend_from_slice(&self.patterns[pattern].replacement);
-                    index += consumed;
+                    index = end;
                     run = index;
                 }
                 (None, _) => index += 1,
@@ -127,6 +130,23 @@ impl Masker {
         }
         out.extend_from_slice(&self.held[run..index]);
         self.held.drain(..index);
+    }
+
+    /// Where a masked run ends once every pattern starting inside it is taken
+    /// in too, so an overlapping secret leaves nothing of itself behind. `None`
+    /// when one of them may still complete with bytes not yet read.
+    fn overlapped_end(&self, start: usize, mut end: usize, ending: bool) -> Option<usize> {
+        let mut at = start + 1;
+        while at < end {
+            if !ending && self.partial_at(at) {
+                return None;
+            }
+            if let (Some(_), consumed) = self.match_at(at) {
+                end = end.max(at + consumed);
+            }
+            at += 1;
+        }
+        Some(end)
     }
 
     /// The longest pattern that fits whole at this position, and what it ate.
@@ -182,7 +202,8 @@ fn compare(hay: &[u8], pattern: &Pattern) -> Hit {
 
 /// The shapes one secret can leave a process in: as written, base64 in both
 /// alphabets at every phase a prefix can push it to, hex, percent-encoded and
-/// escaped as a JSON string body. The flag marks the forms that arrive wrapped.
+/// escaped as a JSON string body the ways common encoders write one. The flag
+/// marks the forms that arrive wrapped.
 fn forms(secret: &str) -> Vec<(String, bool)> {
     let raw = secret.as_bytes();
     let mut out = vec![
@@ -200,8 +221,31 @@ fn forms(secret: &str) -> Vec<(String, bool)> {
     out.push((hex(raw, UPPER_HEX), false));
     out.push((percent(secret, UPPER_HEX), false));
     out.push((percent(secret, LOWER_HEX), false));
-    out.push((json_escaped(secret), false));
+    // Every mix of the optional escapes; one that changes nothing is dropped as
+    // a duplicate by the masker.
+    for bits in 0..16u8 {
+        let style = JsonStyle {
+            slash: bits & 1 != 0,
+            html: bits & 2 != 0,
+            ascii: bits & 4 != 0,
+            upper: bits & 8 != 0,
+        };
+        out.push((json_escaped(secret, style), false));
+    }
     out
+}
+
+/// How far a JSON encoder escapes beyond the minimum.
+#[derive(Clone, Copy)]
+struct JsonStyle {
+    /// `\/`, which PHP and some Java encoders write.
+    slash: bool,
+    /// `<` for `<`, `>` and `&`, as Go writes them.
+    html: bool,
+    /// `\uXXXX` for everything past ASCII, as Python's `ensure_ascii` does.
+    ascii: bool,
+    /// Upper-case hex digits in `\uXXXX`.
+    upper: bool,
 }
 
 fn base64(input: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
@@ -267,8 +311,15 @@ fn percent(value: &str, digits: &[u8; 16]) -> String {
 }
 
 /// The body of a JSON string, without the quotes around it.
-fn json_escaped(value: &str) -> String {
+fn json_escaped(value: &str, style: JsonStyle) -> String {
     let mut out = String::with_capacity(value.len());
+    let unit = |out: &mut String, unit: u16| {
+        if style.upper {
+            out.push_str(&format!("\\u{unit:04X}"));
+        } else {
+            out.push_str(&format!("\\u{unit:04x}"));
+        }
+    };
     for c in value.chars() {
         match c {
             '"' => out.push_str("\\\""),
@@ -278,7 +329,15 @@ fn json_escaped(value: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            '/' if style.slash => out.push_str("\\/"),
+            '<' | '>' | '&' if style.html => unit(&mut out, c as u16),
+            c if (c as u32) < 0x20 => unit(&mut out, c as u16),
+            c if !c.is_ascii() && style.ascii => {
+                let mut pair = [0u16; 2];
+                for half in c.encode_utf16(&mut pair) {
+                    unit(&mut out, *half);
+                }
+            }
             c => out.push(c),
         }
     }

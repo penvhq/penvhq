@@ -1,11 +1,10 @@
 use std::io::Read;
-use std::path::Path;
 
-use penv_guards::{Hook, Payload, Roots};
+use penv_guards::{Hook, Payload};
 use serde_json::Value;
 
 use crate::error::{CliError, Exit};
-use crate::files::{Disk, home, show};
+use crate::files::{Disk, home};
 use crate::output::Report;
 
 pub const READS_ENV: &str = "penv blocks reads of .env files. Run penv ls for the key names and penv check for what is missing; .env.schema is readable.";
@@ -44,13 +43,10 @@ pub enum Decision {
 
 /// Read the harness payload from stdin, decide, and answer in the shape that
 /// harness's folder declares. A payload with something to match on that cannot
-/// be read is a refusal; only empty stdin is an allow.
-pub fn run(harness: &str, cwd: &Path) -> Result<Report, CliError> {
-    let roots = Roots::new(show(cwd), home());
-    let hook = penv_guards::load(&Disk, &roots, harness)
-        .ok()
-        .and_then(|guard| guard.hook)
-        .unwrap_or_else(Hook::generic);
+/// be read is a refusal; only empty stdin is an allow. The answer's shape never
+/// comes from the repository's own guard folders, which an agent can write.
+pub fn run(harness: &str) -> Result<Report, CliError> {
+    let hook = penv_guards::hook(&Disk, home().as_deref(), harness).unwrap_or_else(Hook::generic);
 
     let mut payload = String::new();
     let _ = std::io::stdin().read_to_string(&mut payload);
@@ -124,18 +120,32 @@ fn walk(value: &Value, request: &mut Request) {
 /// A Glob or Grep `pattern` is read as a path, so a glob over `.env` counts.
 fn fields(value: &Value, request: &mut Request) {
     for (name, child) in value.as_object().into_iter().flatten() {
-        let Value::String(text) = child else { continue };
-        match name.as_str() {
-            "command" | "cmd" if request.command.is_none() => {
+        match (name.as_str(), child) {
+            ("command" | "cmd", Value::String(text)) if request.command.is_none() => {
                 request.command = Some(text.clone());
             }
-            "file_path" | "filePath" | "path" | "file" | "pattern" | "glob"
-                if request.path.is_none() =>
-            {
-                request.path = Some(text.clone());
+            (
+                "file_path" | "filePath" | "absolute_path" | "path" | "file" | "pattern" | "glob",
+                Value::String(text),
+            ) => offer(request, text),
+            // Gemini's read_many_files names several at once.
+            ("paths" | "include" | "file_paths" | "files", Value::Array(items)) => {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .for_each(|p| offer(request, p));
             }
             _ => {}
         }
+    }
+}
+
+/// The first path named, unless a later one would be refused: a Grep carries a
+/// pattern and a path, and field order is the harness's, not ours.
+fn offer(request: &mut Request, path: &str) {
+    let held = request.path.as_deref().is_some_and(touches_env_file);
+    if request.path.is_none() || (!held && touches_env_file(path)) {
+        request.path = Some(path.to_string());
     }
 }
 
@@ -170,17 +180,22 @@ fn decide_at(request: &Request, depth: u8) -> Decision {
 
 /// True for `.env` and `.env.<anything>`, and false for `.env.schema`, which
 /// holds no values and is the file an agent needs most. A glob that could name
-/// one of them counts as naming it.
+/// one of them counts as naming it. Case is folded: `.ENV` is the same file on
+/// macOS and Windows.
 pub fn touches_env_file(candidate: &str) -> bool {
     candidate.split('=').any(|piece| {
         let piece = piece.trim_matches(['"', '\'', '`', '(', ')', '<', '>']);
-        let name = piece.rsplit(['/', '\\']).next().unwrap_or(piece);
+        let name = piece
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(piece)
+            .to_ascii_lowercase();
         if name == ".env.schema" {
             return false;
         }
         name == ".env"
             || name.starts_with(".env.")
-            || glob_reaches_a_value_file(name)
+            || glob_reaches_a_value_file(&name)
             || is_penv_key_file(piece)
     })
 }

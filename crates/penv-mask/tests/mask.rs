@@ -92,6 +92,44 @@ fn the_json_escaped_form_is_caught_too() {
 }
 
 #[test]
+fn the_json_forms_other_encoders_write_are_caught_too() {
+    let value = "a/b<c>&d\u{e9}\u{1f511}\u{1b}FAKE";
+    for encoded in [
+        // PHP and some Java encoders escape the slash.
+        "a\\/b<c>&d\u{e9}\u{1f511}\\u001bFAKE",
+        // Go escapes the HTML characters.
+        "a/b\\u003cc\\u003e\\u0026d\u{e9}\u{1f511}\\u001bFAKE",
+        // Python's ensure_ascii, a surrogate pair above the BMP.
+        "a/b<c>&d\\u00e9\\ud83d\\udd11\\u001bFAKE",
+        // Upper-case hex digits.
+        "a/b<c>&d\\u00E9\\uD83D\\uDD11\\u001BFAKE",
+        "a\\/b\\u003Cc\\u003E\\u0026d\\u00E9\\uD83D\\uDD11\\u001BFAKE",
+    ] {
+        let out = one(&[value], &format!("{{\"k\":\"{encoded}\"}}"));
+        assert_eq!(out, format!("{{\"k\":\"a/{BLOCKS}\"}}"), "{encoded}");
+    }
+}
+
+#[test]
+fn overlapping_secrets_leave_nothing_of_either_behind() {
+    let out = one(&["abcdef00", "ef0011223"], "xxabcdef0011223yy");
+    assert_eq!(out, format!("xxab{BLOCKS}yy"));
+    // A chain of overlaps is one masked run.
+    let out = one(&["abcd0000", "0000efgh", "efghijkl"], "<abcd0000efghijkl>");
+    assert_eq!(out, format!("<ab{BLOCKS}>"));
+    // The same, however the stream was split.
+    let input = "xxabcdef0011223yy";
+    for split in 0..input.len() {
+        let (head, tail) = input.split_at(split);
+        let out = through(
+            &["abcdef00", "ef0011223"],
+            &[head.as_bytes(), tail.as_bytes()],
+        );
+        assert_eq!(out, format!("xxab{BLOCKS}yy"), "split at {split}");
+    }
+}
+
+#[test]
 fn short_secrets_are_left_alone() {
     // Masking "1" would destroy the output; the design would rather print it.
     let out = one(&["1", "on", "abc"], "port 1 mode on abc");

@@ -82,6 +82,56 @@ fn the_schema_stays_readable_because_it_holds_no_values() {
 }
 
 #[test]
+fn a_value_file_in_another_case_is_the_same_file() {
+    for command in [
+        "cat .ENV",
+        "cat .Env.Local",
+        "less config/.ENV.PRODUCTION",
+        "cat .E*",
+    ] {
+        denied(command, READS_ENV);
+    }
+    let read = Request::path("/repo/.Env");
+    assert_eq!(decide(&read), Decision::Deny(READS_ENV));
+    for command in ["cat .ENV.SCHEMA", "cat .Env.Schema"] {
+        allowed(command);
+    }
+}
+
+#[test]
+fn every_gemini_before_tool_payload_names_what_it_touches() {
+    for (tool, input) in [
+        ("read_file", r#"{"file_path":"/repo/.env"}"#),
+        ("read_file", r#"{"absolute_path":"/repo/.env.local"}"#),
+        (
+            "read_many_files",
+            r#"{"paths":["README.md","config/.env.production"]}"#,
+        ),
+        (
+            "read_many_files",
+            r#"{"paths":["src"],"include":[".env*"]}"#,
+        ),
+        ("glob", r#"{"pattern":"**/.env*"}"#),
+        (
+            "search_file_content",
+            r#"{"pattern":"KEY","path":".env","include":"*"}"#,
+        ),
+        ("run_shell_command", r#"{"command":"cat .env"}"#),
+    ] {
+        let payload = format!(
+            r#"{{"session_id":"s","hook_event_name":"BeforeTool","cwd":"/repo","tool_name":"{tool}","tool_input":{input}}}"#
+        );
+        assert_eq!(
+            decide(&extract(Payload::Generic, &payload)),
+            Decision::Deny(READS_ENV),
+            "{tool} {input}"
+        );
+    }
+    let fine = r#"{"hook_event_name":"BeforeTool","tool_name":"read_many_files","tool_input":{"paths":["README.md",".env.schema"]}}"#;
+    assert_eq!(decide(&extract(Payload::Generic, fine)), Decision::Allow);
+}
+
+#[test]
 fn dumping_the_environment_is_refused() {
     for command in [
         "printenv",
