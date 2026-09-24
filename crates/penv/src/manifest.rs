@@ -140,7 +140,8 @@ const META: &[Meta] = &[
     Meta {
         path: "check",
         implemented: true,
-        exit_codes: &[0, 1, 3],
+        // penv() naming a write-only key is refused as redacted.
+        exit_codes: &[0, 1, 3, 6],
         env_flags: &[("env", "PENV_ENV")],
         ..DEFAULT_META
     },
@@ -153,7 +154,8 @@ const META: &[Meta] = &[
     Meta {
         path: "scan",
         implemented: true,
-        exit_codes: &[0, 1, 3, 5],
+        // penv() naming a write-only key is refused as redacted.
+        exit_codes: &[0, 1, 3, 5, 6],
         env_flags: &[("env", "PENV_ENV")],
         ..DEFAULT_META
     },

@@ -30,7 +30,8 @@ pub fn run(
     let resolved = source::values(&schema, &dir, &environment, env, &mut fetcher)?;
     let key = schema.get(name);
     let raw = resolved.layers.raw.get(name);
-    if key.is_none() && raw.is_none() {
+    let redacted = resolved.redacted.iter().any(|r| r == name);
+    if key.is_none() && raw.is_none() && !redacted {
         return Err(CliError::new(
             "unknown_key",
             format!("{name} is not in .env.schema and no value file or cloud environment sets it."),
@@ -43,6 +44,16 @@ pub fn run(
     let relative = |p: &Path| show(p.strip_prefix(&dir).unwrap_or(p));
     let origin = resolved.layers.origin.get(name).map(|p| relative(p));
     let from = match (&origin, raw) {
+        _ if redacted => match (&resolved.cloud, resolved.layers.redacted.get(name)) {
+            (Some(c), _) => format!(
+                "penv.cloud {c}, withheld: the environment is write-only and only workload identities read it"
+            ),
+            (None, Some(file)) => format!(
+                "a # penv:redacted marker in {}: penv-cloud holds the value write-only",
+                relative(file)
+            ),
+            (None, None) => "penv-cloud, withheld: the environment is write-only".to_string(),
+        },
         (Some(o), Some(_)) if o == "the process environment" => {
             "the process environment".to_string()
         }
@@ -92,6 +103,7 @@ pub fn run(
 
     let value = resolved.values.get(name);
     let state = match value {
+        _ if redacted => "redacted",
         Some(v) if !v.is_empty() => "set",
         Some(_) => "empty",
         None => "unset",

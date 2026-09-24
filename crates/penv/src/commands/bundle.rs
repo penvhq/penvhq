@@ -43,6 +43,10 @@ pub fn run(
     let reused = without_bundle.remove(crate::bundle::KEY_VAR);
     let mut fetcher = Fetcher::new(&without_bundle, &detection);
     let resolved = source::values(&schema, &dir, &environment, &without_bundle, &mut fetcher)?;
+    // A bundle without the withheld keys would deploy as if they had no value.
+    if let Some(refused) = source::withheld(&resolved) {
+        return Err(refused);
+    }
     if !resolved.errors.is_empty() && source::failed(&resolved.errors) {
         return Err(source::unresolved(&resolved.errors));
     }

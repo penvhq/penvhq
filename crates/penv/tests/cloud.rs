@@ -2066,3 +2066,289 @@ fn push_sends_an_encrypted_value_decrypted() {
         "the cloud gets the value, never the local encryption"
     );
 }
+
+// --- write-only environments ------------------------------------------------
+
+const PRODUCTION: &str = "/api/v1/envs/acme/api-gateway/production";
+const DB_PASSWORD: &str = "db_FAKE_local_0000";
+
+fn write_only_keys() -> String {
+    format!("{KEYS}\n# @type=string\nDB_PASSWORD=\n")
+}
+
+fn write_only_schema() -> String {
+    format!("# @penv=acme/{PROJECT} @schema=1\n\n{}", write_only_keys())
+}
+
+/// A write-only environment as a person's login reads it: DB_PASSWORD, and
+/// each of `withheld`, present and redacted.
+fn write_only_body(withheld: &[&str]) -> String {
+    let mut keys = vec![
+        json!({ "path": "", "name": "PORT", "kind": "static", "version": 1, "value": "3000" }),
+        json!({ "path": "", "name": "DB_PASSWORD", "kind": "static", "version": 4, "redacted": true }),
+    ];
+    if withheld.contains(&"STRIPE_SECRET_KEY") {
+        keys.push(json!({ "path": "", "name": "STRIPE_SECRET_KEY", "kind": "static", "version": 2, "redacted": true }));
+    } else {
+        keys.push(json!({ "path": "", "name": "STRIPE_SECRET_KEY", "kind": "static", "version": 2, "value": SECRET }));
+    }
+    json!({ "keys": keys, "writeOnly": true }).to_string()
+}
+
+fn run_in(workspace: &Workspace, mock: &Mock, environment: &str) -> Output {
+    workspace
+        .command(mock)
+        .args(["--agent", "run", "--env", environment, "--"])
+        .args(SHELL)
+        .arg(ECHO_VALUES)
+        .output()
+        .expect("penv runs")
+}
+
+#[test]
+fn pull_writes_a_redacted_marker_and_no_value_line_for_a_write_only_key() {
+    let mock = Mock::new();
+    mock.on("GET", PRODUCTION, 200, &write_only_body(&[]));
+    let workspace = Workspace::new(&[(".env.schema", &write_only_schema())]);
+
+    let output = workspace.run(
+        &mock,
+        &["--json", "pull", "--env", "production", "--i-am-human"],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json_of(&stdout(&output));
+    assert_eq!(report["redacted"], json!(["DB_PASSWORD"]));
+    assert_eq!(report["keys"], 2);
+    assert_eq!(report["skipped"], json!([]));
+
+    let written = workspace.read(".env.production");
+    assert_eq!(
+        written,
+        format!("PORT=3000\nSTRIPE_SECRET_KEY={SECRET}\n# penv:redacted DB_PASSWORD\n")
+    );
+    assert!(!written.contains("DB_PASSWORD="), "{written}");
+    assert!(!stderr(&output).contains("penv set"), "{}", stderr(&output));
+
+    let text = workspace.run(
+        &mock,
+        &[
+            "--format",
+            "text",
+            "pull",
+            "--env",
+            "production",
+            "--i-am-human",
+        ],
+    );
+    assert!(
+        stdout(&text)
+            .contains("Write-only in penv-cloud, written as a redacted marker: DB_PASSWORD"),
+        "{}",
+        stdout(&text)
+    );
+}
+
+#[test]
+fn run_refuses_a_write_only_key_naming_every_key_and_the_environment() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        PRODUCTION,
+        200,
+        &write_only_body(&["STRIPE_SECRET_KEY"]),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &write_only_schema())]);
+
+    let output = run_in(&workspace, &mock, "production");
+    assert_eq!(output.status.code(), Some(6), "{}", stderr(&output));
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "redacted");
+    assert_eq!(
+        error["message"],
+        "DB_PASSWORD, STRIPE_SECRET_KEY in production are write-only in penv-cloud."
+    );
+    assert_eq!(
+        error["fix"],
+        "Run it where a workload identity (OIDC, AWS IAM or bound keypair) reads the environment, or set them in .env.production.local."
+    );
+    assert!(!stdout(&output).contains("3000"), "the command ran");
+}
+
+#[test]
+fn a_local_overlay_supplies_a_write_only_key_and_run_goes_ahead() {
+    let mock = Mock::new();
+    mock.on("GET", PRODUCTION, 200, &write_only_body(&[]));
+    let workspace = Workspace::new(&[
+        (".env.schema", &write_only_schema()),
+        (
+            ".env.production.local",
+            &format!("DB_PASSWORD={DB_PASSWORD}\n"),
+        ),
+    ]);
+
+    let output = run_in(&workspace, &mock, "production");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("3000"), "{}", stdout(&output));
+    assert!(!stdout(&output).contains(DB_PASSWORD));
+    assert!(!stderr(&output).contains("redacted"), "{}", stderr(&output));
+}
+
+#[test]
+fn check_ls_and_why_treat_a_write_only_key_as_present_and_withheld() {
+    let mock = Mock::new();
+    mock.on("GET", PRODUCTION, 200, &write_only_body(&[]));
+    let workspace = Workspace::new(&[(".env.schema", &write_only_schema())]);
+
+    let check = workspace.run(&mock, &["--json", "check", "--env", "production"]);
+    let report = json_of(&stdout(&check));
+    assert_eq!(check.status.code(), Some(0), "{report}");
+    assert_eq!(report["redacted"], json!(["DB_PASSWORD"]));
+    assert!(
+        !report["violations"].to_string().contains("DB_PASSWORD"),
+        "{report}"
+    );
+    assert!(
+        report["notes"]
+            .to_string()
+            .contains("DB_PASSWORD in production is write-only in penv-cloud"),
+        "{report}"
+    );
+
+    let ls = workspace.run(&mock, &["--json", "ls", "--env", "production"]);
+    assert_eq!(ls.status.code(), Some(0), "{}", stderr(&ls));
+    let listed = json_of(&stdout(&ls));
+    let row = listed["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == "DB_PASSWORD")
+        .unwrap();
+    assert_eq!(row["value"], "redacted");
+
+    let why = workspace.run(
+        &mock,
+        &["--json", "why", "DB_PASSWORD", "--env", "production"],
+    );
+    assert_eq!(why.status.code(), Some(0), "{}", stderr(&why));
+    let said = json_of(&stdout(&why));
+    assert_eq!(said["state"], "redacted");
+    let from = said["from"].as_str().unwrap();
+    assert!(
+        from.contains("acme/api-gateway/production") && from.contains("withheld"),
+        "{from}"
+    );
+    assert!(!from.contains("nowhere"), "{from}");
+}
+
+#[test]
+fn with_the_header_removed_a_pulled_marker_still_refuses_rather_than_passing_nothing() {
+    let mock = Mock::new();
+    // The file pull writes for a write-only environment, as the pull test checks.
+    let workspace = Workspace::new(&[
+        (".env.schema", &write_only_schema()),
+        (
+            ".env.production",
+            &format!("PORT=3000\nSTRIPE_SECRET_KEY={SECRET}\n# penv:redacted DB_PASSWORD\n"),
+        ),
+    ]);
+
+    // Local mode: no header, and a lower layer's value does not stand in for
+    // the production one the marker names.
+    std::fs::write(
+        workspace.path().join(".env.schema"),
+        format!("# @schema=1\n\n{}", write_only_keys()),
+    )
+    .unwrap();
+    std::fs::write(workspace.path().join(".env"), "DB_PASSWORD=dev_FAKE_0000\n").unwrap();
+    let requests = mock.requests().len();
+
+    let refused = run_in(&workspace, &mock, "production");
+    assert_eq!(refused.status.code(), Some(6), "{}", stderr(&refused));
+    let error = json_of(&stderr(&refused));
+    assert_eq!(error["error"], "redacted");
+    assert_eq!(
+        error["message"],
+        "DB_PASSWORD in production is write-only in penv-cloud."
+    );
+    assert_eq!(
+        error["fix"],
+        "Set DB_PASSWORD in .env.production.local. penv-cloud keeps the production value write-only."
+    );
+    assert_eq!(
+        mock.requests().len(),
+        requests,
+        "local mode asked the cloud"
+    );
+
+    let ls = workspace.run(&mock, &["--json", "ls", "--env", "production"]);
+    assert!(stdout(&ls).contains("\"redacted\""), "{}", stdout(&ls));
+
+    std::fs::write(
+        workspace.path().join(".env.production.local"),
+        format!("DB_PASSWORD={DB_PASSWORD}\n"),
+    )
+    .unwrap();
+    let allowed = run_in(&workspace, &mock, "production");
+    assert_eq!(allowed.status.code(), Some(0), "{}", stderr(&allowed));
+    assert!(stdout(&allowed).contains("3000"), "{}", stdout(&allowed));
+}
+
+#[test]
+fn an_approval_for_a_write_only_value_is_refused_as_redacted_with_exit_six() {
+    let mock = Mock::new();
+    mock.on(
+        "POST",
+        APPROVALS,
+        409,
+        &json!({ "error": "redacted" }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &write_only_schema())]);
+
+    let output = workspace
+        .command(&mock)
+        .env("CLAUDECODE", "1")
+        .args(["reveal", "DB_PASSWORD", "--env", "production"])
+        .output()
+        .expect("penv runs");
+    assert_eq!(output.status.code(), Some(6), "{}", stderr(&output));
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "redacted");
+    assert!(
+        error["fix"]
+            .as_str()
+            .unwrap()
+            .contains("Reveal is not available"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_person_revealing_a_write_only_value_is_told_so_and_never_told_to_set_it() {
+    let mock = Mock::new();
+    mock.on("GET", PRODUCTION, 200, &write_only_body(&[]));
+    let workspace = Workspace::new(&[(".env.schema", &write_only_schema())]);
+
+    let output = workspace.run(
+        &mock,
+        &["--json", "reveal", "DB_PASSWORD", "--env", "production"],
+    );
+    assert_eq!(output.status.code(), Some(6), "{}", stderr(&output));
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "redacted");
+    assert!(
+        !error["fix"].as_str().unwrap().contains("penv set"),
+        "{error}"
+    );
+}
+
+#[test]
+fn bundle_refuses_a_write_only_key_rather_than_leaving_it_out() {
+    let mock = Mock::new();
+    mock.on("GET", PRODUCTION, 200, &write_only_body(&[]));
+    let workspace = Workspace::new(&[(".env.schema", &write_only_schema())]);
+
+    let output = workspace.run(&mock, &["--json", "bundle", "--env", "production"]);
+    assert_eq!(output.status.code(), Some(6), "{}", stderr(&output));
+    assert_eq!(json_of(&stderr(&output))["error"], "redacted");
+    assert!(!workspace.path().join(".penv/production.bundle").exists());
+}
