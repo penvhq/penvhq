@@ -48,6 +48,7 @@ const inlined = (literal: () => string | undefined, name: string): string | unde
       read("NODE_ENV"),
       read("DEBUG_TRACING"),
       read("SUPPORT_NOTE"),
+      read("NEXT_PUBLIC_CHECKOUT_TOKEN"),
     ].filter((v): v is string => typeof v === "string" && v.length >= 4);
   } catch {
     return;
@@ -112,7 +113,7 @@ const inlined = (literal: () => string | undefined, name: string): string | unde
       constructor(body?: Body, init?: Init) {
         super(typeof body === "string" ? mask(body) : body, init);
       }
-            static override json(data: unknown, init?: Init) {
+      static override json(data: unknown, init?: Init) {
         const headers = new Headers(init?.headers);
         if (!headers.has("content-type")) headers.set("content-type", "application/json");
         return new Masked(JSON.stringify(data), { ...init, headers });
@@ -121,6 +122,17 @@ const inlined = (literal: () => string | undefined, name: string): string | unde
     g.Response = Masked;
   }
 })();
+
+const given = (value: string | undefined, fallback: string): string =>
+  value === undefined || value === "" ? fallback : value;
+
+// A garbage value is named, never shown.
+const flag = (value: string | undefined, name: string): boolean => {
+  const word = (value ?? "").trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(word)) return true;
+  if (value === undefined || ["0", "false", "no", "off"].includes(word)) return false;
+  throw new Error(`${name} is not a boolean`);
+};
 
 export const env = {
   /** Where the service keeps its own rows. */
@@ -132,13 +144,13 @@ export const env = {
   },
   /** Where the browser is sent back to after a redirect. */
   get NEXT_PUBLIC_APP_URL() {
-    return (inlined(() => process.env.NEXT_PUBLIC_APP_URL, "NEXT_PUBLIC_APP_URL") ?? "http://localhost:3000") as string;
+    return given(inlined(() => process.env.NEXT_PUBLIC_APP_URL, "NEXT_PUBLIC_APP_URL"), "http://localhost:3000") as string;
   },
   get PORT() {
-    return Number(read("PORT") ?? "3000");
+    return Number(given(read("PORT"), "3000"));
   },
   get NODE_ENV() {
-    return (read("NODE_ENV") ?? "development") as "development" | "staging" | "production";
+    return given(read("NODE_ENV"), "development") as "development" | "staging" | "production";
   },
   /** The tier this deployment serves. */
   get PLAN_TIER() {
@@ -146,23 +158,27 @@ export const env = {
   },
   /** How long a cached value stays fresh. */
   get CACHE_TTL_SECONDS() {
-    return Number(read("CACHE_TTL_SECONDS") ?? "1.5");
+    return Number(given(read("CACHE_TTL_SECONDS"), "1.5"));
   },
   get MAX_RETRIES() {
     return Number(read("MAX_RETRIES"));
   },
   get FEATURE_BILLING() {
-    return (read("FEATURE_BILLING") ?? "false") === "true";
+    return flag(given(read("FEATURE_BILLING"), "false"), "FEATURE_BILLING");
   },
   get DEBUG_TRACING() {
-    return read("DEBUG_TRACING") === "true";
+    return flag(read("DEBUG_TRACING"), "DEBUG_TRACING");
   },
   /** Where failures are mailed. */
   get ALERTS_EMAIL() {
-    return (read("ALERTS_EMAIL") ?? "ops@example.test") as string;
+    return given(read("ALERTS_EMAIL"), "ops@example.test") as string;
   },
   get SUPPORT_NOTE() {
     return read("SUPPORT_NOTE") as string | undefined;
+  },
+  /** Built from the secret, so its prefix does not make it safe to inline. */
+  get NEXT_PUBLIC_CHECKOUT_TOKEN() {
+    return read("NEXT_PUBLIC_CHECKOUT_TOKEN") as string;
   },
 };
 
@@ -179,7 +195,7 @@ export const envSchema = {
         number: (v: string) => Number.isFinite(Number(v)),
         integer: (v: string) => Number.isInteger(Number(v)),
         port: (v: string) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 65535,
-        boolean: (v: string) => v === "true" || v === "false",
+        boolean: (v: string) => ["1", "true", "yes", "on", "0", "false", "no", "off"].includes(v.trim().toLowerCase()),
         url: (v: string) => { try { new URL(v); return true; } catch { return false; } },
         email: (v: string) => { const at = v.indexOf("@"); return at > 0 && at < v.length - 1 && at === v.lastIndexOf("@"); },
       };
@@ -217,16 +233,19 @@ export const envSchema = {
         issues.push({ message: "MAX_RETRIES must be a whole number", path: ["MAX_RETRIES"] });
       }
       if (seen["FEATURE_BILLING"] !== undefined && seen["FEATURE_BILLING"] !== "" && !is.boolean(String(seen["FEATURE_BILLING"]))) {
-        issues.push({ message: "FEATURE_BILLING must be true or false", path: ["FEATURE_BILLING"] });
+        issues.push({ message: "FEATURE_BILLING must be a boolean: 1, true, yes, on, 0, false, no or off", path: ["FEATURE_BILLING"] });
       }
       if (seen["DEBUG_TRACING"] === undefined || seen["DEBUG_TRACING"] === "") {
         issues.push({ message: "DEBUG_TRACING is required", path: ["DEBUG_TRACING"] });
       }
       if (seen["DEBUG_TRACING"] !== undefined && seen["DEBUG_TRACING"] !== "" && !is.boolean(String(seen["DEBUG_TRACING"]))) {
-        issues.push({ message: "DEBUG_TRACING must be true or false", path: ["DEBUG_TRACING"] });
+        issues.push({ message: "DEBUG_TRACING must be a boolean: 1, true, yes, on, 0, false, no or off", path: ["DEBUG_TRACING"] });
       }
       if (seen["ALERTS_EMAIL"] !== undefined && seen["ALERTS_EMAIL"] !== "" && !is.email(String(seen["ALERTS_EMAIL"]))) {
         issues.push({ message: "ALERTS_EMAIL must be an email address", path: ["ALERTS_EMAIL"] });
+      }
+      if (seen["NEXT_PUBLIC_CHECKOUT_TOKEN"] === undefined || seen["NEXT_PUBLIC_CHECKOUT_TOKEN"] === "") {
+        issues.push({ message: "NEXT_PUBLIC_CHECKOUT_TOKEN is required", path: ["NEXT_PUBLIC_CHECKOUT_TOKEN"] });
       }
       return issues.length > 0 ? { issues } : { value: env };
     },

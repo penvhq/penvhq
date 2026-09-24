@@ -3,9 +3,12 @@
 //! `target.toml` has, and `.penv/<name>.tmpl` holds a template override. This
 //! presents both to the folder lookup as the repository's own target folder, so
 //! the loader and its inheritance stay as they are. A `.penv/targets/<name>/`
-//! folder left from before still reads; the configuration wins over it.
+//! folder left from before still reads, below the configuration.
 
+use crate::error::Error;
 use crate::folder::Tree;
+use crate::load::merge;
+use crate::target::is_name as named;
 
 pub const CONFIG: &str = ".penv/config.toml";
 
@@ -17,39 +20,53 @@ pub struct Settled<'a> {
 }
 
 impl<'a> Settled<'a> {
-    /// `repo` is the directory holding `.env.schema` and `.penv/`.
-    pub fn new(inner: &'a dyn Tree, repo: &str) -> Settled<'a> {
+    /// `repo` is the directory holding `.env.schema` and `.penv/`. A config
+    /// file that does not parse is named here, before anything reads through it.
+    pub fn new(inner: &'a dyn Tree, repo: &str) -> Result<Settled<'a>, Error> {
         let penv = format!("{repo}/.penv");
-        let sections = inner
-            .read(&format!("{repo}/{CONFIG}"))
-            .and_then(|text| text.parse::<toml::Table>().ok())
-            .and_then(|table| table.get("targets").and_then(|t| t.as_table()).cloned())
+        let path = format!("{repo}/{CONFIG}");
+        let table = match inner.read(&path) {
+            Some(text) => text.parse::<toml::Table>().map_err(|e| Error::Malformed {
+                dir: path.clone(),
+                message: e.message().to_string(),
+            })?,
+            None => toml::Table::new(),
+        };
+        let sections = table
+            .get("targets")
+            .and_then(|t| t.as_table())
+            .cloned()
             .unwrap_or_default()
             .into_iter()
             .filter(|(name, _)| named(name))
             .collect();
-        Settled {
+        Ok(Settled {
             inner,
             folder: format!("{penv}/targets"),
             penv,
             sections,
-        }
+        })
     }
 
-    /// The `target.toml` a section stands for, `name` filled in. A template
-    /// override with no section stands for a target that changes nothing else.
-    fn section(&self, name: &str) -> Option<String> {
-        if !named(name) {
-            return None;
-        }
+    /// The `target.toml` a section stands for, `name` filled in, read over the
+    /// old folder's file when there is one. A template override with no section
+    /// stands for a target that changes nothing else.
+    fn section(&self, name: &str, path: &str) -> Option<String> {
+        let legacy = self.inner.read(path);
         let mut table = match self.sections.get(name).and_then(|v| v.as_table()) {
             Some(table) => table.clone(),
             None if self.inner.exists(&format!("{}/{name}.tmpl", self.penv)) => toml::Table::new(),
-            None => return None,
+            None => return legacy,
         };
-        table
-            .entry("name")
-            .or_insert_with(|| toml::Value::String(name.to_string()));
+        if let Some(text) = legacy {
+            // A broken old file is served as it is, so the loader names it.
+            let Ok(mut below) = text.parse::<toml::Table>() else {
+                return Some(text);
+            };
+            merge(&mut below, table);
+            table = below;
+        }
+        table.insert("name".into(), toml::Value::String(name.to_string()));
         toml::to_string(&table).ok()
     }
 
@@ -60,15 +77,6 @@ impl<'a> Settled<'a> {
     }
 }
 
-/// A target name is a word: it becomes a path segment and a file name.
-fn named(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-}
-
 impl Tree for Settled<'_> {
     fn files(&self, path: &str) -> Vec<String> {
         self.inner.files(path)
@@ -76,7 +84,7 @@ impl Tree for Settled<'_> {
 
     fn read(&self, path: &str) -> Option<String> {
         match self.mapped(path) {
-            Some((name, "target.toml")) => self.section(name).or_else(|| self.inner.read(path)),
+            Some((name, "target.toml")) if named(name) => self.section(name, path),
             Some((name, "env.tmpl")) if named(name) => self
                 .inner
                 .read(&format!("{}/{name}.tmpl", self.penv))
@@ -102,6 +110,15 @@ impl Tree for Settled<'_> {
         match self.mapped(path) {
             Some(_) => self.read(path).is_some(),
             None => self.inner.exists(path),
+        }
+    }
+
+    fn origin(&self, path: &str) -> Option<String> {
+        match self.mapped(path) {
+            Some((name, "target.toml")) if self.sections.contains_key(name) => {
+                Some(format!("{}/config.toml [targets.{name}]", self.penv))
+            }
+            _ => self.inner.origin(path),
         }
     }
 }
@@ -144,7 +161,7 @@ mod tests {
             "/repo/.penv/config.toml",
             "[schema]\nversion = 1\n\n[targets.ts]\noutput = \"src/env.ts\"\n\n[targets.ts.options]\nruntime = \"vite\"\n",
         );
-        let settled = Settled::new(&tree, "/repo");
+        let settled = Settled::new(&tree, "/repo").unwrap();
         let text = settled.read("/repo/.penv/targets/ts/target.toml").unwrap();
         let table: toml::Table = text.parse().unwrap();
         assert_eq!(table["name"].as_str(), Some("ts"));
@@ -162,7 +179,7 @@ mod tests {
                 "/repo/.penv/targets/py/target.toml",
                 "name = \"py\"\noutput = \"a.py\"\n",
             );
-        let settled = Settled::new(&tree, "/repo");
+        let settled = Settled::new(&tree, "/repo").unwrap();
         assert_eq!(
             settled.read("/repo/.penv/targets/go/env.tmpl").as_deref(),
             Some("package env")
@@ -189,12 +206,83 @@ mod tests {
                 "[targets.\"../evil\"]\noutput = \"x\"\n",
             )
             .with("/repo/.penv/../evil.tmpl", "x");
-        let settled = Settled::new(&tree, "/repo");
+        let settled = Settled::new(&tree, "/repo").unwrap();
         assert!(settled.dirs("/repo/.penv/targets").is_empty());
         assert_eq!(
             settled.read("/repo/.penv/targets/../evil/target.toml"),
             None
         );
+    }
+
+    #[test]
+    fn the_old_folder_still_reads_below_the_section_and_below_a_lone_template() {
+        let tree = Fake::default()
+            .with(
+                "/repo/.penv/config.toml",
+                "[targets.zig]\noutput = \"new.zig\"\n[targets.zig.types]\nport = \"u16\"\n",
+            )
+            .with(
+                "/repo/.penv/targets/zig/target.toml",
+                "name = \"zig\"\noutput = \"old.zig\"\ndetect = [\"build.zig\"]\n[types]\nport = \"int\"\nstring = \"[]const u8\"\n",
+            )
+            .with("/repo/.penv/go.tmpl", "package env")
+            .with(
+                "/repo/.penv/targets/go/target.toml",
+                "name = \"go\"\noutput = \"cmd/env.go\"\n",
+            );
+        let settled = Settled::new(&tree, "/repo").unwrap();
+        let zig: toml::Table = settled
+            .read("/repo/.penv/targets/zig/target.toml")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(zig["output"].as_str(), Some("new.zig"), "the section wins");
+        assert_eq!(
+            zig["detect"][0].as_str(),
+            Some("build.zig"),
+            "the folder reads below"
+        );
+        assert_eq!(zig["types"]["port"].as_str(), Some("u16"));
+        assert_eq!(
+            zig["types"]["string"].as_str(),
+            Some("[]const u8"),
+            "key by key"
+        );
+
+        let go: toml::Table = settled
+            .read("/repo/.penv/targets/go/target.toml")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            go["output"].as_str(),
+            Some("cmd/env.go"),
+            "a lone template hides nothing"
+        );
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_named_rather_than_read_as_empty() {
+        let tree = Fake::default().with("/repo/.penv/config.toml", "[targets.ts\n");
+        let error = Settled::new(&tree, "/repo").err().expect("refused");
+        assert!(
+            error.to_string().contains("/repo/.penv/config.toml"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_section_is_named_as_where_its_fields_live() {
+        let tree =
+            Fake::default().with("/repo/.penv/config.toml", "[targets.ts]\noutput = \"a\"\n");
+        let settled = Settled::new(&tree, "/repo").unwrap();
+        assert_eq!(
+            settled
+                .origin("/repo/.penv/targets/ts/target.toml")
+                .as_deref(),
+            Some("/repo/.penv/config.toml [targets.ts]")
+        );
+        assert_eq!(settled.origin("/repo/.penv/targets/py/target.toml"), None);
     }
 
     #[test]
@@ -208,7 +296,7 @@ mod tests {
                 "/repo/.penv/targets/ts/target.toml",
                 "name = \"ts\"\noutput = \"old.ts\"\n",
             );
-        let settled = Settled::new(&tree, "/repo");
+        let settled = Settled::new(&tree, "/repo").unwrap();
         let text = settled.read("/repo/.penv/targets/ts/target.toml").unwrap();
         assert!(text.contains("new.ts"), "{text}");
     }

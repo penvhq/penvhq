@@ -1,7 +1,7 @@
 name = "go"
 output = "env/env.go"
 detect = ["go.mod"]
-import = "import \"<module>/env\""
+import = "import \"<module>/{dir}\""
 
 [options]
 package = "env"

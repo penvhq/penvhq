@@ -15,10 +15,16 @@ pub trait Tree {
     fn exists(&self, path: &str) -> bool {
         self.read(path).is_some()
     }
-    /// Names of the files directly under `path`, for a detect pattern such as
-    /// `*.csproj`. A tree that cannot list them matches no pattern.
+    /// Names of the files directly under `path`, which detection matches its
+    /// names and `*.csproj` patterns against. A tree that cannot list them
+    /// detects nothing.
     fn files(&self, _path: &str) -> Vec<String> {
         Vec::new()
+    }
+    /// Where the file this tree serves at `path` really lives, for messages,
+    /// when that is not `path` itself.
+    fn origin(&self, _path: &str) -> Option<String> {
+        None
     }
 }
 
@@ -203,8 +209,14 @@ pub fn environment() -> Environment<'static> {
     env
 }
 
+/// A double-quoted literal every C-family language reads back as written. The
+/// line and paragraph separators are escaped too, since C# ends a line at them.
 pub fn quote(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\""))
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| format!("\"{value}\""))
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
+        .replace('\u{85}', "\\u0085")
 }
 
 pub fn to_json(value: Jinja) -> Result<String, minijinja::Error> {

@@ -56,14 +56,16 @@ final class Env
         /** Where failures are mailed. */
         public readonly string $alertsEmail,
         public readonly ?Secret $supportNote,
+        /** Built from the secret, so its prefix does not make it safe to inline. */
+        public readonly Secret $nextPublicCheckoutToken,
     ) {
     }
 
     /** Read and check every variable. The exception names each problem, never a value. */
     public static function load(): self
     {
-        $problems = [];
-        $raw = static function (string $name, string $default, bool $required) use (&$problems): ?string {
+        $__penvProblems = [];
+        $__penvRaw = static function (string $name, string $default, bool $required) use (&$__penvProblems): ?string {
             $value = getenv($name);
             if ($value === false || $value === '') {
                 $value = $_ENV[$name] ?? '';
@@ -73,59 +75,61 @@ final class Env
             }
             if ($value === '') {
                 if ($required) {
-                    $problems[] = "{$name} is not set; run penv check";
+                    $__penvProblems[] = "{$name} is not set; run penv check";
                 }
                 return null;
             }
             return $value;
         };
-        $bad = static function (string $name, string $want) use (&$problems): mixed {
-            $problems[] = "{$name} is not {$want}";
+        $__penvBad = static function (string $name, string $want) use (&$__penvProblems): mixed {
+            $__penvProblems[] = "{$name} is not {$want}";
             return null;
         };
-        $databaseUrl = $raw("DATABASE_URL", "", true);
+        $databaseUrl = $__penvRaw('DATABASE_URL', '', true);
         $databaseUrl = $databaseUrl === null ? null : new Secret($databaseUrl);
-        $stripeSecretKey = $raw("STRIPE_SECRET_KEY", "", true);
+        $stripeSecretKey = $__penvRaw('STRIPE_SECRET_KEY', '', true);
         $stripeSecretKey = $stripeSecretKey === null ? null : new Secret($stripeSecretKey);
-        $nextPublicAppUrl = $raw("NEXT_PUBLIC_APP_URL", "http://localhost:3000", false);
-        $port = $raw("PORT", "3000", false);
+        $nextPublicAppUrl = $__penvRaw('NEXT_PUBLIC_APP_URL', 'http://localhost:3000', false);
+        $port = $__penvRaw('PORT', '3000', false);
         if ($port !== null) {
-            $n = filter_var($port, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]);
-            $port = $n === false ? $bad("PORT", 'a port') : $n;
+            $__penvN = filter_var($port, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]);
+            $port = $__penvN === false ? $__penvBad('PORT', 'a port') : $__penvN;
         }
-        $nodeEnv = $raw("NODE_ENV", "development", false);
-        if ($nodeEnv !== null && !in_array($nodeEnv, ["development", "staging", "production"], true)) {
-            $nodeEnv = $bad("NODE_ENV", 'one of development, staging, production');
+        $nodeEnv = $__penvRaw('NODE_ENV', 'development', false);
+        if ($nodeEnv !== null && !in_array($nodeEnv, ['development', 'staging', 'production'], true)) {
+            $nodeEnv = $__penvBad('NODE_ENV', 'one of development, staging, production');
         }
-        $planTier = $raw("PLAN_TIER", "", true);
-        if ($planTier !== null && !in_array($planTier, ["free", "pro", "enterprise"], true)) {
-            $planTier = $bad("PLAN_TIER", 'one of free, pro, enterprise');
+        $planTier = $__penvRaw('PLAN_TIER', '', true);
+        if ($planTier !== null && !in_array($planTier, ['free', 'pro', 'enterprise'], true)) {
+            $planTier = $__penvBad('PLAN_TIER', 'one of free, pro, enterprise');
         }
-        $cacheTtlSeconds = $raw("CACHE_TTL_SECONDS", "1.5", false);
+        $cacheTtlSeconds = $__penvRaw('CACHE_TTL_SECONDS', '1.5', false);
         if ($cacheTtlSeconds !== null) {
-            $n = filter_var($cacheTtlSeconds, FILTER_VALIDATE_FLOAT);
-            $cacheTtlSeconds = $n === false ? $bad("CACHE_TTL_SECONDS", 'a number') : $n;
+            $__penvN = filter_var($cacheTtlSeconds, FILTER_VALIDATE_FLOAT);
+            $cacheTtlSeconds = $__penvN === false ? $__penvBad('CACHE_TTL_SECONDS', 'a number') : $__penvN;
         }
-        $maxRetries = $raw("MAX_RETRIES", "", true);
+        $maxRetries = $__penvRaw('MAX_RETRIES', '', true);
         if ($maxRetries !== null) {
-            $n = filter_var($maxRetries, FILTER_VALIDATE_INT);
-            $maxRetries = $n === false ? $bad("MAX_RETRIES", 'an integer') : $n;
+            $__penvN = filter_var($maxRetries, FILTER_VALIDATE_INT);
+            $maxRetries = $__penvN === false ? $__penvBad('MAX_RETRIES', 'an integer') : $__penvN;
         }
-        $featureBilling = $raw("FEATURE_BILLING", "false", false);
+        $featureBilling = $__penvRaw('FEATURE_BILLING', 'false', false);
         if ($featureBilling !== null) {
-            $n = filter_var($featureBilling, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
-            $featureBilling = $n === null ? $bad("FEATURE_BILLING", 'a boolean') : $n;
+            $__penvN = filter_var($featureBilling, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            $featureBilling = $__penvN === null ? $__penvBad('FEATURE_BILLING', 'a boolean') : $__penvN;
         }
-        $debugTracing = $raw("DEBUG_TRACING", "", true);
+        $debugTracing = $__penvRaw('DEBUG_TRACING', '', true);
         if ($debugTracing !== null) {
-            $n = filter_var($debugTracing, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
-            $debugTracing = $n === null ? $bad("DEBUG_TRACING", 'a boolean') : $n;
+            $__penvN = filter_var($debugTracing, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            $debugTracing = $__penvN === null ? $__penvBad('DEBUG_TRACING', 'a boolean') : $__penvN;
         }
-        $alertsEmail = $raw("ALERTS_EMAIL", "ops@example.test", false);
-        $supportNote = $raw("SUPPORT_NOTE", "", false);
+        $alertsEmail = $__penvRaw('ALERTS_EMAIL', 'ops@example.test', false);
+        $supportNote = $__penvRaw('SUPPORT_NOTE', '', false);
         $supportNote = $supportNote === null ? null : new Secret($supportNote);
-        if ($problems !== []) {
-            throw new \RuntimeException(implode('; ', $problems));
+        $nextPublicCheckoutToken = $__penvRaw('NEXT_PUBLIC_CHECKOUT_TOKEN', '', true);
+        $nextPublicCheckoutToken = $nextPublicCheckoutToken === null ? null : new Secret($nextPublicCheckoutToken);
+        if ($__penvProblems !== []) {
+            throw new \RuntimeException(implode('; ', $__penvProblems));
         }
 
         return new self(
@@ -141,6 +145,7 @@ final class Env
             debugTracing: $debugTracing,
             alertsEmail: $alertsEmail,
             supportNote: $supportNote,
+            nextPublicCheckoutToken: $nextPublicCheckoutToken,
         );
     }
 }

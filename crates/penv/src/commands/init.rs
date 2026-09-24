@@ -39,6 +39,9 @@ pub fn run(
         return keep_schema(out, cwd, &schema_path);
     }
 
+    // Refused here, an --output it cannot use leaves nothing half written.
+    let plan = super::r#gen::plan(cwd, output)?;
+
     // A first run with nothing to read still leaves a repository penv works in.
     let env_path = cwd.join(ENV_FILE);
     let created_dotenv = value_files(cwd).is_empty();
@@ -85,7 +88,7 @@ pub fn run(
         !matches!(guards, Guards::Installed) && super::interactive(out, env, agent_flag);
     let chosen = choose(cwd, guards, interactive, &style)?;
     let guarded = super::guard::write_selected(cwd, &schema.to_json(), &chosen);
-    let generated = super::r#gen::auto(out, cwd, &schema, output, interactive)?;
+    let generated = super::r#gen::auto(out, plan, &schema, interactive)?;
 
     let rows: Vec<Vec<String>> = schema
         .keys

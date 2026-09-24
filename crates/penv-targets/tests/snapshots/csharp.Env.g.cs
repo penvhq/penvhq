@@ -4,9 +4,7 @@
 
 #nullable enable
 
-using System;
 using System.Collections.Generic;
-using System.Globalization;
 
 namespace App;
 
@@ -35,11 +33,12 @@ public sealed record Env(
     bool FeatureBilling,
     bool DebugTracing,
     string AlertsEmail,
-    Secret? SupportNote)
+    Secret? SupportNote,
+    Secret NextPublicCheckoutToken)
 {
-    private static string? Raw(string name, string fallback, bool required, List<string> problems)
+    private static string? __PenvRaw(string name, string fallback, bool required, List<string> problems)
     {
-        var value = Environment.GetEnvironmentVariable(name);
+        var value = global::System.Environment.GetEnvironmentVariable(name);
         if (string.IsNullOrEmpty(value))
         {
             value = fallback;
@@ -55,7 +54,7 @@ public sealed record Env(
         return value;
     }
 
-    private static bool? Flag(string value) => value.Trim().ToLowerInvariant() switch
+    private static bool? __PenvFlag(string value) => value.Trim().ToLowerInvariant() switch
     {
         "1" or "true" or "yes" or "on" => true,
         "0" or "false" or "no" or "off" => false,
@@ -65,61 +64,63 @@ public sealed record Env(
     /// <summary>Read and check every variable. The exception names each problem, never a value.</summary>
     public static Env Load()
     {
-        var problems = new List<string>();
-        var databaseUrlRaw = Raw("DATABASE_URL", "", true, problems);
-        var databaseUrl = databaseUrlRaw == null ? null : new Secret(databaseUrlRaw);
-        var stripeSecretKeyRaw = Raw("STRIPE_SECRET_KEY", "", true, problems);
-        var stripeSecretKey = stripeSecretKeyRaw == null ? null : new Secret(stripeSecretKeyRaw);
-        var nextPublicAppUrlRaw = Raw("NEXT_PUBLIC_APP_URL", "http://localhost:3000", false, problems);
-        var nextPublicAppUrl = nextPublicAppUrlRaw;
-        var portRaw = Raw("PORT", "3000", false, problems);
+        var __penvProblems = new List<string>();
+        var __penvRaw_databaseUrl = __PenvRaw("DATABASE_URL", "", true, __penvProblems);
+        var databaseUrl = __penvRaw_databaseUrl == null ? null : new Secret(__penvRaw_databaseUrl);
+        var __penvRaw_stripeSecretKey = __PenvRaw("STRIPE_SECRET_KEY", "", true, __penvProblems);
+        var stripeSecretKey = __penvRaw_stripeSecretKey == null ? null : new Secret(__penvRaw_stripeSecretKey);
+        var __penvRaw_nextPublicAppUrl = __PenvRaw("NEXT_PUBLIC_APP_URL", "http://localhost:3000", false, __penvProblems);
+        var nextPublicAppUrl = __penvRaw_nextPublicAppUrl;
+        var __penvRaw_port = __PenvRaw("PORT", "3000", false, __penvProblems);
         int? port = null;
-        if (portRaw != null)
+        if (__penvRaw_port != null)
         {
-            if (int.TryParse(portRaw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) && n >= 1 && n <= 65535) port = n;
-            else problems.Add("PORT" + " is not a port");
+            if (int.TryParse(__penvRaw_port.Trim(), global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture, out var __penvN) && __penvN >= 1 && __penvN <= 65535) port = __penvN;
+            else __penvProblems.Add("PORT" + " is not a port");
         }
-        var nodeEnvRaw = Raw("NODE_ENV", "development", false, problems);
-        var nodeEnv = nodeEnvRaw;
-        if (nodeEnv != null && Array.IndexOf(new[] { "development", "staging", "production" }, nodeEnv) < 0)
+        var __penvRaw_nodeEnv = __PenvRaw("NODE_ENV", "development", false, __penvProblems);
+        var nodeEnv = __penvRaw_nodeEnv;
+        if (nodeEnv != null && global::System.Array.IndexOf(new[] { "development", "staging", "production" }, nodeEnv) < 0)
         {
-            problems.Add("NODE_ENV" + " is not one of development, staging, production");
+            __penvProblems.Add("NODE_ENV is not one of development, staging, production");
             nodeEnv = null;
         }
-        var planTierRaw = Raw("PLAN_TIER", "", true, problems);
-        var planTier = planTierRaw;
-        if (planTier != null && Array.IndexOf(new[] { "free", "pro", "enterprise" }, planTier) < 0)
+        var __penvRaw_planTier = __PenvRaw("PLAN_TIER", "", true, __penvProblems);
+        var planTier = __penvRaw_planTier;
+        if (planTier != null && global::System.Array.IndexOf(new[] { "free", "pro", "enterprise" }, planTier) < 0)
         {
-            problems.Add("PLAN_TIER" + " is not one of free, pro, enterprise");
+            __penvProblems.Add("PLAN_TIER is not one of free, pro, enterprise");
             planTier = null;
         }
-        var cacheTtlSecondsRaw = Raw("CACHE_TTL_SECONDS", "1.5", false, problems);
+        var __penvRaw_cacheTtlSeconds = __PenvRaw("CACHE_TTL_SECONDS", "1.5", false, __penvProblems);
         double? cacheTtlSeconds = null;
-        if (cacheTtlSecondsRaw != null)
+        if (__penvRaw_cacheTtlSeconds != null)
         {
-            if (double.TryParse(cacheTtlSecondsRaw.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var n)) cacheTtlSeconds = n;
-            else problems.Add("CACHE_TTL_SECONDS" + " is not a number");
+            if (double.TryParse(__penvRaw_cacheTtlSeconds.Trim(), global::System.Globalization.NumberStyles.Float, global::System.Globalization.CultureInfo.InvariantCulture, out var __penvN)) cacheTtlSeconds = __penvN;
+            else __penvProblems.Add("CACHE_TTL_SECONDS" + " is not a number");
         }
-        var maxRetriesRaw = Raw("MAX_RETRIES", "", true, problems);
+        var __penvRaw_maxRetries = __PenvRaw("MAX_RETRIES", "", true, __penvProblems);
         long? maxRetries = null;
-        if (maxRetriesRaw != null)
+        if (__penvRaw_maxRetries != null)
         {
-            if (long.TryParse(maxRetriesRaw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) maxRetries = n;
-            else problems.Add("MAX_RETRIES" + " is not an integer");
+            if (long.TryParse(__penvRaw_maxRetries.Trim(), global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture, out var __penvN)) maxRetries = __penvN;
+            else __penvProblems.Add("MAX_RETRIES" + " is not an integer");
         }
-        var featureBillingRaw = Raw("FEATURE_BILLING", "false", false, problems);
-        bool? featureBilling = featureBillingRaw == null ? null : Flag(featureBillingRaw);
-        if (featureBillingRaw != null && featureBilling == null) problems.Add("FEATURE_BILLING" + " is not a boolean");
-        var debugTracingRaw = Raw("DEBUG_TRACING", "", true, problems);
-        bool? debugTracing = debugTracingRaw == null ? null : Flag(debugTracingRaw);
-        if (debugTracingRaw != null && debugTracing == null) problems.Add("DEBUG_TRACING" + " is not a boolean");
-        var alertsEmailRaw = Raw("ALERTS_EMAIL", "ops@example.test", false, problems);
-        var alertsEmail = alertsEmailRaw;
-        var supportNoteRaw = Raw("SUPPORT_NOTE", "", false, problems);
-        var supportNote = supportNoteRaw == null ? null : new Secret(supportNoteRaw);
-        if (problems.Count > 0)
+        var __penvRaw_featureBilling = __PenvRaw("FEATURE_BILLING", "false", false, __penvProblems);
+        bool? featureBilling = __penvRaw_featureBilling == null ? null : __PenvFlag(__penvRaw_featureBilling);
+        if (__penvRaw_featureBilling != null && featureBilling == null) __penvProblems.Add("FEATURE_BILLING" + " is not a boolean");
+        var __penvRaw_debugTracing = __PenvRaw("DEBUG_TRACING", "", true, __penvProblems);
+        bool? debugTracing = __penvRaw_debugTracing == null ? null : __PenvFlag(__penvRaw_debugTracing);
+        if (__penvRaw_debugTracing != null && debugTracing == null) __penvProblems.Add("DEBUG_TRACING" + " is not a boolean");
+        var __penvRaw_alertsEmail = __PenvRaw("ALERTS_EMAIL", "ops@example.test", false, __penvProblems);
+        var alertsEmail = __penvRaw_alertsEmail;
+        var __penvRaw_supportNote = __PenvRaw("SUPPORT_NOTE", "", false, __penvProblems);
+        var supportNote = __penvRaw_supportNote == null ? null : new Secret(__penvRaw_supportNote);
+        var __penvRaw_nextPublicCheckoutToken = __PenvRaw("NEXT_PUBLIC_CHECKOUT_TOKEN", "", true, __penvProblems);
+        var nextPublicCheckoutToken = __penvRaw_nextPublicCheckoutToken == null ? null : new Secret(__penvRaw_nextPublicCheckoutToken);
+        if (__penvProblems.Count > 0)
         {
-            throw new InvalidOperationException(string.Join("; ", problems));
+            throw new global::System.InvalidOperationException(string.Join("; ", __penvProblems));
         }
         return new Env(
             databaseUrl!,
@@ -133,6 +134,7 @@ public sealed record Env(
             featureBilling!.Value,
             debugTracing!.Value,
             alertsEmail!,
-            supportNote);
+            supportNote,
+            nextPublicCheckoutToken!);
     }
 }

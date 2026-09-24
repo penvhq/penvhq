@@ -855,35 +855,6 @@ pub fn warn_unset(errors: &[ResolveError]) {
     }
 }
 
-/// The schema as typed-code generators see it. A computed default is never
-/// written into generated code as a literal fallback (`"random(48)"`,
-/// `"if(...)"`): the key is read like one with no default, and required, because
-/// `penv run` always supplies it. A key computed from a secret is typed as one.
-/// Each key says whether a framework sends it to the browser.
-pub fn gen_view(schema: &Schema) -> serde_json::Value {
-    let mut raw = with_defaults(schema, BTreeMap::new());
-    raw.retain(|_, r| !(r.computed && r.text.trim_start().starts_with("random(")));
-    let resolution = resolve_full(&raw, &Values::new(), DEFAULT_ENVIRONMENT, &Values::new());
-    let hot = tainted(&resolution.deps, |name| {
-        schema.get(name).is_none_or(|k| k.sensitive)
-    });
-    let mut json = schema.to_json();
-    if let Some(keys) = json.get_mut("keys").and_then(|k| k.as_array_mut()) {
-        for key in keys {
-            let name = key["name"].as_str().unwrap_or_default().to_string();
-            if key["defaultExpr"] == serde_json::Value::Bool(true) {
-                key["default"] = serde_json::Value::Null;
-                key["required"] = serde_json::Value::Bool(true);
-            }
-            if hot.contains(&name) {
-                key["sensitive"] = serde_json::Value::Bool(true);
-            }
-            key["public"] = serde_json::Value::Bool(schema.is_public(&name));
-        }
-    }
-    json
-}
-
 /// Public keys whose value is computed from a secret: the prefix sends it to the
 /// browser, so the secret goes with it. Names only.
 pub fn public_leaks(

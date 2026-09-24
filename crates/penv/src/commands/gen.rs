@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use penv_schema::Schema;
-use penv_targets::{Config, Knob, OptionValue, Roots, Source, Suggest, Target, word};
+use penv_targets::{Config, Knob, OptionValue, Roots, Scan, Source, Suggest, Target, word};
 use serde_json::{Value, json};
 
 use crate::commands::load_schema;
@@ -32,24 +32,26 @@ pub fn run(
 ) -> Result<Report, CliError> {
     let (schema_path, schema) = load_schema(cwd)?;
     let dir = schema_path.parent().unwrap_or(cwd).to_path_buf();
-    let roots = roots(&dir);
+    let repo = Repo::open(&dir)?;
 
     let Some(name) = name else {
-        return Ok(list(out, &dir, &roots));
+        return Ok(list(out, &repo));
     };
-    let target = penv_targets::load(&tree(&roots), &roots, name).map_err(refused)?;
+    let target = repo.load(name).map_err(refused)?;
     if mode == Mode::Options {
         return Ok(knobs(out, &target));
     }
     let check = mode == Mode::Check;
     let explicit = to.map(|path| inside(&dir, path)).transpose()?;
     let style = out.style();
+    let packages = repo.scan().candidates(&target);
 
     // --check writes nothing and asks nothing, so it never settles anything new.
     let interactive = !check && super::interactive(out, env, agent_flag);
     let settled = match settle(
-        &roots,
+        &repo,
         &target,
+        &packages,
         explicit.as_deref(),
         interactive,
         "--out",
@@ -71,14 +73,55 @@ pub fn run(
     };
 
     let target = with_options(target, &settled.options);
-    let rendered = penv_targets::render(&target, &crate::source::gen_view(&schema), version())
-        .map_err(refused)?;
+    let rendered = penv_targets::render(&target, &view(&schema), version()).map_err(refused)?;
     if check {
-        return verify(out, &dir, &roots, &target, &settled.path, &rendered);
+        return verify(out, &dir, &target, &settled.path, &packages, &rendered);
     }
 
-    let written = put(&dir, &roots, &target, &settled, &rendered)?;
+    let written = put(&repo, &target, &settled, &packages, &rendered)?;
     Ok(report(out, &target, &written))
+}
+
+/// The repository one run reads: `.penv/config.toml` parsed once, and the tree
+/// every target lookup goes through.
+struct Repo {
+    dir: PathBuf,
+    roots: Roots,
+    tree: penv_targets::Settled<'static>,
+}
+
+impl Repo {
+    /// A `.penv/config.toml` that does not parse is refused here, before
+    /// anything is read through it or written.
+    fn open(dir: &Path) -> Result<Repo, CliError> {
+        let roots = roots(dir);
+        let tree = penv_targets::Settled::new(&Disk, &roots.repo).map_err(|error| {
+            CliError::new(
+                "invalid_config",
+                described(&error),
+                "Fix the line it names, or delete the file to start it again.",
+            )
+        })?;
+        Ok(Repo {
+            dir: dir.to_path_buf(),
+            roots,
+            tree,
+        })
+    }
+
+    fn load(&self, name: &str) -> Result<Target, penv_targets::Error> {
+        penv_targets::load(&self.tree, &self.roots, name)
+    }
+
+    /// One walk of the repository, which every target is matched against.
+    fn scan(&self) -> Scan {
+        Scan::new(&self.tree, &self.roots)
+    }
+}
+
+/// The schema as templates see it, in the environment `gen` renders for.
+fn view(schema: &Schema) -> Value {
+    penv_targets::view(schema, crate::source::DEFAULT_ENVIRONMENT)
 }
 
 /// What one target left behind.
@@ -113,39 +156,39 @@ impl Generated {
     }
 }
 
-pub fn auto(
-    out: &Output,
-    dir: &Path,
-    schema: &Schema,
-    to: Option<&Path>,
-    interactive: bool,
-) -> Result<Generated, CliError> {
-    let roots = roots(dir);
-    let json = crate::source::gen_view(schema);
-    let style = out.style();
-    let explicit = to.map(|path| inside(dir, path)).transpose()?;
+/// What `init` generates, worked out before it writes anything, so an
+/// `--output` it cannot use leaves the repository as it was.
+pub struct Plan {
+    repo: Repo,
+    explicit: Option<String>,
+    wanted: Vec<(Target, Vec<String>)>,
+    broken: Vec<Value>,
+}
 
-    let mut generated = Generated {
-        written: Vec::new(),
-        targets: Vec::new(),
-        notes: Vec::new(),
-    };
-    let mut wanted: Vec<Target> = Vec::new();
-    for found in penv_targets::available(&tree(&roots), &roots) {
+/// Every target the repository detects, each with the packages it was found in.
+pub fn plan(dir: &Path, to: Option<&Path>) -> Result<Plan, CliError> {
+    let repo = Repo::open(dir)?;
+    let explicit = to.map(|path| inside(dir, path)).transpose()?;
+    let scan = repo.scan();
+    let mut wanted: Vec<(Target, Vec<String>)> = Vec::new();
+    let mut broken: Vec<Value> = Vec::new();
+    for found in penv_targets::available(&repo.tree, &repo.roots) {
         match found {
-            Err(error) => generated.targets.push(json!({
+            Err(error) => broken.push(json!({
                 "name": null,
                 "status": "skipped",
                 "reason": described(&error),
             })),
-            Ok(target) if penv_targets::detected(&tree(&roots), &roots, &target) => {
-                wanted.push(target)
+            Ok(target) => {
+                let packages = scan.candidates(&target);
+                if !packages.is_empty() {
+                    wanted.push((target, packages));
+                }
             }
-            Ok(_) => {}
         }
     }
     if explicit.is_some() && wanted.len() > 1 {
-        let names: Vec<&str> = wanted.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = wanted.iter().map(|(t, _)| t.name.as_str()).collect();
         return Err(CliError::new(
             "ambiguous_output",
             format!(
@@ -155,11 +198,39 @@ pub fn auto(
             "Run penv gen <target> --out <PATH> once for each target instead.",
         ));
     }
+    Ok(Plan {
+        repo,
+        explicit,
+        wanted,
+        broken,
+    })
+}
 
-    for target in wanted {
+pub fn auto(
+    out: &Output,
+    plan: Plan,
+    schema: &Schema,
+    interactive: bool,
+) -> Result<Generated, CliError> {
+    let json = view(schema);
+    let style = out.style();
+    let Plan {
+        repo,
+        explicit,
+        wanted,
+        broken,
+    } = plan;
+
+    let mut generated = Generated {
+        written: Vec::new(),
+        targets: broken,
+        notes: Vec::new(),
+    };
+    for (target, packages) in wanted {
         let settled = match settle(
-            &roots,
+            &repo,
             &target,
+            &packages,
             explicit.as_deref(),
             interactive,
             "--output",
@@ -176,7 +247,7 @@ pub fn auto(
             generated.skip(&target.name, "the target failed to render", &style);
             continue;
         };
-        let Ok(written) = put(dir, &roots, &target, &settled, &rendered) else {
+        let Ok(written) = put(&repo, &target, &settled, &packages, &rendered) else {
             generated.skip(&target.name, "the file could not be written", &style);
             continue;
         };
@@ -221,10 +292,15 @@ fn refused(error: penv_targets::Error) -> CliError {
             described(&error),
             "Run penv gen with no target to see the ones this repository has.",
         ),
+        penv_targets::Error::Name { .. } => CliError::new(
+            "unknown_target",
+            described(&error),
+            "Run penv gen with no target to see the ones this repository has.",
+        ),
         _ => CliError::new(
             "target_failed",
             described(&error),
-            "Fix the target folder, or drop it so the built-in one is used again.",
+            "Fix what it names, or remove it so the built-in target is used again.",
         )
         .with_exit(Exit::Validation),
     }
@@ -245,38 +321,40 @@ enum Outcome {
 }
 
 /// Only a flag and the repo override decide where a file goes. Detection offers;
-/// a person answers, and nobody to ask means nothing is written.
+/// a person answers, and nobody to ask means nothing is written. Whichever it
+/// was, the path passes the one check that keeps it inside the repository.
 fn settle(
-    roots: &Roots,
+    repo: &Repo,
     target: &Target,
+    packages: &[String],
     explicit: Option<&str>,
     interactive: bool,
     flag: &str,
     style: &Style,
 ) -> Result<Outcome, CliError> {
-    let packages = penv_targets::candidates(&tree(roots), roots, target);
-    if explicit.is_none() && target.output_source == Source::Repo {
+    let (path, answered) = match explicit {
+        Some(path) => (path.to_string(), true),
+        None if target.output_source == Source::Repo => (target.output.clone(), false),
+        None if !interactive => {
+            return Ok(Outcome::Skipped(format!("pass {flag} <PATH>")));
+        }
+        None => match ask_where(target, &suggestions(repo, target, packages), style)? {
+            Some(path) => (path, true),
+            None => return Ok(Outcome::Skipped("the question was answered none".into())),
+        },
+    };
+    let path = inside(&repo.dir, Path::new(&path))?;
+    if !answered {
         return Ok(Outcome::Chosen(Settled {
-            path: target.output.clone(),
+            path,
             options: Vec::new(),
         }));
     }
 
-    let path = match explicit {
-        Some(path) => path.to_string(),
-        None if !interactive => {
-            return Ok(Outcome::Skipped(format!("pass {flag} <PATH>")));
-        }
-        None => match ask_where(target, &suggestions(roots, target, &packages), style)? {
-            Some(path) => path,
-            None => return Ok(Outcome::Skipped("the question was answered none".into())),
-        },
-    };
-
-    let package = penv_targets::package_of(&path, &packages);
+    let package = penv_targets::package_of(&path, packages);
     let mut options = Vec::new();
     for suggest in &target.suggest {
-        if let Some(chosen) = ask_option(roots, target, suggest, &package, interactive)? {
+        if let Some(chosen) = ask_option(repo, target, suggest, &package, interactive)? {
             options.push((suggest.option.clone(), chosen));
         }
     }
@@ -285,10 +363,10 @@ fn settle(
 
 /// One path per directory holding a detect file, shallowest first and shaped by
 /// any `[[layout]]` it matches. A target nobody detected offers its own path.
-fn suggestions(roots: &Roots, target: &Target, packages: &[String]) -> Vec<String> {
+fn suggestions(repo: &Repo, target: &Target, packages: &[String]) -> Vec<String> {
     let found: Vec<String> = packages
         .iter()
-        .map(|package| penv_targets::layout_output(&tree(roots), roots, target, package))
+        .map(|package| penv_targets::layout_output(&repo.tree, &repo.roots, target, package))
         .collect();
     if found.is_empty() {
         vec![target.output.clone()]
@@ -323,7 +401,7 @@ fn ask_where(
         match parse_answer(&prompt::read_line(&prompt)?, suggestions.len())? {
             Answer::Default => Some(default),
             Answer::Number(index) => suggestions.get(index).cloned(),
-            Answer::Path(path) => normalised(&path).map(Some).ok_or_else(|| outside(&path))?,
+            Answer::Path(path) => Some(path),
             Answer::None => None,
         },
     )
@@ -332,14 +410,15 @@ fn ask_where(
 /// One `[options]` knob the chosen package settles. `None` leaves the target's
 /// own default, which is never worth remembering.
 fn ask_option(
-    roots: &Roots,
+    repo: &Repo,
     target: &Target,
     suggest: &Suggest,
     package: &str,
     interactive: bool,
 ) -> Result<Option<OptionValue>, CliError> {
     let default = target.options.get(&suggest.option);
-    let Some(found) = penv_targets::suggested(&tree(roots), roots, suggest, package, interactive)
+    let Some(found) =
+        penv_targets::suggested(&repo.tree, &repo.roots, suggest, package, interactive)
     else {
         return Ok(None);
     };
@@ -452,12 +531,13 @@ fn normalised(path: &str) -> Option<String> {
     (!out.is_empty()).then(|| out.join("/"))
 }
 
-/// An explicit path as the repository sees it. Nothing outside the repository is
-/// written or remembered, whether it got there by an absolute path or a `..`.
+/// A path as the repository sees it. Nothing outside the repository is written
+/// or remembered, whether it got there by an absolute path or a `..`; an
+/// absolute path inside it is made relative.
 fn inside(dir: &Path, path: &Path) -> Result<String, CliError> {
     let relative = match path.strip_prefix(dir) {
         Ok(relative) => relative.to_path_buf(),
-        Err(_) if path.is_absolute() => return Err(outside(&show(path))),
+        Err(_) if path.is_absolute() || path.has_root() => return Err(outside(&show(path))),
         Err(_) => path.to_path_buf(),
     };
     normalised(&relative.to_string_lossy()).ok_or_else(|| outside(&show(path)))
@@ -482,20 +562,20 @@ fn with_options(mut target: Target, options: &[(String, OptionValue)]) -> Target
 }
 
 fn put(
-    dir: &Path,
-    roots: &Roots,
+    repo: &Repo,
     target: &Target,
     settled: &Settled,
+    packages: &[String],
     rendered: &str,
 ) -> Result<Written, CliError> {
+    let dir = repo.dir.as_path();
     let path = dir.join(&settled.path);
     let unchanged = read_file(&path).is_ok_and(|existing| existing == rendered);
     if !unchanged {
         write_file_making_parents(&path, rendered)?;
     }
 
-    let packages = penv_targets::candidates(&tree(roots), roots, target);
-    let package = penv_targets::package_of(&settled.path, &packages);
+    let package = penv_targets::package_of(&settled.path, packages);
     let configs = target
         .paths_from
         .as_ref()
@@ -521,12 +601,6 @@ fn put(
     })
 }
 
-/// Every lookup of a target goes through `.penv/config.toml` and `.penv/<name>.tmpl`
-/// first, then any folder left from before.
-fn tree(roots: &Roots) -> penv_targets::Settled<'static> {
-    penv_targets::Settled::new(&Disk, &roots.repo)
-}
-
 /// Where a target's settings are kept, for messages.
 fn kept_label(name: &str) -> String {
     format!("{} [targets.{name}]", penv_targets::CONFIG)
@@ -546,14 +620,13 @@ fn remember(dir: &Path, target: &Target, output: &str) -> Result<Option<PathBuf>
     let legacy_tmpl = legacy_dir.join("env.tmpl");
 
     let mut section = config.target(&target.name).unwrap_or_default();
+    // The old folder's fields go under the section, key by key, and the section wins.
     if let Ok(text) = read_file(&legacy_toml)
-        && let Ok(old) = text.parse::<toml::Table>()
+        && let Ok(mut old) = text.parse::<toml::Table>()
     {
-        for (field, value) in old {
-            if field != "name" {
-                section.entry(field).or_insert(value);
-            }
-        }
+        old.remove("name");
+        penv_targets::merge(&mut old, section);
+        section = old;
     }
     section.insert("output".into(), toml::Value::String(output.to_string()));
     let options: toml::Table = target
@@ -592,7 +665,7 @@ fn remember(dir: &Path, target: &Target, output: &str) -> Result<Option<PathBuf>
 fn configs(dir: &Path, package: &str, file: &str) -> Vec<Config> {
     let mut out: Vec<Config> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    let mut next = Some(penv_targets::join(package, file));
+    let mut next = penv_targets::join(package, file);
     while let Some(at) = next {
         if seen.contains(&at) {
             break;
@@ -731,8 +804,9 @@ fn settings_of(target: &Target) -> String {
     }
 }
 
-fn list(out: &Output, dir: &Path, roots: &Roots) -> Report {
-    let found = penv_targets::available(&tree(roots), roots);
+fn list(out: &Output, repo: &Repo) -> Report {
+    let found = penv_targets::available(&repo.tree, &repo.roots);
+    let scan = repo.scan();
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut listed: Vec<Value> = Vec::new();
     for target in &found {
@@ -748,7 +822,7 @@ fn list(out: &Output, dir: &Path, roots: &Roots) -> Report {
                 listed.push(json!({ "status": "broken", "reason": described(error) }));
             }
             Ok(target) => {
-                let packages = penv_targets::candidates(&tree(roots), roots, target);
+                let packages = scan.candidates(target);
                 rows.push(vec![
                     target.name.clone(),
                     target.source.as_str().to_string(),
@@ -792,7 +866,7 @@ fn list(out: &Output, dir: &Path, roots: &Roots) -> Report {
 
     Report::new(
         json!({
-            "schema": show(&dir.join(crate::files::SCHEMA_FILE)),
+            "schema": show(&repo.dir.join(crate::files::SCHEMA_FILE)),
             "targets": listed,
         }),
         text,
@@ -810,9 +884,9 @@ fn shown(package: &str) -> String {
 fn verify(
     out: &Output,
     dir: &Path,
-    roots: &Roots,
     target: &Target,
     relative: &str,
+    packages: &[String],
     rendered: &str,
 ) -> Result<Report, CliError> {
     let path = dir.join(relative);
@@ -821,8 +895,7 @@ fn verify(
         Ok(existing) if existing == rendered => "current",
         Ok(_) => "stale",
     };
-    let packages = penv_targets::candidates(&tree(roots), roots, target);
-    let package = dir.join(penv_targets::package_of(relative, &packages));
+    let package = dir.join(penv_targets::package_of(relative, packages));
     let compiled = compile(target, rendered, &package);
 
     let style = out.style();
@@ -874,11 +947,9 @@ fn compile(target: &Target, rendered: &str, package: &Path) -> Value {
         });
     };
 
-    let dir = std::env::temp_dir().join(format!("penv-gen-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    if std::fs::create_dir_all(&dir).is_err() {
+    let Some(dir) = scratch() else {
         return json!({ "tool": name, "status": "skipped", "detail": "no writable temp directory" });
-    }
+    };
     let file = source_name(target);
     let outcome = write_all(&dir, check, &file, rendered).and_then(|()| {
         let arguments: Vec<String> = check.command[1..]
@@ -895,6 +966,25 @@ fn compile(target: &Target, rendered: &str, package: &Path) -> Value {
         }
         Err(detail) => json!({ "tool": name, "status": "failed", "detail": detail }),
     }
+}
+
+/// A directory of this run's own for the check to compile in: a name nobody can
+/// guess, created only if nothing is there yet, readable by this user alone.
+fn scratch() -> Option<PathBuf> {
+    use std::hash::BuildHasher;
+    let base = std::env::temp_dir();
+    for _ in 0..8 {
+        let salt =
+            std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now());
+        let dir = base.join(format!("penv-gen-{}-{salt:016x}", std::process::id()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        if builder.create(&dir).is_ok() {
+            return Some(dir);
+        }
+    }
+    None
 }
 
 /// The executable to run: the first of `python3|python|py`, in the package's own
@@ -972,6 +1062,17 @@ mod tests {
 
     fn target(name: &str) -> Target {
         penv_targets::load(&Nothing, &Roots::new("/repo", None), name).expect("a built-in target")
+    }
+
+    fn repo() -> Repo {
+        Repo::open(Path::new("/repo")).expect("no config to read")
+    }
+
+    fn chosen(outcome: Outcome) -> Settled {
+        match outcome {
+            Outcome::Chosen(settled) => settled,
+            Outcome::Skipped(reason) => panic!("{reason}"),
+        }
     }
 
     fn plain() -> Style {
@@ -1052,11 +1153,11 @@ mod tests {
 
     #[test]
     fn only_a_repo_override_that_names_output_settles_where_a_file_goes() {
-        let roots = Roots::new("/repo", None);
+        let repo = repo();
         let mut ts = target("ts");
         assert!(
             matches!(
-                settle(&roots, &ts, None, false, "--out", &plain()).unwrap(),
+                settle(&repo, &ts, &[], None, false, "--out", &plain()).unwrap(),
                 Outcome::Skipped(reason) if reason == "pass --out <PATH>"
             ),
             "nothing decided and nobody to ask has to write nothing"
@@ -1066,16 +1167,13 @@ mod tests {
         // about where the file goes.
         ts.source = Source::Repo;
         assert!(matches!(
-            settle(&roots, &ts, None, false, "--out", &plain()).unwrap(),
+            settle(&repo, &ts, &[], None, false, "--out", &plain()).unwrap(),
             Outcome::Skipped(_)
         ));
 
         ts.output_source = Source::Repo;
         ts.output = "apps/web/src/env.ts".into();
-        let settled = match settle(&roots, &ts, None, false, "--out", &plain()).unwrap() {
-            Outcome::Chosen(settled) => settled,
-            Outcome::Skipped(reason) => panic!("{reason}"),
-        };
+        let settled = chosen(settle(&repo, &ts, &[], None, false, "--out", &plain()).unwrap());
         assert_eq!(settled.path, "apps/web/src/env.ts");
         assert!(settled.options.is_empty(), "nothing new was answered");
     }
@@ -1085,29 +1183,76 @@ mod tests {
         let mut ts = target("ts");
         ts.output_source = Source::Repo;
         ts.output = "apps/web/src/env.ts".into();
-        let settled = match settle(
-            &Roots::new("/repo", None),
-            &ts,
-            Some("lib/env.ts"),
-            false,
-            "--out",
-            &plain(),
-        )
-        .unwrap()
-        {
-            Outcome::Chosen(settled) => settled,
-            Outcome::Skipped(reason) => panic!("{reason}"),
-        };
+        let settled = chosen(
+            settle(
+                &repo(),
+                &ts,
+                &[],
+                Some("lib/env.ts"),
+                false,
+                "--out",
+                &plain(),
+            )
+            .unwrap(),
+        );
         assert_eq!(settled.path, "lib/env.ts");
+    }
+
+    #[test]
+    fn a_remembered_output_that_leaves_the_repository_is_refused_before_a_write() {
+        let mut ts = target("ts");
+        ts.output_source = Source::Repo;
+        for escaping in ["../../home/u/.bashrc", "/home/u/.bashrc", "apps/../../x.ts"] {
+            ts.output = escaping.into();
+            let error = match settle(&repo(), &ts, &[], None, false, "--out", &plain()) {
+                Err(error) => error,
+                Ok(_) => panic!("{escaping} was settled"),
+            };
+            assert_eq!(error.code, "output_outside_repo", "{escaping}");
+        }
+        ts.output = "./apps/web/../api/src/env.ts".into();
+        let settled = chosen(settle(&repo(), &ts, &[], None, false, "--out", &plain()).unwrap());
+        assert_eq!(settled.path, "apps/api/src/env.ts", "no . or .. downstream");
+    }
+
+    #[test]
+    fn an_absolute_answer_is_refused_outside_the_repository_and_made_relative_inside() {
+        let error = inside(Path::new("/repo"), Path::new("/etc/passwd")).unwrap_err();
+        assert_eq!(error.code, "output_outside_repo");
+        assert_eq!(
+            inside(Path::new("/repo"), Path::new("/repo/src/env.ts")).unwrap(),
+            "src/env.ts"
+        );
+        assert_eq!(
+            parse_answer("/etc/passwd", 1).unwrap(),
+            Answer::Path("/etc/passwd".into()),
+            "a typed path reaches the one check as typed"
+        );
+    }
+
+    #[test]
+    fn the_check_compiles_in_a_directory_of_its_own_every_time() {
+        let one = scratch().expect("a temp directory");
+        let two = scratch().expect("a temp directory");
+        assert_ne!(one, two);
+        assert!(one.is_dir() && two.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&one).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "readable by this user alone");
+        }
+        let _ = std::fs::remove_dir_all(one);
+        let _ = std::fs::remove_dir_all(two);
     }
 
     #[test]
     fn a_target_nobody_detected_still_offers_the_path_it_names() {
         let ts = target("ts");
-        let roots = Roots::new("/repo", None);
-        assert_eq!(suggestions(&roots, &ts, &[]), ["src/env.ts"]);
+        let repo = repo();
+        assert_eq!(suggestions(&repo, &ts, &[]), ["src/env.ts"]);
         assert_eq!(
-            suggestions(&roots, &ts, &["".into(), "apps/web".into()]),
+            suggestions(&repo, &ts, &["".into(), "apps/web".into()]),
             ["src/env.ts", "apps/web/src/env.ts"]
         );
     }
