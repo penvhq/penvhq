@@ -4,7 +4,7 @@ Diagnostics, completion, hover, go-to-definition and an outline for `.env.schema
 
 ## Requires
 
-A `penv` that has `penv lsp`, the first release after 1.0.0-beta.2, on `PATH`: [install](https://github.com/penvhq/penvhq#install). The extension says so when yours is older.
+A `penv` that has `penv lsp`, 1.0.0-beta.3 or later, on `PATH`: [install](https://github.com/penvhq/penvhq#install). The extension says so when yours is older.
 
 Installed off `PATH`? Set `penv.path` in your user settings. The setting is machine-scoped; a workspace cannot set it.
 
