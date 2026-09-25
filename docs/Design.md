@@ -436,7 +436,7 @@ AWS Lambda managed runtimes (Node.js, Python, Java, .NET, Ruby) take `packaging/
 
 ```text
 local:  penv validates your .env, keeps values out of your agent's output, and blocks it from reading the file where its harness allows.
-cloud:  penv keeps secrets out of the files, the repo and the shell history your coding agent reads, and out of the output it captures. It cannot stop a process running as you from looking, so every value is short-lived, scoped and attributable to the session that used it.
+cloud:  penv keeps secrets out of the files, the repo and the shell history your coding agent reads, and out of the output it captures. It cannot stop a process running as you from looking, so penv.cloud records every value it hands out as a read by the identity that asked for it.
 ```
 
 Only the cloud sentence is marketed. Both are printed by `guard --check`.

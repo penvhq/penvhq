@@ -325,7 +325,7 @@ fn an_undocumented_payload_is_read_for_what_it_has() {
 
 /// The matcher reads a command as text. These get through, and the design says
 /// so: detection changes defaults and friction, it is never the last line of
-/// defence. The sandbox deny rules and short-lived cloud values are.
+/// defence. The sandbox deny rules and the audited cloud reads are.
 #[test]
 fn the_known_evasions_are_known() {
     for command in [
