@@ -28,7 +28,7 @@ penv run --provider penv -- npm run dev      # another one, for this command
 | API root | `PENV_URL` (provider `penv` only), `[providers.<slug>] url`, the provider's default |
 | Slug | `a-z`, `0-9`, `-`; starts with a letter; at most 32 characters |
 
-An unknown slug fails with `unknown_provider` before any request. Local files, masking, [`penv check`](https://penv.cloud/docs/cli/check) and the agent rules work the same for every provider.
+An unknown slug fails with `unknown_provider` before any request.
 
 ### Roots named only in config.toml
 
@@ -36,7 +36,7 @@ Such a root gets only the login or keypair this machine holds for it. A pull req
 
 ## Parts of a provider
 
-Providers are compiled in. penv loads none at runtime and runs no program a schema or config names. A new provider arrives as a pull request.
+Providers are compiled in; penv loads none at runtime. A new provider arrives as a pull request.
 
 | Part | Where |
 |---|---|
@@ -48,15 +48,15 @@ Providers are compiled in. penv loads none at runtime and runs no program a sche
 
 ## Capabilities
 
-`Capability` in `provider.rs`:
+`Capability` in `provider.rs`. penv refuses a command whose capability the provider does not declare (`unsupported`, naming the provider and the capability) before it sends a request.
 
-| Capability | What it covers | Required |
+| Capability | Commands | Required |
 |---|---|---|
-| `read` | the keys and values of one environment | yes |
-| `write` | write and delete one value | no |
-| `manage` | list, create and rename projects and environments | no |
-| `approve` | show a value only after a person approves ([`penv reveal`](https://penv.cloud/docs/cli/reveal) under an agent) | no |
-| `audit` | who read what, and when a value was last written (`@rotate`) | no |
+| `read` | every cloud read: [`penv run`](https://penv.cloud/docs/cli/run), [`penv pull`](https://penv.cloud/docs/cli/pull), [`penv reveal`](https://penv.cloud/docs/cli/reveal), [`penv check`](https://penv.cloud/docs/cli/check) | yes |
+| `write` | [`penv set`](https://penv.cloud/docs/cli/set), [`penv unset`](https://penv.cloud/docs/cli/unset), [`penv push`](https://penv.cloud/docs/cli/push) | no |
+| `manage` | [`penv project`](https://penv.cloud/docs/cli/project), [`penv env`](https://penv.cloud/docs/cli/env) | no |
+| `approve` | `penv reveal` under an agent, and `--approval` | no |
+| `audit` | `@rotate` in `penv check`; without it, the check notes that rotation was not checked | no |
 
 ## Address
 
@@ -82,11 +82,10 @@ Every client follows the `penv` client's rules:
 
 1. **HTTPS only**, except `http://` to `127.0.0.1`, `localhost` or `[::1]`.
 2. **No redirects.** A 3xx other than 304 fails the request; penv never follows it.
-3. **A 30 s timeout.** A failed read fails the command, never yields an empty environment.
-4. **No values in errors, logs or panics.**
-5. **Logins in the OS keychain**, keyed by API root, never in a plain file.
-6. **Trust**: the compiled-in roots, or `SSL_CERT_FILE` under its agent rule.
-7. **One read per address per command.**
+3. **A 30 s timeout.**
+4. **Logins in the OS keychain**, keyed by API root, never in a plain file.
+5. **Trust**: the compiled-in roots, or `SSL_CERT_FILE` under its agent rule.
+6. **One read per address per command.**
 
 For `penv`, credentials are tried in this order: `PENV_TOKEN`, a person's login, an enrolled keypair, CI OIDC, then AWS (keys, web identity, container).
 

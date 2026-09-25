@@ -30,7 +30,7 @@ APP_ENV=development
 PENV_TOKEN=
 ```
 
-`PENV_TOKEN` is a penv.cloud machine token (`pck_...`). The `penvToken` type is sensitive and internal: your app never receives it.
+`PENV_TOKEN` is a penv.cloud machine token (`pck_...`). The plugin declares the `penvToken` type sensitive and internal.
 
 | `@initPenv()` option | Default |
 |---|---|
@@ -38,7 +38,7 @@ PENV_TOKEN=
 | `environment` | `development`; `feature/foo` is one environment |
 | `url` | `https://penv.cloud`; another root only when `PENV_URL` names it too |
 | `org`, `project` | from `@penv=` |
-| `cacheTtl` | no cache; a TTL such as `"1h"`, or `"forever"`, caches each environment |
+| `cacheTtl` | no cache; a TTL such as `"1h"` caches each environment |
 
 ## Usage
 

@@ -1,6 +1,6 @@
 # penv for VS Code
 
-Diagnostics, completion, hover, go-to-definition and an outline for `.env.schema`, served by [`penv lsp`](https://penv.cloud/docs/cli/lsp). On the VS Code Marketplace and [Open VSX](https://open-vsx.org/extension/penvhq/penv); tested on VS Code 1.90 and current stable.
+Diagnostics, completion, hover, go-to-definition and an outline for `.env.schema`, served by [`penv lsp`](https://penv.cloud/docs/cli/lsp). Tested on VS Code 1.90 and current stable.
 
 ## Requires
 

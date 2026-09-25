@@ -29,7 +29,7 @@ The HTTP contract `penv` speaks to provider `penv`: our hosted [penv.cloud](http
 | `POST /auth/device/token` (unauthenticated) | `{ deviceCode }` | `201 { credential, expiresAt, user: { email }, orgs: [{ slug, name }] }`; `428 authorization_pending`; `429` (any code); `410 expired`; `403 denied` |
 | `POST /auth/revoke` | none; revokes the bearer itself | `200` or `204` |
 
-The CLI polls every `interval` seconds and backs off on any 429, honouring `retry-after`. `user.email` may be null. On penv.cloud, `expiresIn` is 600, `interval` is 5 and `userCode` is `XXXX-XXXX`, case-insensitive.
+The CLI polls every `interval` seconds; on any 429 it switches to the `retry-after` the answer names. `user.email` may be null. On penv.cloud, `expiresIn` is 600, `interval` is 5 and `userCode` is `XXXX-XXXX`, case-insensitive.
 
 ## Machine exchanges
 
@@ -76,11 +76,11 @@ An address is `{org}/{project}/{environment}`: org and project slugs, and the en
 | `redacted` | present and withheld from this identity |
 | `writeOnly` | the environment is write-only; absent otherwise |
 
-On `PUT`, a key with no `value` updates its schema only, and `prune: true` deletes keys the body leaves out. The `ETag` changes when any value, schema or the write-only flag changes.
+On `PUT`, a key with no `value` updates its schema only, and `prune: true` deletes the keys the body leaves out, except dynamic ones. The `ETag` changes when any value, schema or the write-only flag changes.
 
 ### Per-key schema
 
-`schema` is the key's object from [`penv schema --json`](https://penv.cloud/docs/cli/schema) minus `name`. The CLI sends `description`, `type`, `required`, `requiredIn`, `sensitive`, `default`, `defaultExpr`, `example`, `docs`, `deprecated`, `rotate`, `dynamic` and `hosts`, and omits absent fields rather than sending `null`.
+`schema` is the key's object from [`penv schema --json`](https://penv.cloud/docs/cli/schema) minus `name`.
 
 | Refusal | Meaning | CLI exit |
 |---|---|---|
@@ -144,7 +144,7 @@ The routes behind [`penv project`](https://penv.cloud/docs/cli/project) and [`pe
 | `PATCH .../environments/{environment}` | [`penv env rename`](https://penv.cloud/docs/cli/env-rename) | `{ name }` | `200` |
 | `DELETE .../environments/{environment}` | [`penv env rm`](https://penv.cloud/docs/cli/env-rm) | none | `200 { name, parameters }` |
 
-The new slug comes back in the answer; `penv push` writes it into the `@penv=` header. `from` copies another environment's keys and settings, never its values.
+The new slug comes back in the answer; `penv push` writes it into the `@penv=` header. `from` copies another environment's keys and their decorators, never its values.
 
 ## Errors
 
@@ -165,5 +165,3 @@ The CLI turns each refusal into an [exit code](https://penv.cloud/docs/reference
 | `5xx` twice | 1, naming the status |
 | a 3xx | 1 (`cloud_failed`) |
 | no answer | 5 (`offline`) |
-
-Every route that writes an audit row on penv.cloud stamps `X-Penv-Agent` and `X-Penv-Session` into it, truncated to 128 characters each.

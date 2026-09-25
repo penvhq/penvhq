@@ -1,10 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- [`penv hook`](https://penv.cloud/docs/cli/hook) lets [`penv reveal`](https://penv.cloud/docs/cli/reveal) through: under an agent, reveal asks a person to approve before it prints anything. [`penv pull`](https://penv.cloud/docs/cli/pull) is still refused.
+- penv refuses a command the chosen provider does not declare (`unsupported`), naming the provider and the capability.
+- `install.ps1` verifies the release signature with OpenSSL 1.1.1 or newer from PATH, as `install.sh` does.
+- A penv installed by npm is told `npm i -g @penvhq/cli@<version>`, since npm's `latest` tag holds no prerelease.
+- `penv --help`, [`penv help`](https://penv.cloud/docs/cli/help) `--json` and the shell completions read one summary per command.
+- The `guard --check` claim for cloud mode says what we do: we record every value we hand out as a read.
+- Messages name penv.cloud, not penv-cloud.
+- A target, guard or credential kind is added as a folder or file; a guard's rank and a credential kind's place in the lookup order are data in it.
+
 ## 1.0.0-beta.3
 
 ### Added
 - **Editor support.** [`penv lsp`](https://penv.cloud/docs/cli/lsp) serves `.env.schema` over the Language Server Protocol: the problems [`penv check`](https://penv.cloud/docs/cli/check) reports for the schema, completion and hover for every decorator, function and filter (marked penv, [@env-spec](https://varlock.dev/env-spec/overview/) or varlock-only), go-to-definition for key references, and an outline. It reads no value file and sends no request.
-- **penv for VS Code**, published from `packages/vscode` to the Marketplace and Open VSX. It runs `penv lsp`, finds the platform binary behind an npm install, and runs beside [varlock](https://varlock.dev)'s @env-spec extension.
+- **penv for VS Code**, in `packages/vscode`. It runs `penv lsp`, finds the platform binary behind an npm install, and runs beside [varlock](https://varlock.dev)'s @env-spec extension.
 - [`penv upgrade`](https://penv.cloud/docs/cli/upgrade) `[latest|next|<version>]`: `next` follows prereleases, a version pins or steps back. `latest` stays the default.
 - **Write-only keys.** A key we withhold on penv.cloud from a person's login or a static token is `redacted`: present, never missing. `run` and `bundle` refuse it (`redacted`, exit 6) naming every key and the environment, unless a local layer such as `.env.<env>.local` supplies it. `pull` writes `# penv:redacted KEY` in place of the value, and a local-mode `run` refuses on that marker too. `check` notes it, `ls` shows `redacted`, `why` says it is withheld, and `reveal` refuses it.
 

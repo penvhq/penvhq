@@ -12,7 +12,7 @@ description: Work in a project whose environment variables are managed by penv (
 - Never read, print, copy or grep `.env` or `.env.*`. `.env.schema` is safe to read and edit.
 - Run the project through [`penv run`](https://penv.cloud/docs/cli/run): `penv run -- <command>`. Output is masked (`sk▒▒▒▒▒▒`); never try to recover a value. `--no-mask` and `--no-preload` are ignored under an agent.
 - Do not set `SSL_CERT_FILE` to a file you can write; penv does not trust it in an agent session.
-- Need a value? Stop and ask the user. The penv hook refuses [`penv reveal`](https://penv.cloud/docs/cli/reveal) and [`penv pull`](https://penv.cloud/docs/cli/pull). Without the hook, `penv reveal KEY` exits 4 with `approval` and `url`; once they approve, `penv reveal KEY --approval ID` prints it once.
+- Need a value? Stop and ask the user. The penv hook refuses [`penv pull`](https://penv.cloud/docs/cli/pull). [`penv reveal KEY`](https://penv.cloud/docs/cli/reveal) exits 4 with `approval` and `url`; once they approve, `penv reveal KEY --approval ID` prints it once.
 
 ## Commands
 
@@ -48,11 +48,11 @@ Output is JSON under an agent or when stdout is not a terminal. A failure prints
    WEBHOOK_URL=
    ```
 
-   Types: `string`, `number`, `boolean`, `url`, `email`, `port`, `enum(a, b)`. A key is secret unless `@sensitive=false` or browser-prefixed (`NEXT_PUBLIC_`, `VITE_`, ...). A non-secret default goes after `=`.
+   Types: `string`, `number`, `boolean`, `url`, `email`, `port`, `enum(a, b)`. A key is secret unless `@sensitive=false`, browser-prefixed (`NEXT_PUBLIC_`, `VITE_`, ...), or the header sets `@defaultSensitive=false`. A non-secret default goes after `=`.
 2. Ask the user to run [`penv set WEBHOOK_URL`](https://penv.cloud/docs/cli/set).
 3. Run `penv check`.
 
-For a generated local secret, write `SESSION_SECRET=random(48)`; penv keeps it in `.env.local`.
+For a generated local secret, write `SESSION_SECRET=random(48)`; penv keeps it in `.env.local` (`.env.test.local` for `test`).
 
 ## Fix `penv check` failures
 
@@ -64,7 +64,7 @@ For a generated local secret, write `SESSION_SECRET=random(48)`; penv keeps it i
 | `FILE holds KEY and is not in .gitignore` | run [`penv init`](https://penv.cloud/docs/cli/init) |
 | `FILE holds KEY and git tracks it` | tell the user |
 | `op() is not a function penv runs` | a [varlock](https://varlock.dev/reference/functions/) plugin call; ask the user |
-| `KEY in ENV is write-only in penv-cloud.` | ask the user |
+| `KEY in ENV is write-only in penv.cloud.` | ask the user |
 
 ## Build output
 
