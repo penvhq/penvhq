@@ -365,7 +365,7 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             .with_exit(Exit::Validation),
             (_, "org_ambiguous") => CliError::new(
                 "org_ambiguous",
-                "more than one workspace answers to the org in @penv=, and both trust this identity.",
+                "more than one workspace answers to the org in @penv=.",
                 "Rename one of the two workspaces in the console so their slugs differ, then run this again.",
             )
             .with_exit(Exit::Auth),
