@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use penv_agent::Detection;
+use penv_agent::{Detection, Policy};
 use penv_cloud::api::{Address, Api, Bearer};
 use penv_cloud::cache::Cache;
 use penv_cloud::credential::Obtain;
@@ -28,17 +28,21 @@ pub struct Cloud {
     pub keychain: Box<dyn Keychain>,
     pub cache_dir: Option<PathBuf>,
     pub now: u64,
+    /// What this session may do; exchanges ask for its credential lifetime.
+    pub policy: Policy,
     /// The root came from config.toml: environment credentials stay home.
     pub withhold_env: bool,
 }
 
 impl Cloud {
     pub fn open(env: &Env, detection: &Detection) -> Result<Cloud, CliError> {
+        let policy = Policy::for_(detection, crate::agent::flagged());
         trust(env, detection.is_agent() || crate::agent::flagged())?;
         let chosen = crate::providers::chosen(env)?;
         let api = Api::new(&chosen.url)
             .map_err(|e| refuse(e, None))?
-            .stamped(detection.name(), detection.session_id.as_deref());
+            .stamped(detection.name(), detection.session_id.as_deref())
+            .lasting(policy.credential_ttl_secs);
         let keychain: Box<dyn Keychain> = match Keyring::open(api.base_url()) {
             Some(keyring) => Box::new(Remembering::new(keyring)),
             None => Box::new(NoKeychain),
@@ -50,6 +54,7 @@ impl Cloud {
             api,
             keychain,
             now: SystemClock.now(),
+            policy,
         })
     }
 
@@ -569,13 +574,14 @@ pub fn project_name(dir: &Path) -> String {
 }
 
 /// Reads environments for one command: the cloud opens once, a bearer is minted
-/// once per org and only when the server has to be asked, and each address is
-/// read once through this host's cache.
+/// once per org for as long as the session's lifetime allows and only when the
+/// server has to be asked, and each address is read once through this host's
+/// cache.
 pub struct Fetcher<'a> {
     env: &'a Env,
     detection: &'a Detection,
     cloud: Option<Cloud>,
-    bearers: Vec<(String, Bearer)>,
+    bearers: Vec<Minted>,
     read: Vec<(String, Vec<penv_cloud::api::CloudKey>)>,
 }
 
@@ -601,28 +607,34 @@ impl<'a> Fetcher<'a> {
         }
         let cloud = self.cloud.as_ref().expect("opened above");
         cloud.require(Capability::Read)?;
+        let now = SystemClock.now();
+        self.bearers
+            .retain(|minted| reusable(&cloud.policy, minted, now));
         let minted = self
             .bearers
             .iter()
-            .find(|(org, _)| org.eq_ignore_ascii_case(&at.org))
-            .map(|(_, bearer)| bearer.clone());
+            .find(|minted| minted.org.eq_ignore_ascii_case(&at.org))
+            .map(|minted| minted.bearer.clone());
         let credential = Once {
             kind: cloud.credential(self.env, Some(&at.org))?,
             minted: RefCell::new(minted),
         };
         let cache = cloud.cache(at, &credential);
         let spinner = crate::ui::spinner(&format!("Reading {at}"));
-        let resolved =
-            penv_cloud::cache::fetch(&cloud.api, &credential, at, cache.as_ref(), cloud.now)
-                .map_err(|e| refuse(e, Some(at)))?;
+        let resolved = penv_cloud::cache::fetch(&cloud.api, &credential, at, cache.as_ref(), now)
+            .map_err(|e| refuse(e, Some(at)))?;
         spinner.stop(&format!("Read {at}"));
         if let Some(bearer) = credential.minted.into_inner()
             && !self
                 .bearers
                 .iter()
-                .any(|(org, _)| org.eq_ignore_ascii_case(&at.org))
+                .any(|minted| minted.org.eq_ignore_ascii_case(&at.org))
         {
-            self.bearers.push((at.org.clone(), bearer));
+            self.bearers.push(Minted {
+                org: at.org.clone(),
+                bearer,
+                at: now,
+            });
         }
         if resolved.offline_warning {
             crate::ui::warn(&format!(
@@ -680,6 +692,19 @@ fn is_redacted(keys: &[penv_cloud::api::CloudKey], skipped: &str) -> bool {
         .any(|key| key.redacted && (key.address() == skipped || key.name == skipped))
 }
 
+/// A bearer one org's read proved, and when.
+struct Minted {
+    org: String,
+    bearer: Bearer,
+    at: u64,
+}
+
+/// A bearer is used again only inside both the session's lifetime and the one
+/// the server granted: an agent never holds one for longer than its own.
+fn reusable(policy: &Policy, minted: &Minted, now: u64) -> bool {
+    policy.reuses(minted.at, now) && minted.bearer.expires_at.is_none_or(|at| now < at)
+}
+
 /// A credential proved at most once per command, however many addresses ask.
 struct Once<'k> {
     kind: Box<dyn Obtain + 'k>,
@@ -706,6 +731,29 @@ mod tests {
     use super::*;
     use penv_cloud::error::ApiError;
     use penv_schema::{BaseType, Type};
+
+    #[test]
+    fn an_agent_mints_again_once_its_own_lifetime_is_up_whatever_the_server_granted() {
+        let minted = Minted {
+            org: "acme".into(),
+            bearer: Bearer::until("pck_FAKE", 1_000 + 900),
+            at: 1_000,
+        };
+        let agent = Policy::agent();
+        assert!(reusable(&agent, &minted, 1_299));
+        assert!(!reusable(&agent, &minted, 1_300));
+        assert!(reusable(&Policy::human(), &minted, 1_899));
+        assert!(!reusable(&Policy::human(), &minted, 1_900));
+
+        let short = Minted {
+            bearer: Bearer::until("pck_FAKE", 1_060),
+            ..minted
+        };
+        assert!(
+            !reusable(&agent, &short, 1_060),
+            "nor past what the server granted"
+        );
+    }
 
     #[test]
     fn a_forbidden_environment_is_exit_six_and_names_itself() {
