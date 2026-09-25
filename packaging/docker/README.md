@@ -9,12 +9,12 @@
 | `latest` | every plain release |
 | `next` | every prerelease |
 
-A prerelease never moves `latest`, `1` or `1.2`.
+A prerelease never moves `latest`, `1` or `1.2`, so while 1.0 is in prerelease only `next` and exact versions exist.
 
 ## Copy into your app image
 
 ```dockerfile
-COPY --from=ghcr.io/penvhq/penv:1 /penv /usr/local/bin/penv
+COPY --from=ghcr.io/penvhq/penv:next /penv /usr/local/bin/penv
 ENTRYPOINT ["penv", "run", "--"]
 CMD ["node", "server.js"]
 ```
@@ -24,8 +24,8 @@ Build-time values and credentials per platform: [Deploy with Docker](https://pen
 ## Run against a mounted project
 
 ```bash
-docker run --rm -v "$PWD:/work" -w /work ghcr.io/penvhq/penv:1 check
-docker run --rm -v "$PWD:/work" -w /work ghcr.io/penvhq/penv:1 scan
+docker run --rm -v "$PWD:/work" -w /work ghcr.io/penvhq/penv:next check
+docker run --rm -v "$PWD:/work" -w /work ghcr.io/penvhq/penv:next scan
 ```
 
 The image's entrypoint is `/penv` and it runs as uid 65532, so your mounted folder must be readable by that uid. Commands: [`penv check`](https://penv.cloud/docs/cli/check), [`penv scan`](https://penv.cloud/docs/cli/scan).
@@ -34,7 +34,7 @@ The image's entrypoint is `/penv` and it runs as uid 65532, so your mounted fold
 
 ```bash
 docker run --rm -v /etc/ssl/certs/ca-certificates.crt:/ca.pem:ro -e SSL_CERT_FILE=/ca.pem \
-  -v "$PWD:/work" -w /work ghcr.io/penvhq/penv:1 pull
+  -v "$PWD:/work" -w /work ghcr.io/penvhq/penv:next pull
 ```
 
 `SSL_CERT_FILE` replaces the Mozilla roots built into penv with your bundle ([environment variables](https://penv.cloud/docs/cli/environment-variables)). In an agent session penv refuses a bundle you can write; a distribution's own root-owned trust store passes. [`penv pull`](https://penv.cloud/docs/cli/pull).
