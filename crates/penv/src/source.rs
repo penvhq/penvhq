@@ -462,7 +462,7 @@ pub struct Resolved {
     pub generated: Vec<(String, PathBuf)>,
     /// `random()` keys left for the first `penv run` to generate.
     pub pending: Vec<String>,
-    /// Keys present in penv-cloud and withheld because the environment is
+    /// Keys present in penv.cloud and withheld because the environment is
     /// write-only, which no local layer supplies. Never the same as missing.
     pub redacted: Vec<String>,
     /// The deploy bundle read in place of the cloud, when `PENV_BUNDLE_KEY` opened one.
@@ -625,7 +625,7 @@ pub fn sealed_values(resolved: &Resolved, env: &Env, placeholders: &[(String, St
     resolve_full(&raw, env.as_map(), &resolved.environment, &resolved.fetched).values
 }
 
-/// The refusal for keys a command would receive and cannot: penv-cloud holds
+/// The refusal for keys a command would receive and cannot: penv.cloud holds
 /// them write-only. `None` when every key has a value to hand over.
 pub fn withheld(resolved: &Resolved) -> Option<CliError> {
     let names = &resolved.redacted;
@@ -645,12 +645,12 @@ pub fn withheld(resolved: &Resolved) -> Option<CliError> {
             "Run it where a workload identity (OIDC, AWS IAM or bound keypair) reads the environment, or set {them} in {local}."
         )
     } else {
-        format!("Set {listed} in {local}. penv-cloud keeps the {env} {values} write-only.")
+        format!("Set {listed} in {local}. penv.cloud keeps the {env} {values} write-only.")
     };
     Some(
         CliError::new(
             "redacted",
-            format!("{listed} in {env} {verb} write-only in penv-cloud."),
+            format!("{listed} in {env} {verb} write-only in penv.cloud."),
             fix,
         )
         .with_exit(Exit::EnvironmentRefused),
@@ -931,7 +931,7 @@ fn reference(
     Ok(computed(overlay(&cloud, local).raw))
 }
 
-/// `penv(...)` named a key penv-cloud holds write-only for this identity.
+/// `penv(...)` named a key penv.cloud holds write-only for this identity.
 fn withheld_reference(written: &str, key: &str, env_name: &str, cloud: bool) -> CliError {
     let local = format!(".env.{env_name}.local");
     let fix = if cloud {
@@ -939,12 +939,12 @@ fn withheld_reference(written: &str, key: &str, env_name: &str, cloud: bool) -> 
             "Run it where a workload identity (OIDC, AWS IAM or bound keypair) reads {env_name}, or set {key} in {local}."
         )
     } else {
-        format!("Set {key} in {local}. penv-cloud keeps the {env_name} value write-only.")
+        format!("Set {key} in {local}. penv.cloud keeps the {env_name} value write-only.")
     };
     CliError::new(
         "redacted",
         format!(
-            "{key} in {env_name} is write-only in penv-cloud, so penv({written}) cannot read it."
+            "{key} in {env_name} is write-only in penv.cloud, so penv({written}) cannot read it."
         ),
         fix,
     )
@@ -1158,7 +1158,7 @@ mod tests {
         assert_eq!(cloud.exit, Exit::EnvironmentRefused);
         assert_eq!(
             cloud.message,
-            "DB_PASSWORD, STRIPE_KEY in production are write-only in penv-cloud."
+            "DB_PASSWORD, STRIPE_KEY in production are write-only in penv.cloud."
         );
         assert_eq!(
             cloud.fix,
@@ -1170,11 +1170,11 @@ mod tests {
         let local = withheld(&resolved).unwrap();
         assert_eq!(
             local.message,
-            "DB_PASSWORD in production is write-only in penv-cloud."
+            "DB_PASSWORD in production is write-only in penv.cloud."
         );
         assert_eq!(
             local.fix,
-            "Set DB_PASSWORD in .env.production.local. penv-cloud keeps the production value write-only."
+            "Set DB_PASSWORD in .env.production.local. penv.cloud keeps the production value write-only."
         );
     }
 

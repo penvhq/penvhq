@@ -10,6 +10,7 @@ use penv_cloud::cache::Cache;
 use penv_cloud::credential::Obtain;
 use penv_cloud::error::CloudError;
 use penv_cloud::keychain::{Keyring, NoKeychain, Remembering};
+use penv_cloud::provider::{Capability, Provider};
 use penv_cloud::{Clock, Keychain, SystemClock, credential};
 use penv_schema::{Key, Schema};
 use serde_json::Value;
@@ -23,6 +24,7 @@ pub const DEFAULT_ENVIRONMENT: &str = "development";
 
 pub struct Cloud {
     pub api: Api,
+    pub provider: &'static Provider,
     pub keychain: Box<dyn Keychain>,
     pub cache_dir: Option<PathBuf>,
     pub now: u64,
@@ -42,12 +44,18 @@ impl Cloud {
             None => Box::new(NoKeychain),
         };
         Ok(Cloud {
+            provider: chosen.provider,
             cache_dir: penv_cloud::cache_dir(env.as_map()),
             withhold_env: chosen.from_config,
             api,
             keychain,
             now: SystemClock.now(),
         })
+    }
+
+    /// Refuses, by name, a command the chosen provider does not declare.
+    pub fn require(&self, capability: Capability) -> Result<(), CliError> {
+        require(self.provider, capability)
     }
 
     /// The credential this host can prove, whichever kind that turns out to be.
@@ -363,7 +371,7 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             ),
             (409, "redacted") => CliError::new(
                 "redacted",
-                format!("{} is write-only in penv-cloud, so its values go only to workload identities.", if where_.is_empty() { "that environment" } else { &where_ }),
+                format!("{} is write-only in penv.cloud, so its values go only to workload identities.", if where_.is_empty() { "that environment" } else { &where_ }),
                 format!(
                     "Reveal is not available for a write-only environment. Read it where a workload identity (OIDC, AWS IAM or bound keypair) runs, or set the key for this machine in {}.",
                     at.map(|a| format!(".env.{}.local", a.environment)).unwrap_or_else(|| ".env.<env>.local".to_string())
@@ -477,6 +485,21 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
 
 /// Everything penv says while a command is still working goes to stderr, so
 /// stdout stays the one object the output contract promises.
+pub fn require(provider: &Provider, capability: Capability) -> Result<(), CliError> {
+    if provider.can(capability) {
+        return Ok(());
+    }
+    Err(CliError::new(
+        "unsupported",
+        format!(
+            "{} cannot {}, so penv sends it no request.",
+            provider.name,
+            capability.as_str()
+        ),
+        "Run this against a provider that can, with --provider or @penv=<provider>:org/project.",
+    ))
+}
+
 pub fn note(line: &str) {
     crate::ui::note(line);
 }
@@ -577,6 +600,7 @@ impl<'a> Fetcher<'a> {
             self.cloud = Some(Cloud::open(self.env, self.detection)?);
         }
         let cloud = self.cloud.as_ref().expect("opened above");
+        cloud.require(Capability::Read)?;
         let minted = self
             .bearers
             .iter()
@@ -621,6 +645,13 @@ impl<'a> Fetcher<'a> {
         }
         self.read.push((label, resolved.body.keys.clone()));
         Ok(resolved.body.keys)
+    }
+
+    /// Whether the provider read last can do this; false before any read.
+    pub fn can(&self, capability: Capability) -> bool {
+        self.cloud
+            .as_ref()
+            .is_some_and(|cloud| cloud.provider.can(capability))
     }
 
     pub fn values(&mut self, at: &Address) -> Result<penv_schema::Values, CliError> {
@@ -700,7 +731,7 @@ mod tests {
             (409, "org_ambiguous", "more than one workspace answers"),
             (409, "undecryptable", "cannot decrypt it"),
             (400, "name_invalid", "upper-case key names only"),
-            (409, "redacted", "is write-only in penv-cloud"),
+            (409, "redacted", "is write-only in penv.cloud"),
         ] {
             let error = refuse(ApiError::new(status, code).into(), Some(&at));
             assert_eq!(error.code, code);
@@ -836,6 +867,23 @@ mod tests {
         let refused = refuse(CloudError::DotSegment("environment"), None);
         assert_eq!(refused.code, "dot_name");
         assert!(refused.fix.contains("environment"), "{}", refused.fix);
+    }
+
+    #[test]
+    fn a_command_the_provider_does_not_declare_is_refused_by_name() {
+        let read_only = Provider {
+            slug: "readonly",
+            name: "Read Only",
+            default_url: "https://readonly.example",
+            capabilities: &[Capability::Read],
+        };
+        assert!(require(&read_only, Capability::Read).is_ok());
+        let refused = require(&read_only, Capability::Write).unwrap_err();
+        assert_eq!(refused.code, "unsupported");
+        assert_eq!(
+            refused.message,
+            "Read Only cannot write, so penv sends it no request."
+        );
     }
 
     #[test]

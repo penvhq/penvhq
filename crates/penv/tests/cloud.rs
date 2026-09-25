@@ -2142,7 +2142,7 @@ fn pull_writes_a_redacted_marker_and_no_value_line_for_a_write_only_key() {
     );
     assert!(
         stdout(&text)
-            .contains("Write-only in penv-cloud, written as a redacted marker: DB_PASSWORD"),
+            .contains("Write-only in penv.cloud, written as a redacted marker: DB_PASSWORD"),
         "{}",
         stdout(&text)
     );
@@ -2165,7 +2165,7 @@ fn run_refuses_a_write_only_key_naming_every_key_and_the_environment() {
     assert_eq!(error["error"], "redacted");
     assert_eq!(
         error["message"],
-        "DB_PASSWORD, STRIPE_SECRET_KEY in production are write-only in penv-cloud."
+        "DB_PASSWORD, STRIPE_SECRET_KEY in production are write-only in penv.cloud."
     );
     assert_eq!(
         error["fix"],
@@ -2210,7 +2210,7 @@ fn check_ls_and_why_treat_a_write_only_key_as_present_and_withheld() {
     assert!(
         report["notes"]
             .to_string()
-            .contains("DB_PASSWORD in production is write-only in penv-cloud"),
+            .contains("DB_PASSWORD in production is write-only in penv.cloud"),
         "{report}"
     );
 
@@ -2268,11 +2268,11 @@ fn with_the_header_removed_a_pulled_marker_still_refuses_rather_than_passing_not
     assert_eq!(error["error"], "redacted");
     assert_eq!(
         error["message"],
-        "DB_PASSWORD in production is write-only in penv-cloud."
+        "DB_PASSWORD in production is write-only in penv.cloud."
     );
     assert_eq!(
         error["fix"],
-        "Set DB_PASSWORD in .env.production.local. penv-cloud keeps the production value write-only."
+        "Set DB_PASSWORD in .env.production.local. penv.cloud keeps the production value write-only."
     );
     assert_eq!(
         mock.requests().len(),
