@@ -402,6 +402,12 @@ impl Policy {
         }
     }
 
+    /// Whether a credential minted at `minted_at` may still be used at `now`:
+    /// never past this session's lifetime, whatever the server granted.
+    pub const fn reuses(&self, minted_at: u64, now: u64) -> bool {
+        now >= minted_at && now - minted_at < self.credential_ttl_secs
+    }
+
     /// An agent, detected or declared, takes the agent policy. A non-interactive
     /// session only turns masking on.
     pub fn for_(detection: &Detection, explicit_agent_flag: bool) -> Policy {

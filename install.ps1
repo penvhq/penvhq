@@ -13,6 +13,10 @@
 
     $targets = 'x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc, aarch64-pc-windows-msvc'
 
+    # The release keys, base64 Ed25519 public keys separated by spaces, that a checksum file
+    # may be signed with: the same list install.sh carries in public_keys.
+    $publicKeys = 'VRJ90W7uzjrwQKeD6KCGQj1dih6z6/4QVeat0M5qL/0='
+
     $version = $env:PENV_VERSION
     $installDir = $env:PENV_INSTALL_DIR
     $releaseBase = $env:PENV_RELEASE_BASE
@@ -84,6 +88,42 @@
     # Absolute, so the PATH entry means the same folder from every shell.
     $installDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($installDir)
 
+    # Ed25519 arrived in OpenSSL 1.1.1, and only OpenSSL itself takes -rawin; LibreSSL does not.
+    function OpensslThatVerifies {
+        $command = Get-Command openssl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $command) { return $null }
+        # 'Continue' locally, so a native command writing to stderr is not a thrown error in PowerShell 5.1.
+        $ErrorActionPreference = 'Continue'
+        $said = (& $command.Source version 2>$null | Out-String).Trim()
+        if ($said -notmatch '^OpenSSL (\d+)\.(\d+)\.(\d+)') { return $null }
+        $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
+        if ($major -gt 1 -or ($major -eq 1 -and ($minor -gt 1 -or ($minor -eq 1 -and $patch -ge 1)))) {
+            return $command.Source
+        }
+        return $null
+    }
+
+    # The 12 SPKI header bytes are a multiple of three, so the PEM body is that
+    # header's base64 followed by the key's own, unchanged.
+    function SignedByAReleaseKey($openssl, $keys, $file, $sigFile, $scratch) {
+        # The signature is one long base64 line, whatever ended it.
+        try { $bytes = [Convert]::FromBase64String(([IO.File]::ReadAllText($sigFile) -replace '\s', '')) }
+        catch { return $false }
+        $signature = Join-Path $scratch 'signature.bin'
+        [IO.File]::WriteAllBytes($signature, $bytes)
+        $pem = Join-Path $scratch 'key.pem'
+        $ErrorActionPreference = 'Continue'
+        foreach ($key in $keys) {
+            # 32 raw bytes are 44 base64 characters, so a key pasted without its
+            # trailing = is the same key and gets it back.
+            if ($key.Length -eq 43) { $key = "$key=" }
+            [IO.File]::WriteAllText($pem, "-----BEGIN PUBLIC KEY-----`nMCowBQYDK2VwAyEA$key`n-----END PUBLIC KEY-----`n")
+            & $openssl pkeyutl -verify -pubin -inkey $pem -rawin -in $file -sigfile $signature 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { return $true }
+        }
+        return $false
+    }
+
     $work = Join-Path ([IO.Path]::GetTempPath()) ("penv-install-" + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $work -Force | Out-Null
     try {
@@ -93,8 +133,24 @@
             catch { throw "penv: $download/$name could not be downloaded." }
         }
 
-        # .NET carries no Ed25519, so this installer stops at the digest and says so.
-        Write-Host 'signature not checked: PowerShell has no Ed25519, so this install rests on the sha256 digest' -ForegroundColor DarkGray
+        # .NET carries no Ed25519, so OpenSSL on PATH verifies the signature, as in install.sh.
+        # The signature stands in front of the digest: an unsigned checksum file says
+        # nothing about the binary it lists.
+        $keys = @($publicKeys -split '\s+' | Where-Object { $_ })
+        if ($keys.Count -eq 0) {
+            Write-Host 'signature not checked: this installer carries no release key' -ForegroundColor DarkGray
+        }
+        elseif (-not ($openssl = OpensslThatVerifies)) {
+            Write-Host 'signature not checked: OpenSSL 1.1.1 or newer verifies it, and this host has none' -ForegroundColor DarkGray
+        }
+        else {
+            $sig = Join-Path $work "$sums.sig"
+            try { Invoke-WebRequest -Uri "$download/$sums.sig" -OutFile $sig -UseBasicParsing }
+            catch { throw "penv: $download/$sums.sig could not be downloaded, and a release is signed. Nothing was installed." }
+            if (-not (SignedByAReleaseKey $openssl $keys (Join-Path $work $sums) $sig $work)) {
+                throw "penv: $sums is not signed by a penv release key. Nothing was installed."
+            }
+        }
 
         # The checksum file covers the archive too, so the raw binary's line is matched whole.
         $pattern = '^([0-9a-fA-F]{64})\s+\*?' + [Regex]::Escape($asset) + '$'

@@ -4,12 +4,13 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use penv_agent::Detection;
+use penv_agent::{Detection, Policy};
 use penv_cloud::api::{Address, Api, Bearer};
 use penv_cloud::cache::Cache;
 use penv_cloud::credential::Obtain;
 use penv_cloud::error::CloudError;
 use penv_cloud::keychain::{Keyring, NoKeychain, Remembering};
+use penv_cloud::provider::{Capability, Provider};
 use penv_cloud::{Clock, Keychain, SystemClock, credential};
 use penv_schema::{Key, Schema};
 use serde_json::Value;
@@ -23,31 +24,43 @@ pub const DEFAULT_ENVIRONMENT: &str = "development";
 
 pub struct Cloud {
     pub api: Api,
+    pub provider: &'static Provider,
     pub keychain: Box<dyn Keychain>,
     pub cache_dir: Option<PathBuf>,
     pub now: u64,
+    /// What this session may do; exchanges ask for its credential lifetime.
+    pub policy: Policy,
     /// The root came from config.toml: environment credentials stay home.
     pub withhold_env: bool,
 }
 
 impl Cloud {
     pub fn open(env: &Env, detection: &Detection) -> Result<Cloud, CliError> {
+        let policy = Policy::for_(detection, crate::agent::flagged());
         trust(env, detection.is_agent() || crate::agent::flagged())?;
         let chosen = crate::providers::chosen(env)?;
         let api = Api::new(&chosen.url)
             .map_err(|e| refuse(e, None))?
-            .stamped(detection.name(), detection.session_id.as_deref());
+            .stamped(detection.name(), detection.session_id.as_deref())
+            .lasting(policy.credential_ttl_secs);
         let keychain: Box<dyn Keychain> = match Keyring::open(api.base_url()) {
             Some(keyring) => Box::new(Remembering::new(keyring)),
             None => Box::new(NoKeychain),
         };
         Ok(Cloud {
+            provider: chosen.provider,
             cache_dir: penv_cloud::cache_dir(env.as_map()),
             withhold_env: chosen.from_config,
             api,
             keychain,
             now: SystemClock.now(),
+            policy,
         })
+    }
+
+    /// Refuses, by name, a command the chosen provider does not declare.
+    pub fn require(&self, capability: Capability) -> Result<(), CliError> {
+        require(self.provider, capability)
     }
 
     /// The credential this host can prove, whichever kind that turns out to be.
@@ -352,7 +365,7 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             .with_exit(Exit::Validation),
             (_, "org_ambiguous") => CliError::new(
                 "org_ambiguous",
-                "more than one workspace answers to the org in @penv=, and both trust this identity.",
+                "more than one workspace answers to the org in @penv=.",
                 "Rename one of the two workspaces in the console so their slugs differ, then run this again.",
             )
             .with_exit(Exit::Auth),
@@ -363,7 +376,7 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             ),
             (409, "redacted") => CliError::new(
                 "redacted",
-                format!("{} is write-only in penv-cloud, so its values go only to workload identities.", if where_.is_empty() { "that environment" } else { &where_ }),
+                format!("{} is write-only in penv.cloud, so its values go only to workload identities.", if where_.is_empty() { "that environment" } else { &where_ }),
                 format!(
                     "Reveal is not available for a write-only environment. Read it where a workload identity (OIDC, AWS IAM or bound keypair) runs, or set the key for this machine in {}.",
                     at.map(|a| format!(".env.{}.local", a.environment)).unwrap_or_else(|| ".env.<env>.local".to_string())
@@ -477,6 +490,21 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
 
 /// Everything penv says while a command is still working goes to stderr, so
 /// stdout stays the one object the output contract promises.
+pub fn require(provider: &Provider, capability: Capability) -> Result<(), CliError> {
+    if provider.can(capability) {
+        return Ok(());
+    }
+    Err(CliError::new(
+        "unsupported",
+        format!(
+            "{} cannot {}, so penv sends it no request.",
+            provider.name,
+            capability.as_str()
+        ),
+        "Run this against a provider that can, with --provider or @penv=<provider>:org/project.",
+    ))
+}
+
 pub fn note(line: &str) {
     crate::ui::note(line);
 }
@@ -546,13 +574,14 @@ pub fn project_name(dir: &Path) -> String {
 }
 
 /// Reads environments for one command: the cloud opens once, a bearer is minted
-/// once per org and only when the server has to be asked, and each address is
-/// read once through this host's cache.
+/// once per org for as long as the session's lifetime allows and only when the
+/// server has to be asked, and each address is read once through this host's
+/// cache.
 pub struct Fetcher<'a> {
     env: &'a Env,
     detection: &'a Detection,
     cloud: Option<Cloud>,
-    bearers: Vec<(String, Bearer)>,
+    bearers: Vec<Minted>,
     read: Vec<(String, Vec<penv_cloud::api::CloudKey>)>,
 }
 
@@ -577,28 +606,35 @@ impl<'a> Fetcher<'a> {
             self.cloud = Some(Cloud::open(self.env, self.detection)?);
         }
         let cloud = self.cloud.as_ref().expect("opened above");
+        cloud.require(Capability::Read)?;
+        let now = SystemClock.now();
+        self.bearers
+            .retain(|minted| reusable(&cloud.policy, minted, now));
         let minted = self
             .bearers
             .iter()
-            .find(|(org, _)| org.eq_ignore_ascii_case(&at.org))
-            .map(|(_, bearer)| bearer.clone());
+            .find(|minted| minted.org.eq_ignore_ascii_case(&at.org))
+            .map(|minted| minted.bearer.clone());
         let credential = Once {
             kind: cloud.credential(self.env, Some(&at.org))?,
             minted: RefCell::new(minted),
         };
         let cache = cloud.cache(at, &credential);
         let spinner = crate::ui::spinner(&format!("Reading {at}"));
-        let resolved =
-            penv_cloud::cache::fetch(&cloud.api, &credential, at, cache.as_ref(), cloud.now)
-                .map_err(|e| refuse(e, Some(at)))?;
+        let resolved = penv_cloud::cache::fetch(&cloud.api, &credential, at, cache.as_ref(), now)
+            .map_err(|e| refuse(e, Some(at)))?;
         spinner.stop(&format!("Read {at}"));
         if let Some(bearer) = credential.minted.into_inner()
             && !self
                 .bearers
                 .iter()
-                .any(|(org, _)| org.eq_ignore_ascii_case(&at.org))
+                .any(|minted| minted.org.eq_ignore_ascii_case(&at.org))
         {
-            self.bearers.push((at.org.clone(), bearer));
+            self.bearers.push(Minted {
+                org: at.org.clone(),
+                bearer,
+                at: now,
+            });
         }
         if resolved.offline_warning {
             crate::ui::warn(&format!(
@@ -621,6 +657,13 @@ impl<'a> Fetcher<'a> {
         }
         self.read.push((label, resolved.body.keys.clone()));
         Ok(resolved.body.keys)
+    }
+
+    /// Whether the provider read last can do this; false before any read.
+    pub fn can(&self, capability: Capability) -> bool {
+        self.cloud
+            .as_ref()
+            .is_some_and(|cloud| cloud.provider.can(capability))
     }
 
     pub fn values(&mut self, at: &Address) -> Result<penv_schema::Values, CliError> {
@@ -647,6 +690,19 @@ impl<'a> Fetcher<'a> {
 fn is_redacted(keys: &[penv_cloud::api::CloudKey], skipped: &str) -> bool {
     keys.iter()
         .any(|key| key.redacted && (key.address() == skipped || key.name == skipped))
+}
+
+/// A bearer one org's read proved, and when.
+struct Minted {
+    org: String,
+    bearer: Bearer,
+    at: u64,
+}
+
+/// A bearer is used again only inside both the session's lifetime and the one
+/// the server granted: an agent never holds one for longer than its own.
+fn reusable(policy: &Policy, minted: &Minted, now: u64) -> bool {
+    policy.reuses(minted.at, now) && minted.bearer.expires_at.is_none_or(|at| now < at)
 }
 
 /// A credential proved at most once per command, however many addresses ask.
@@ -677,6 +733,29 @@ mod tests {
     use penv_schema::{BaseType, Type};
 
     #[test]
+    fn an_agent_mints_again_once_its_own_lifetime_is_up_whatever_the_server_granted() {
+        let minted = Minted {
+            org: "acme".into(),
+            bearer: Bearer::until("pck_FAKE", 1_000 + 900),
+            at: 1_000,
+        };
+        let agent = Policy::agent();
+        assert!(reusable(&agent, &minted, 1_299));
+        assert!(!reusable(&agent, &minted, 1_300));
+        assert!(reusable(&Policy::human(), &minted, 1_899));
+        assert!(!reusable(&Policy::human(), &minted, 1_900));
+
+        let short = Minted {
+            bearer: Bearer::until("pck_FAKE", 1_060),
+            ..minted
+        };
+        assert!(
+            !reusable(&agent, &short, 1_060),
+            "nor past what the server granted"
+        );
+    }
+
+    #[test]
     fn a_forbidden_environment_is_exit_six_and_names_itself() {
         let at = Address::new("acme", "api", "production");
         let error = refuse(ApiError::new(403, "forbidden").into(), Some(&at));
@@ -700,7 +779,7 @@ mod tests {
             (409, "org_ambiguous", "more than one workspace answers"),
             (409, "undecryptable", "cannot decrypt it"),
             (400, "name_invalid", "upper-case key names only"),
-            (409, "redacted", "is write-only in penv-cloud"),
+            (409, "redacted", "is write-only in penv.cloud"),
         ] {
             let error = refuse(ApiError::new(status, code).into(), Some(&at));
             assert_eq!(error.code, code);
@@ -836,6 +915,23 @@ mod tests {
         let refused = refuse(CloudError::DotSegment("environment"), None);
         assert_eq!(refused.code, "dot_name");
         assert!(refused.fix.contains("environment"), "{}", refused.fix);
+    }
+
+    #[test]
+    fn a_command_the_provider_does_not_declare_is_refused_by_name() {
+        let read_only = Provider {
+            slug: "readonly",
+            name: "Read Only",
+            default_url: "https://readonly.example",
+            capabilities: &[Capability::Read],
+        };
+        assert!(require(&read_only, Capability::Read).is_ok());
+        let refused = require(&read_only, Capability::Write).unwrap_err();
+        assert_eq!(refused.code, "unsupported");
+        assert_eq!(
+            refused.message,
+            "Read Only cannot write, so penv sends it no request."
+        );
     }
 
     #[test]

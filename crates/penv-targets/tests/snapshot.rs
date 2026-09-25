@@ -1,6 +1,6 @@
 //! One fixture schema through every built-in target, byte for byte.
 
-use penv_targets::{Roots, Source, Target, Tree, load, render};
+use penv_targets::{BUILT_IN, Roots, Source, Target, Tree, load, render};
 
 const FIXTURE: &str = include_str!("fixture.env.schema");
 /// Only string-shaped keys, so nothing parses, and no keys at all.
@@ -10,16 +10,6 @@ const EMPTY: &str = include_str!("empty.env.schema");
 /// a description holding the characters literals and comments treat specially.
 const RESERVED: &str = include_str!("reserved.env.schema");
 
-/// Every built-in target and the file name its snapshot is kept under.
-const FILES: [(&str, &str); 7] = [
-    ("ts", "ts.env.ts"),
-    ("py", "py.penv_env.py"),
-    ("go", "go.env.go"),
-    ("rust", "rust.env.rs"),
-    ("php", "php.Env.php"),
-    ("java", "java.Env.java"),
-    ("csharp", "csharp.Env.g.cs"),
-];
 const TS: &str = include_str!("snapshots/ts.env.ts");
 const PY: &str = include_str!("snapshots/py.penv_env.py");
 const GO: &str = include_str!("snapshots/go.env.go");
@@ -94,26 +84,23 @@ fn assert_same(name: &str, expected: &str, actual: &str) {
     );
 }
 
-#[test]
-fn the_ts_target_renders_its_snapshot() {
-    assert_same("ts.env.ts", TS, &rendered("ts"));
+/// Every built-in target and the file its snapshot is kept under: its name, then
+/// the file name of its output.
+fn files() -> Vec<(&'static str, String)> {
+    BUILT_IN
+        .iter()
+        .map(|b| {
+            let output = built_in(b.name).output;
+            let file = output.rsplit('/').next().unwrap_or(&output).to_string();
+            (b.name, format!("{}.{file}", b.name))
+        })
+        .collect()
 }
 
 #[test]
-fn the_py_target_renders_its_snapshot() {
-    assert_same("py.penv_env.py", PY, &rendered("py"));
-}
-
-#[test]
-fn the_go_rust_php_java_and_csharp_targets_render_their_snapshots() {
-    for (name, file, snapshot) in [
-        ("go", "go.env.go", GO),
-        ("rust", "rust.env.rs", RUST),
-        ("php", "php.Env.php", PHP),
-        ("java", "java.Env.java", JAVA),
-        ("csharp", "csharp.Env.g.cs", CSHARP),
-    ] {
-        assert_same(file, snapshot, &rendered(name));
+fn every_built_in_target_renders_its_snapshot() {
+    for (name, file) in files() {
+        assert_same(&file, &snapshot(&file), &rendered(name));
     }
 }
 
@@ -139,7 +126,7 @@ fn a_schema_of_only_strings_or_of_nothing_still_renders_through_every_target() {
         ("empty", EMPTY),
         ("reserved", RESERVED),
     ] {
-        for (name, file) in FILES {
+        for (name, file) in files() {
             let path = format!("{dir}/{file}");
             assert_same(&path, &snapshot(&path), &rendered_from(fixture, name));
         }

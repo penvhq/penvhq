@@ -1,27 +1,32 @@
 # penv for VS Code
 
-Diagnostics, completion, hover, go-to-definition and an outline for `.env.schema`, served by the `penv` binary (`penv lsp`). On the VS Code Marketplace and [Open VSX](https://open-vsx.org/extension/penvhq/penv); tested on VS Code 1.90 and current stable.
+Diagnostics, completion, hover, go-to-definition and an outline for `.env.schema`, served by [`penv lsp`](https://penv.cloud/docs/cli/lsp). Tested on VS Code 1.90 and current stable.
 
 ## Requires
 
-A `penv` that has `penv lsp`, 1.0.0-beta.3 or later, on `PATH`: [install](https://github.com/penvhq/penvhq#install). The extension says so when yours is older.
+`penv` 1.0.0-beta.3 or later ([install](https://penv.cloud/docs/start/install-the-cli)). The extension warns when your `penv` has no `lsp` command.
 
-Installed off `PATH`? Set `penv.path` in your user settings. The setting is machine-scoped; a workspace cannot set it.
+| `penv.path` | Binary started |
+|---|---|
+| empty (default) | first `penv` on `PATH`; relative entries are skipped, and an `npm i -g @penvhq/cli` launcher resolves to the platform binary behind it |
+| a path | that file |
 
-## What it reads
+`penv.path` is machine-scoped: only your user settings can set it, so an untrusted workspace cannot choose the program.
+
+## Features
 
 | Feature | Covers |
 |---|---|
-| Diagnostics | What [`penv check`](https://github.com/penvhq/penvhq#commands) reports for the schema: parse errors, ignored decorators, `@import` targets, `.penv/config.toml` public prefixes and schema version, overdue `@rotate` keys in local mode |
+| Diagnostics | What [`penv check`](https://penv.cloud/docs/cli/check) reports for the schema: parse errors, ignored decorators, `@import` targets, `.penv/config.toml` public prefixes and schema version, overdue `@rotate` keys in local mode |
 | Completion | Decorators, `@type` values and constraints, `@rotate` periods, `$KEY`, `${KEY \| filter}`, `penv(env/KEY)`, functions |
-| Hover | Each decorator and function, marked penv extension, `@env-spec` or varlock-only; each key's type, required, sensitive, `@hosts` and rotation |
+| Hover | Each decorator and function, marked penv extension, `@env-spec` or varlock; each key's type, required, sensitive, `@hosts` and rotation |
 | Definition | `$KEY`, `${KEY}`, `ref(KEY)`, `@currentEnv=$KEY` |
 
-Only files named `.env.schema` are served. `.env` and `.env.*` are never read. The server sends no network request.
+`penv lsp` serves only files named `.env.schema`, never reads `.env` or `.env.*`, and sends no network request.
 
-## With varlock's extension
+## Syntax highlighting
 
-This extension adds no grammar. Install [varlock's @env-spec extension](https://marketplace.visualstudio.com/items?itemName=varlock.env-spec-language) for syntax highlighting; the two run side by side.
+This extension adds no grammar. Install [varlock's @env-spec extension](https://marketplace.visualstudio.com/items?itemName=varlock.env-spec-language) ([varlock.dev](https://varlock.dev)) for highlighting; the two run side by side.
 
 ## Commands
 
@@ -29,7 +34,7 @@ This extension adds no grammar. Install [varlock's @env-spec extension](https://
 |---|---|
 | `penv: Restart language server` | Stops and starts `penv lsp` |
 
-Server output is in the **penv** output channel.
+Changing `penv.path` restarts the server too. Server output is in the **penv** output channel.
 
 ## Other editors
 

@@ -1,12 +1,8 @@
-//! Credential kinds. One file each, one arm of [`resolve`] each; adding a kind
-//! adds a file and a line and touches nothing else.
+//! Credential kinds, one file each. A kind names the places it is found in its
+//! `PLACES` and `build.rs` declares every file here, so adding a kind adds a
+//! file and touches nothing else.
 
-mod aws;
-mod aws_container;
-mod aws_web_identity;
-mod keypair;
-mod oidc;
-mod token;
+include!(concat!(env!("OUT_DIR"), "/kinds.rs"));
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -48,68 +44,79 @@ impl Obtain for Bearer {
     }
 }
 
-/// The order the design fixes: the variable, the person's login, the enrolled
-/// keypair, the platform's OIDC token, then AWS (keys, web identity, container).
-/// `org` is the OIDC audience and the workspace an AWS login signs. A keychain that will not answer is passed over,
-/// and named only when nothing else applies.
+/// A kind read from the environment. `org` is the OIDC audience and the
+/// workspace an AWS login signs.
+type FromEnv = fn(&BTreeMap<String, String>, Option<&str>) -> Option<Box<dyn Obtain>>;
+
+/// A kind this machine holds for the server. `lock_dir` is where parallel
+/// keypair exchanges queue; an error is a keychain that would not answer.
+type FromKeychain =
+    for<'a> fn(&'a dyn Keychain, Option<PathBuf>) -> Result<Option<Box<dyn Obtain + 'a>>>;
+
+/// Where one kind is looked for.
+enum Find {
+    Env(FromEnv),
+    Held(FromKeychain),
+}
+
+/// One place a kind is found. Every lookup tries the places lowest rank first.
+struct Place {
+    rank: u32,
+    find: Find,
+}
+
+/// Every kind's places by rank. The order the design fixes: the variable, the
+/// person's login, the enrolled keypair, the platform's OIDC token, then AWS
+/// (keys, web identity, container).
+fn order() -> Vec<&'static Place> {
+    let mut places: Vec<&'static Place> = KINDS.iter().flat_map(|kind| kind.iter()).collect();
+    places.sort_by_key(|place| place.rank);
+    places
+}
+
+/// The first place in the order that holds a credential. A keychain that will
+/// not answer is passed over, and named only when nothing else applies.
 pub fn resolve<'a>(
     env: &BTreeMap<String, String>,
     store: &'a dyn Keychain,
     org: Option<&str>,
 ) -> Result<Box<dyn Obtain + 'a>> {
-    if let Some(token) = Token::from_env(env) {
-        return Ok(Box::new(token));
-    }
-    let (held, unreadable) = held(store, crate::cache::cache_dir(env));
-    if let Some(held) = held {
-        return Ok(held);
-    }
-    if let Some(oidc) = Oidc::from_env(env, org) {
-        return Ok(Box::new(oidc));
-    }
-    // The AWS SDKs' own order: keys in the environment, web identity (EKS
-    // IRSA), then the container endpoint (ECS task roles, EKS Pod Identity).
-    if let Some(aws) = AwsIam::from_env(env) {
-        return Ok(Box::new(aws.for_org(org)));
-    }
-    if let Some(aws) = AwsWebIdentity::from_env(env) {
-        return Ok(Box::new(aws.for_org(org)));
-    }
-    if let Some(aws) = AwsContainer::from_env(env) {
-        return Ok(Box::new(aws.for_org(org)));
-    }
-    Err(unreadable.unwrap_or(CloudError::NoCredential))
+    first(order(), env, store, org, crate::cache::cache_dir(env))
 }
 
-/// Only what this machine holds for the server: a person's login, then an
-/// enrolled keypair. `lock_dir` is where parallel keypair exchanges queue.
+/// Only the places this machine holds for the server, in the same order.
+/// `lock_dir` is where parallel keypair exchanges queue.
 pub fn resolve_held(
     store: &dyn Keychain,
     lock_dir: Option<PathBuf>,
 ) -> Result<Box<dyn Obtain + '_>> {
-    match held(store, lock_dir) {
-        (Some(held), _) => Ok(held),
-        (None, unreadable) => Err(unreadable.unwrap_or(CloudError::NoCredential)),
-    }
+    let held = order()
+        .into_iter()
+        .filter(|place| matches!(place.find, Find::Held(_)));
+    first(held, &BTreeMap::new(), store, None, lock_dir)
 }
 
-/// What the keychain holds, and the error it answered with if it would not.
-fn held(
-    store: &dyn Keychain,
+fn first<'a>(
+    places: impl IntoIterator<Item = &'static Place>,
+    env: &BTreeMap<String, String>,
+    store: &'a dyn Keychain,
+    org: Option<&str>,
     lock_dir: Option<PathBuf>,
-) -> (Option<Box<dyn Obtain + '_>>, Option<CloudError>) {
+) -> Result<Box<dyn Obtain + 'a>> {
     let mut unreadable = None;
-    match Token::from_keychain(store) {
-        Ok(Some(token)) => return (Some(Box::new(token)), None),
-        Ok(None) => {}
-        Err(e) => unreadable = Some(e),
+    for place in places {
+        let found = match place.find {
+            Find::Env(find) => find(env, org),
+            Find::Held(find) => find(store, lock_dir.clone()).unwrap_or_else(|e| {
+                unreadable = unreadable.take().or(Some(e));
+                None
+            }),
+        };
+        if let Some(found) = found {
+            return Ok(found);
+        }
     }
-    match BoundKeypair::from_keychain(store) {
-        Ok(Some(keypair)) => return (Some(Box::new(keypair.locked_in(lock_dir))), None),
-        Ok(None) => {}
-        Err(e) => unreadable = unreadable.or(Some(e)),
-    }
-    (None, unreadable)
+    Err(unreadable.unwrap_or(CloudError::NoCredential))
 }
 
 /// True when this host can prove itself at all. Which kind is never said.
@@ -142,6 +149,23 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn the_places_keep_the_order_the_design_fixes_and_no_two_share_a_rank() {
+        let fixed = [
+            token::PLACES[0].rank,
+            token::PLACES[1].rank,
+            keypair::PLACES[0].rank,
+            oidc::PLACES[0].rank,
+            aws::PLACES[0].rank,
+            aws_web_identity::PLACES[0].rank,
+            aws_container::PLACES[0].rank,
+        ];
+        assert!(fixed.is_sorted(), "{fixed:?}");
+        let mut ranks: Vec<u32> = order().iter().map(|place| place.rank).collect();
+        ranks.dedup();
+        assert_eq!(ranks.len(), order().len(), "two places share a rank");
     }
 
     #[test]

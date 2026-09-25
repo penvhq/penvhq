@@ -1,4 +1,5 @@
 name = "codex"
+rank = 20
 description = "A Codex workspace profile that refuses to read env files, and a shell policy that does not hand the child the parent's environment."
 scope = "project"
 detect = ["~/.codex", ".codex"]

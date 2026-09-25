@@ -1,4 +1,5 @@
 name = "windsurf"
+rank = 80
 description = "Windsurf hooks for running a command and for reading code, both the penv binary."
 scope = "project"
 detect = ["~/.windsurf", ".windsurf"]

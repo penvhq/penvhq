@@ -49,10 +49,10 @@ pub fn run(
                 "penv.cloud {c}, withheld: the environment is write-only and only workload identities read it"
             ),
             (None, Some(file)) => format!(
-                "a # penv:redacted marker in {}: penv-cloud holds the value write-only",
+                "a # penv:redacted marker in {}: penv.cloud holds the value write-only",
                 relative(file)
             ),
-            (None, None) => "penv-cloud, withheld: the environment is write-only".to_string(),
+            (None, None) => "penv.cloud, withheld: the environment is write-only".to_string(),
         },
         (Some(o), Some(_)) if o == "the process environment" => {
             "the process environment".to_string()

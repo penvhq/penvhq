@@ -1,6 +1,8 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use penv_cloud::provider::Capability;
+
 use penv_cloud::api::CloudKey;
 use penv_schema::{Key, is_public_prefixed, is_valid_key_name};
 use serde_json::json;
@@ -51,6 +53,7 @@ pub fn set(
     let key = declared.clone().unwrap_or_else(|| drafted(name, &value));
     let detection = detect_here(env, std::io::stdout().is_terminal());
     let cloud = Cloud::open(env, &detection)?;
+    cloud.require(Capability::Write)?;
     let bearer = cloud.bearer(env, schema.org.as_deref())?;
 
     let mut sent = [CloudKey {
@@ -115,6 +118,7 @@ pub fn unset(
 
     let detection = detect_here(env, std::io::stdout().is_terminal());
     let cloud = Cloud::open(env, &detection)?;
+    cloud.require(Capability::Write)?;
     let bearer = cloud.bearer(env, schema.org.as_deref())?;
     let result = cloud
         .api

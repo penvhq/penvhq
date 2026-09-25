@@ -1,6 +1,8 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use penv_cloud::provider::Capability;
+
 use penv_cloud::api::Bearer;
 use serde_json::json;
 
@@ -23,6 +25,7 @@ pub fn run(
 ) -> Result<Report, CliError> {
     let detection = detect_here(env, std::io::stdout().is_terminal());
     let cloud = Cloud::open(env, &detection)?;
+    cloud.require(Capability::Manage)?;
     let bearer = cloud.bearer(env, None)?;
     let agent = detection.is_agent() || agent_flag;
 

@@ -471,6 +471,7 @@ pub struct Api {
     base_url: String,
     agent_name: Option<String>,
     session_id: Option<String>,
+    credential_ttl: Option<u64>,
 }
 
 impl Api {
@@ -488,6 +489,7 @@ impl Api {
             base_url: checked_base_url(base_url)?,
             agent_name: None,
             session_id: None,
+            credential_ttl: None,
         })
     }
 
@@ -505,6 +507,13 @@ impl Api {
     pub fn stamped(mut self, agent_name: Option<&str>, session_id: Option<&str>) -> Api {
         self.agent_name = agent_name.filter(|v| !v.is_empty()).map(str::to_string);
         self.session_id = session_id.filter(|v| !v.is_empty()).map(str::to_string);
+        self
+    }
+
+    /// The lifetime, in seconds, every exchange asks for as `ttlSeconds`. The
+    /// server mints no longer; without it the server's own default holds.
+    pub fn lasting(mut self, ttl_secs: u64) -> Api {
+        self.credential_ttl = Some(ttl_secs);
         self
     }
 
@@ -898,12 +907,19 @@ impl Api {
 
     // --- credential exchanges ------------------------------------------------
 
+    /// An exchange body with the lifetime this session asks for.
+    fn exchange_body(&self, mut body: Value) -> Value {
+        if let (Some(ttl), Some(fields)) = (self.credential_ttl, body.as_object_mut()) {
+            fields.insert("ttlSeconds".into(), ttl.into());
+        }
+        body
+    }
+
     pub fn exchange_oidc(&self, token: &str, now: u64) -> Result<Bearer> {
         let url = self.url("/auth/oidc");
-        let mut response = self.attempt(&url, || {
-            self.stamp(self.http.post(&url))
-                .send_json(json!({ "token": token }))
-        })?;
+        let body = self.exchange_body(json!({ "token": token }));
+        let mut response =
+            self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(&body))?;
         expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])
             .map_err(|e| recoded(e, "ambiguous", "org_ambiguous"))?;
         bearer_from(&url, &mut response, now)
@@ -911,8 +927,14 @@ impl Api {
 
     pub fn exchange_aws(&self, signed: &SignedRequest, now: u64) -> Result<Bearer> {
         let url = self.url("/auth/aws");
+        let body = self.exchange_body(json!({
+            "method": signed.method,
+            "url": signed.url,
+            "body": signed.body,
+            "headers": signed.headers,
+        }));
         let mut response =
-            self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(signed))?;
+            self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(&body))?;
         expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])
             .map_err(|e| recoded(e, "ambiguous", "org_ambiguous"))?;
         bearer_from(&url, &mut response, now)
@@ -937,12 +959,12 @@ impl Api {
         now: u64,
     ) -> Result<KeypairGrant> {
         let url = self.url("/auth/keypair");
-        let body = json!({
+        let body = self.exchange_body(json!({
             "credentialId": credential_id,
             "nonce": nonce,
             "generation": generation,
             "signature": signature,
-        });
+        }));
         let mut response =
             self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(&body))?;
         expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])?;

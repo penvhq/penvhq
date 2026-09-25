@@ -181,6 +181,65 @@ fn aws_posts_a_signed_sts_request_and_never_the_secret_key() {
     );
 }
 
+#[test]
+fn every_exchange_asks_for_the_lifetime_the_session_carries() {
+    for ttl in [300, 900] {
+        let mock = Mock::new();
+        let granted = json!({ "credential": "pck_EXCHANGED" }).to_string();
+        mock.on("POST", "/api/v1/auth/oidc", 200, &granted);
+        mock.on("POST", "/api/v1/auth/aws", 200, &granted);
+        challenge_and_grant(&mock, 8);
+        let api = api(&mock).lasting(ttl);
+
+        Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")]), Some("acme"))
+            .unwrap()
+            .obtain(&api, NOW)
+            .unwrap();
+        AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1")
+            .obtain(&api, NOW)
+            .unwrap();
+        let store = MemoryKeychain::new();
+        enrolled(&store, 7);
+        BoundKeypair::from_keychain(&store)
+            .unwrap()
+            .unwrap()
+            .obtain(&api, NOW)
+            .unwrap();
+
+        for route in [
+            "/api/v1/auth/oidc",
+            "/api/v1/auth/aws",
+            "/api/v1/auth/keypair",
+        ] {
+            assert_eq!(
+                mock.last("POST", route).json()["ttlSeconds"],
+                ttl,
+                "{route}"
+            );
+        }
+        assert!(
+            mock.last("POST", "/api/v1/auth/keypair/challenge").json()["ttlSeconds"].is_null(),
+            "the challenge mints nothing"
+        );
+    }
+}
+
+#[test]
+fn an_api_with_no_lifetime_leaves_it_to_the_server() {
+    let mock = Mock::new();
+    mock.on(
+        "POST",
+        "/api/v1/auth/oidc",
+        200,
+        &json!({ "credential": "pck_EXCHANGED" }).to_string(),
+    );
+    Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")]), None)
+        .unwrap()
+        .obtain(&api(&mock), NOW)
+        .unwrap();
+    assert!(mock.last("POST", "/api/v1/auth/oidc").json()["ttlSeconds"].is_null());
+}
+
 fn enrolled(store: &MemoryKeychain, generation: u64) -> Enrolled {
     let enrolled = Enrolled {
         credential_id: "pcm_FAKE".into(),

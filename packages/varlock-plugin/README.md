@@ -1,6 +1,6 @@
-# @penvhq/varlock-plugin
+# penv.cloud plugin for [varlock](https://varlock.dev)
 
-A [varlock](https://varlock.dev) plugin that loads secrets from [penv.cloud](https://penv.cloud). It reads the same `@penv=org/project` header and `penv(...)` addresses as the [penv CLI](https://github.com/penvhq/penvhq), so one `.env.schema` runs under both tools.
+Loads [penv.cloud](https://penv.cloud) values into [varlock](https://varlock.dev/guides/plugins/). It reads the `@penv=org/project` header and `penv(...)` addresses the [penv CLI](https://github.com/penvhq/penvhq) reads, so one `.env.schema` serves both.
 
 ## Install
 
@@ -8,10 +8,10 @@ A [varlock](https://varlock.dev) plugin that loads secrets from [penv.cloud](htt
 npm install -D @penvhq/varlock-plugin
 ```
 
-Or load it by name and version from the schema; varlock fetches it (see varlock's [plugins guide](https://varlock.dev/guides/plugins/)):
+Or let [varlock fetch it](https://varlock.dev/guides/plugins/):
 
 ```env-spec
-# @plugin(@penvhq/varlock-plugin@0.1.0)
+# @plugin(@penvhq/varlock-plugin@0.1.1)
 ```
 
 ## Setup
@@ -30,15 +30,15 @@ APP_ENV=development
 PENV_TOKEN=
 ```
 
-`PENV_TOKEN` is a penv.cloud machine token (`pck_…`) scoped to the environments the app reads. `penvToken` is sensitive and internal: varlock uses it and does not pass it to your app.
+`PENV_TOKEN` is a penv.cloud machine token (`pck_...`). The plugin declares the `penvToken` type sensitive and internal.
 
 | `@initPenv()` option | Default |
 |---|---|
-| `token` | none; required before any value is read |
-| `environment` | `development`. Pointing it at the `@currentEnv` item keeps them in step. Taken whole, so `feature/foo` is one environment |
-| `url` | `https://penv.cloud`. Any other root is used only when `PENV_URL` names the same root, so a changed schema cannot send the token elsewhere |
+| `token` | none; required |
+| `environment` | `development`; `feature/foo` is one environment |
+| `url` | `https://penv.cloud`; another root only when `PENV_URL` names it too |
 | `org`, `project` | from `@penv=` |
-| `cacheTtl` | no cache. `"5m"`, `"1h"`, `"1d"` or `"forever"` keeps each environment's values in varlock's local cache for that long |
+| `cacheTtl` | no cache; a TTL such as `"1h"` caches each environment |
 
 ## Usage
 
@@ -48,42 +48,42 @@ STRIPE_SECRET_KEY=penv(STRIPE_KEY)                    # another key
 PROD_DATABASE_URL=penv(production/DATABASE_URL)       # another environment
 BILLING_TOKEN=penv(billing/production/API_TOKEN)      # another project
 SENTRY_DSN=penv(acme-shared/observability/production/SENTRY_DSN)   # another org
-```
 
-An environment whose name holds a `/` cannot be written in a `penv(...)` address; name it in `@initPenv(environment=...)` or `penvBulk(...)`.
-
-Bulk-load an environment:
-
-```env-spec
+# every value of one environment: the current one, a named one, one with a /
 # @setValuesBulk(penvBulk())
 # @setValuesBulk(penvBulk(production))
 # @setValuesBulk(penvBulk("feature/foo"))
 ```
 
-## The same schema under the penv CLI
+An environment named with a `/` fits only `@initPenv(environment=...)` or `penvBulk(...)`.
+
+## Run under both tools
 
 ```bash
 varlock run -- npm run dev    # through this plugin
-penv run -- npm run dev       # native; penv ignores @plugin and @initPenv
+penv run -- npm run dev       # native
 ```
+
+[penv](https://penv.cloud/docs/cli) ignores `@plugin`, `@initPenv` and `@setValuesBulk`; [`penv check`](https://penv.cloud/docs/cli/check) lists each under `schemaWarnings`.
 
 ## Errors
 
 | Error | Fix |
 |---|---|
-| `penv.cloud rejected the token` | create a machine token and set `PENV_TOKEN` |
-| `the token may not read org/project/env` | give the machine identity that project and environment |
-| `org/project/env does not exist on penv.cloud` | check the names; `penv project ls` |
-| `KEY is not in org/project/env` | `penv set KEY --env env` |
-| `KEY has no stored value` | `penv set KEY --env env` |
-| `penv url … is not penv.cloud, so the token is not sent there` | set `PENV_URL` to that root, or drop `url=` |
+| `penv token is required` | pass `token=$PENV_TOKEN`; set `PENV_TOKEN` |
+| `penv.cloud rejected the token for org/project/env` | set `PENV_TOKEN` to a valid machine token |
+| `the token may not read org/project/env` | grant the machine identity that environment |
+| `org/project/env does not exist on penv.cloud` | check the three names |
+| `KEY is not in org/project/env`, `KEY has no stored value in org/project/env` | [`penv set KEY --env env`](https://penv.cloud/docs/cli/set) |
+| `penv(...) needs a project` | add `# @penv=org/project` |
+| `penv url URL is not penv.cloud, so the token is not sent there` | set `PENV_URL` to it, or drop `url=` |
 
-Requests are https only (`http://localhost` for tests), follow no redirects, time out after 15 seconds, and each environment is read once per load. No error prints a token or a value.
+Requests use https (http only on loopback), follow no redirects, time out after 15 seconds and read each environment once per load. No error prints a token or value.
 
 ## Develop
 
 ```bash
 npm install
-npm test          # builds, then runs the published varlock CLI against a fake penv.cloud
+npm test          # build, then varlock 1.20.0 against a fake penv.cloud
 npm run typecheck
 ```

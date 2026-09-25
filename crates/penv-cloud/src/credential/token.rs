@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::api::{Api, Bearer};
-use crate::credential::Obtain;
+use crate::credential::{Find, Obtain, Place};
 use crate::error::Result;
 use crate::keychain::{self, Keychain};
 
@@ -51,6 +51,21 @@ impl Obtain for Token {
 pub(crate) fn identity(token: &str) -> String {
     format!("token:{token}")
 }
+
+/// The variable before anything the host holds, then a person's login before an
+/// enrolled keypair.
+pub(super) const PLACES: &[Place] = &[
+    Place {
+        rank: 10,
+        find: Find::Env(|env, _org| Some(Box::new(Token::from_env(env)?))),
+    },
+    Place {
+        rank: 20,
+        find: Find::Held(|store, _lock_dir| {
+            Ok(Token::from_keychain(store)?.map(|token| Box::new(token) as Box<dyn Obtain>))
+        }),
+    },
+];
 
 #[cfg(test)]
 mod tests {

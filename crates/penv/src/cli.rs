@@ -8,50 +8,41 @@ pub enum Format {
     Text,
 }
 
-/// clap cannot group subcommands, so the grouping is written out. A test keeps
-/// every visible command on it.
-pub const HELP: &str = "{about}
+/// clap cannot group subcommands, so the groups are written out; each summary is
+/// the command's own `about`. A test keeps every visible command in a group.
+const GROUPS: &[(&str, &[&str])] = &[
+    (
+        "Everyday",
+        &[
+            "run", "ls", "why", "set", "unset", "reveal", "check", "scan", "encrypt", "decrypt",
+            "bundle",
+        ],
+    ),
+    ("Move values", &["pull", "push"]),
+    ("Set up a folder", &["init", "gen", "guard"]),
+    ("Cloud", &["login", "logout", "project", "env", "machine"]),
+    ("This tool", &["upgrade", "help"]),
+];
 
-{usage-heading} {usage}
+fn help_template() -> String {
+    use clap::Subcommand;
 
-Everyday
-  run        Run a command with your secrets loaded into it
-  ls         List your keys and show which ones have a value
-  why        Say where a key's value comes from, never the value
-  set        Save one value (typed hidden, never shown)
-  unset      Delete one value
-  reveal     Show one value; an AI agent needs your approval first
-  check      Find problems in .env.schema and missing values
-  scan       Find secret values committed to files
-  encrypt    Encrypt the secrets in your .env files
-  decrypt    Write the .env files' secrets back in plain text
-  bundle     Write an encrypted file of one environment's values for a deploy
-
-Move values
-  pull       Write a .env file from the cloud
-  push       Send your local .env to the cloud, then delete the file
-
-Set up a folder
-  init       Create .env.schema from your .env and keep .env out of git
-  gen        Write the typed file for your language (ts, py, go, rust, php, java, csharp)
-  guard      Write the rules that keep AI tools out of .env
-
-Cloud
-  login      Sign in
-  logout     Sign out on this machine
-  project    Your projects: ls, new, rename, rm
-  env        A project's environments: ls, new, rename, copy, rm
-  machine    Identities for servers and CI
-
-This tool
-  upgrade    Replace penv with the latest release
-  help       Show help for a command
-
-Options:
-{options}
-
-{after-help}
-";
+    let tree = Command::augment_subcommands(clap::Command::new("penv"));
+    let mut out = String::from("{about}\n\n{usage-heading} {usage}\n");
+    for (group, names) in GROUPS {
+        out.push_str(&format!("\n{group}\n"));
+        for name in *names {
+            let about = tree
+                .find_subcommand(name)
+                .and_then(|c| c.get_about())
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            out.push_str(&format!("  {name:<11}{about}\n"));
+        }
+    }
+    out.push_str("\nOptions:\n{options}\n\n{after-help}\n");
+    out
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -60,7 +51,7 @@ Options:
     about = "penv gets the right values into the right process at the right time.",
     after_help = "Penv Cloud, the secrets manager behind this CLI: https://penv.cloud",
     disable_help_subcommand = true,
-    help_template = HELP
+    help_template = help_template()
 )]
 pub struct Cli {
     /// Emit JSON on stdout, whatever stdout is attached to
@@ -104,7 +95,7 @@ impl Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Read .env, write .env.schema, and keep .env out of the repository
+    /// Create .env.schema from your .env and keep .env out of git
     Init {
         /// Overwrite an existing .env.schema
         #[arg(long)]
@@ -144,7 +135,7 @@ pub enum Command {
         command: Vec<String>,
     },
 
-    /// Move local values to the cloud and delete .env
+    /// Send your local .env to the cloud, then delete the file
     Push {
         /// The environment to write to
         #[arg(long)]
@@ -157,7 +148,7 @@ pub enum Command {
         prune: bool,
     },
 
-    /// Write a plain .env from the cloud
+    /// Write a .env file from the cloud
     Pull {
         /// The environment to read
         #[arg(long)]
@@ -167,7 +158,7 @@ pub enum Command {
         i_am_human: bool,
     },
 
-    /// Sign in through your browser; the login is kept in your system's password store
+    /// Sign in
     Login,
 
     /// Sign out on this machine
@@ -201,20 +192,20 @@ pub enum Command {
         env: Option<String>,
     },
 
-    /// Write one environment's values, encrypted, to .penv/<env>.bundle for a deploy
+    /// Write an encrypted file of one environment's values for a deploy
     Bundle {
         /// The environment to bundle
         #[arg(long)]
         env: Option<String>,
     },
 
-    /// Encrypt the sensitive values in the .env files beside .env.schema
+    /// Encrypt the secrets in your .env files
     Encrypt,
 
-    /// Write the encrypted values in the .env files back in plain text
+    /// Write the .env files' secrets back in plain text
     Decrypt,
 
-    /// Say where a key's value comes from and how penv treats it, never the value
+    /// Say where a key's value comes from, never the value
     Why {
         /// The key
         key: String,
@@ -223,7 +214,7 @@ pub enum Command {
         env: Option<String>,
     },
 
-    /// Report schema problems and missing values
+    /// Find problems in .env.schema and missing values
     Check {
         /// Check one key instead of all of them
         key: Option<String>,
@@ -265,7 +256,7 @@ pub enum Command {
         env: Option<String>,
     },
 
-    /// Write the harness rules that keep agents out of .env
+    /// Write the rules that keep AI tools out of .env
     Guard {
         /// The harnesses to write, instead of the installed ones
         harness: Vec<String>,
@@ -427,15 +418,25 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn every_visible_command_is_on_the_grouped_help() {
-        for command in Cli::command()
+    fn every_visible_command_is_in_one_group() {
+        let grouped: Vec<&str> = GROUPS
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+        let visible: Vec<String> = Cli::command()
             .get_subcommands()
             .filter(|c| !c.is_hide_set())
-        {
-            let listed = HELP
-                .lines()
-                .any(|line| line.trim_start().split(' ').next() == Some(command.get_name()));
-            assert!(listed, "{} is missing from HELP", command.get_name());
+            .map(|c| c.get_name().to_string())
+            .collect();
+        for name in &visible {
+            let times = grouped.iter().filter(|g| *g == name).count();
+            assert_eq!(times, 1, "{name} is in {times} help groups, not one");
+        }
+        for name in &grouped {
+            assert!(
+                visible.iter().any(|v| v == name),
+                "{name} is grouped but is no visible command"
+            );
         }
     }
 }

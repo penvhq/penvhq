@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use crate::api::{Api, Bearer};
-use crate::credential::{AwsIam, Obtain};
+use crate::credential::{AwsIam, Find, Obtain, Place};
 use crate::error::{CloudError, Result};
 
 pub const RELATIVE_URI_VAR: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
@@ -162,6 +162,12 @@ impl Obtain for AwsContainer {
         self.fetch()?.obtain(api, now)
     }
 }
+
+/// After web identity, the last place the AWS SDKs look.
+pub(super) const PLACES: &[Place] = &[Place {
+    rank: 70,
+    find: Find::Env(|env, org| Some(Box::new(AwsContainer::from_env(env)?.for_org(org)))),
+}];
 
 #[cfg(test)]
 mod tests {

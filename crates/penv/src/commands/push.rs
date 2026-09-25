@@ -1,6 +1,8 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use penv_cloud::provider::Capability;
+
 use penv_cloud::api::{Address, Bearer, CloudKey};
 use penv_schema::Schema;
 use serde_json::json;
@@ -59,6 +61,7 @@ pub fn run(
     let mut opened = None;
     let wanted = if asks {
         let cloud = Cloud::open(env, &detection)?;
+        cloud.require(Capability::Write)?;
         let bearer = cloud.bearer(env, schema.org.as_deref())?;
         let wanted = pick_environment(&cloud, &bearer, &schema, &schema_path, env_flag, env, true)?;
         opened = Some((cloud, bearer));
@@ -108,6 +111,7 @@ pub fn run(
         Some(pair) => pair,
         None => {
             let cloud = Cloud::open(env, &detection)?;
+            cloud.require(Capability::Write)?;
             let bearer = cloud.bearer(env, schema.org.as_deref())?;
             (cloud, bearer)
         }

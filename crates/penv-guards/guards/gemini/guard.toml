@@ -1,4 +1,5 @@
 name = "gemini"
+rank = 60
 description = "A Gemini CLI BeforeTool hook for every tool, the penv binary itself; Gemini blocks on exit 2 with the reason on stderr."
 scope = "project"
 detect = ["~/.gemini", ".gemini"]

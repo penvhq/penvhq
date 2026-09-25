@@ -5,32 +5,8 @@ use crate::guard::{Guard, Hook, parse};
 
 pub use penv_targets::folder::{Roots, Tree};
 
-macro_rules! built_in {
-    ($name:literal, [$($template:literal),* $(,)?]) => {
-        BuiltIn {
-            name: $name,
-            files: &[
-                ("guard.toml", include_str!(concat!("../guards/", $name, "/guard.toml"))),
-                $(($template, include_str!(concat!("../guards/", $name, "/", $template)))),*
-            ],
-        }
-    };
-}
-
-/// The harnesses penv knows, in the order the design ranks them.
-pub const BUILT_IN: &[BuiltIn] = &[
-    built_in!(
-        "claude-code",
-        ["settings.json.tmpl", "user-settings.json.tmpl"]
-    ),
-    built_in!("codex", ["config.toml.tmpl"]),
-    built_in!("cursor", ["cli.json.tmpl", "hooks.json.tmpl"]),
-    built_in!("amp", ["settings.json.tmpl"]),
-    built_in!("copilot", ["permissions-config.json.tmpl"]),
-    built_in!("gemini", ["settings.json.tmpl"]),
-    built_in!("cline", ["PreToolUse.tmpl"]),
-    built_in!("windsurf", ["hooks.json.tmpl"]),
-];
+/// Every folder under `guards/`, shipped inside the binary in name order.
+pub const BUILT_IN: &[BuiltIn] = &include!(concat!(env!("OUT_DIR"), "/built_in.rs"));
 
 /// Repo folder, then home folder, then built in. The first found wins, except
 /// that the repository may not replace a built-in guard: anyone who can commit
@@ -84,13 +60,15 @@ pub fn hook(tree: &dyn Tree, home: Option<&str>, name: &str) -> Option<Hook> {
     }
 }
 
-/// Every guard that can be loaded: the ranked built-in list first, then whatever
-/// the two `.penv` folders add.
+/// Every guard that can be loaded, by the rank its `guard.toml` gives it; the
+/// unranked follow, built in first, then whatever the two `.penv` folders add.
 pub fn available(tree: &dyn Tree, roots: &Roots) -> Vec<Guard> {
-    folder::names(tree, roots, "guards", BUILT_IN)
+    let mut guards: Vec<Guard> = folder::names(tree, roots, "guards", BUILT_IN)
         .iter()
         .filter_map(|name| load(tree, roots, name).ok())
-        .collect()
+        .collect();
+    guards.sort_by_key(|guard| guard.rank.unwrap_or(u32::MAX));
+    guards
 }
 
 #[cfg(test)]
@@ -144,22 +122,45 @@ template = "settings.json.tmpl"
     }
 
     #[test]
-    fn every_built_in_guard_is_a_folder_that_parses() {
+    fn every_built_in_guard_is_a_folder_that_parses_in_the_order_the_design_ranks() {
         let found = available(&Fake::default(), &roots());
+        assert_eq!(found.len(), BUILT_IN.len());
         let names: Vec<&str> = found.iter().map(|g| g.name.as_str()).collect();
+        let ranked = [
+            "claude-code",
+            "codex",
+            "cursor",
+            "amp",
+            "copilot",
+            "gemini",
+            "cline",
+            "windsurf",
+        ];
+        let kept: Vec<&str> = names.into_iter().filter(|n| ranked.contains(n)).collect();
+        assert_eq!(kept, ranked);
+    }
+
+    #[test]
+    fn each_built_in_guard_holds_a_rank_of_its_own_and_an_unranked_one_goes_last() {
+        let mut ranks: Vec<u32> = available(&Fake::default(), &roots())
+            .iter()
+            .map(|g| g.rank.unwrap_or_else(|| panic!("{} has no rank", g.name)))
+            .collect();
+        ranks.dedup();
         assert_eq!(
-            names,
-            [
-                "claude-code",
-                "codex",
-                "cursor",
-                "amp",
-                "copilot",
-                "gemini",
-                "cline",
-                "windsurf"
-            ]
+            ranks.len(),
+            BUILT_IN.len(),
+            "two built-in guards share a rank"
         );
+
+        let tree = Fake::default()
+            .with(
+                "/repo/.penv/guards/nano/guard.toml",
+                &CONFIG.replace("claude-code", "nano"),
+            )
+            .with("/repo/.penv/guards/nano/settings.json.tmpl", "{}");
+        let found = available(&tree, &roots());
+        assert_eq!(found.last().unwrap().name, "nano");
     }
 
     // A committed folder replacing a built-in guard could aim its writes or its

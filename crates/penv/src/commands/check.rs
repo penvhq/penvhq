@@ -114,7 +114,7 @@ pub fn run(
     for key in &resolved.redacted {
         if only.is_none_or(|name| name == key) {
             notes.push(format!(
-                "{key} in {environment} is write-only in penv-cloud: it has a value, withheld from this identity, so it was not validated"
+                "{key} in {environment} is write-only in penv.cloud: it has a value, withheld from this identity, so it was not validated"
             ));
         }
     }
@@ -409,6 +409,12 @@ fn rotation(
         (Some(org), Some(project)) => {
             let at = penv_cloud::api::Address::new(org, project, environment);
             match fetcher.keys(&at) {
+                Ok(_) if !fetcher.can(penv_cloud::provider::Capability::Audit) => {
+                    notes.push(format!(
+                        "@rotate was not checked: the provider of {at} records no write times"
+                    ));
+                    return Vec::new();
+                }
                 Ok(stored) => keys
                     .iter()
                     .map(|k| {
