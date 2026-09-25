@@ -1660,6 +1660,30 @@ fn an_ecs_or_eks_pod_identity_container_proves_itself_with_its_endpoint_credenti
 }
 
 #[test]
+fn an_agent_session_asks_for_a_five_minute_credential_and_a_person_for_fifteen() {
+    for (args, ttl) in [
+        (&["--agent", "run", "--", "true"][..], 300),
+        (&["run", "--", "true"][..], 900),
+    ] {
+        let mock = Mock::new();
+        aws_ready(&mock);
+        let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+        let output = without_token(&workspace, &mock)
+            .env("AWS_ACCESS_KEY_ID", "AKIAFAKE")
+            .env("AWS_SECRET_ACCESS_KEY", "secretFAKE")
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(
+            mock.last("POST", "/api/v1/auth/aws").json()["ttlSeconds"],
+            ttl,
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
 fn a_container_uri_to_an_arbitrary_host_is_never_called() {
     let mock = Mock::new();
     aws_ready(&mock);

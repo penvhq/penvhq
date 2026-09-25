@@ -298,3 +298,17 @@ fn the_agent_flag_is_as_good_as_a_marker() {
     assert_eq!(Policy::for_(&nobody, true), Policy::agent());
     assert_eq!(Policy::for_(&nobody, false), Policy::human());
 }
+
+#[test]
+fn a_credential_is_reused_only_inside_the_session_s_lifetime() {
+    let agent = Policy::agent();
+    assert!(agent.reuses(1_000, 1_000));
+    assert!(agent.reuses(1_000, 1_299));
+    assert!(!agent.reuses(1_000, 1_300), "five minutes, not fifteen");
+    assert!(
+        !agent.reuses(1_000, 999),
+        "minted after now is a clock that moved back"
+    );
+    assert!(Policy::human().reuses(1_000, 1_899));
+    assert!(!Policy::human().reuses(1_000, 1_900));
+}

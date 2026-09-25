@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- Every OIDC, AWS and keypair exchange asks for its credential's lifetime (`ttlSeconds`): 5 minutes under an agent, 15 otherwise, and an agent never reuses one past 5 minutes.
 - [`penv hook`](https://penv.cloud/docs/cli/hook) lets [`penv reveal`](https://penv.cloud/docs/cli/reveal) through: under an agent, reveal asks a person to approve before it prints anything. [`penv pull`](https://penv.cloud/docs/cli/pull) is still refused.
 - penv refuses a command the chosen provider does not declare (`unsupported`), naming the provider and the capability.
 - `install.ps1` verifies the release signature with OpenSSL 1.1.1 or newer from PATH, as `install.sh` does.

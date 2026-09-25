@@ -19,7 +19,7 @@ The HTTP contract `penv` speaks to provider `penv`: our hosted [penv.cloud](http
 | Prefix | Who | Obtained by | Lifetime on penv.cloud |
 |---|---|---|---|
 | `pcu_` | a person | [`penv login`](https://penv.cloud/docs/cli/login) (device code) | 30 days, extended on each use; revoked by [`penv logout`](https://penv.cloud/docs/cli/logout) |
-| `pck_` | a machine | a console token (`PENV_TOKEN`), or an OIDC, AWS or keypair exchange | exchanges: 15 minutes |
+| `pck_` | a machine | a console token (`PENV_TOKEN`), or an OIDC, AWS or keypair exchange | exchanges: 15 minutes, 5 under an agent (`ttlSeconds`) |
 
 ## Device-code login
 
@@ -33,15 +33,17 @@ The CLI polls every `interval` seconds; on any 429 it switches to the `retry-aft
 
 ## Machine exchanges
 
-All unauthenticated. Each answers `201 { credential: "pck_...", expiresAt }` (200 accepted).
+All unauthenticated. Each answers `201 { credential: "pck_...", expiresAt }` (200 accepted), where `expiresAt` is the real expiry.
+
+Every route that mints a `pck_` (`/auth/oidc`, `/auth/aws`, `/auth/keypair`) also takes an optional integer `ttlSeconds` in its body: the CLI sends 300 under a detected or declared agent and 900 otherwise. The server mints for the least of `ttlSeconds`, 900 and the trust's own cap; absent means 15 minutes; a non-integer or anything below 60 is `400`. The CLI never reuses a minted credential past its session's `ttlSeconds`, whatever `expiresAt` says.
 
 | Route | Body |
 |---|---|
-| `POST /auth/oidc` | `{ token }`; the CLI asks the CI platform for a token whose audience is the org slug |
-| `POST /auth/aws` | `{ method, url, body, headers }`: a SigV4-signed STS `GetCallerIdentity`, with `x-penv-cloud-org` among the signed headers |
+| `POST /auth/oidc` | `{ token, ttlSeconds }`; the CLI asks the CI platform for a token whose audience is the org slug |
+| `POST /auth/aws` | `{ method, url, body, headers, ttlSeconds }`: a SigV4-signed STS `GetCallerIdentity`, with `x-penv-cloud-org` among the signed headers |
 | `POST /auth/keypair/enroll` | `{ secret: "pce_...", publicKey }` (Ed25519 SPKI DER, base64) answers `{ credentialId, generation }` |
 | `POST /auth/keypair/challenge` | `{ credentialId }` answers `{ nonce }` |
-| `POST /auth/keypair` | `{ credentialId, nonce, generation, signature }` answers `{ credential, expiresAt, generation }` |
+| `POST /auth/keypair` | `{ credentialId, nonce, generation, signature, ttlSeconds }` answers `{ credential, expiresAt, generation }` |
 
 The keypair signs the UTF-8 bytes of `penv-cloud:keypair:v1\n{credentialId}\n{nonce}\n{generation}` (base64 signature) and persists the returned `generation` before using the credential. `409 cloned` means a second machine used the keypair; we revoke it.
 
