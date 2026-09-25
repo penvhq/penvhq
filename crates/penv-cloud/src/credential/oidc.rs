@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::api::{Api, Bearer};
-use crate::credential::Obtain;
+use crate::credential::{Find, Obtain, Place};
 use crate::error::Result;
 
 /// GitHub Actions mints one token per audience, from a URL it puts in the job.
@@ -79,6 +79,12 @@ impl Obtain for Oidc {
         }
     }
 }
+
+/// After what the host holds, before AWS. `org` is the audience.
+pub(super) const PLACES: &[Place] = &[Place {
+    rank: 40,
+    find: Find::Env(|env, org| Some(Box::new(Oidc::from_env(env, org)?))),
+}];
 
 #[cfg(test)]
 mod tests {

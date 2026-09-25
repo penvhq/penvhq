@@ -1,4 +1,5 @@
 name = "amp"
+rank = 40
 description = "An empty Amp guarded-files allowlist, so no file is exempt from the guard."
 scope = "project"
 detect = ["~/.amp", ".amp"]
