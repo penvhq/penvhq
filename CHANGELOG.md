@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0-beta.4
 
 ### Changed
 - Every OIDC, AWS and keypair exchange asks for its credential's lifetime (`ttlSeconds`): 5 minutes under an agent, 15 otherwise, and an agent never reuses one past 5 minutes.
