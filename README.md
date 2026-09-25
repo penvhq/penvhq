@@ -37,7 +37,7 @@ $ penv init
 $ penv run -- sh -c 'echo "key=$STRIPE_SECRET_KEY port=$PORT"'
 key=sk▒▒▒▒▒▒ port=3000
 $ penv
-version    1.0.0-beta.3
+version    1.0.0-beta.4
 location   local
 env        development
 next       penv check
