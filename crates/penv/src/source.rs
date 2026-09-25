@@ -546,7 +546,12 @@ pub fn values_with(
                     withheld = fetcher.redacted(&at)?;
                     overlay(&cloud, local)
                 }
-                Err(error) if error.code == "offline" && !local.is_empty() => {
+                // Design section 5: offline, only development runs on what is here.
+                Err(error)
+                    if error.code == "offline"
+                        && !local.is_empty()
+                        && environment == penv_cloud::cache::DEV_ENVIRONMENT =>
+                {
                     out.offline = true;
                     local
                 }

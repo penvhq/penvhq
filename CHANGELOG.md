@@ -10,6 +10,7 @@
 - `penv --help`, [`penv help`](https://penv.cloud/docs/cli/help) `--json` and the shell completions read one summary per command.
 - The `guard --check` claim for cloud mode says what we do: we record every value we hand out as a read.
 - Messages name penv.cloud, not penv-cloud.
+- Offline, only `development` falls back to the local value files; any other environment stops with `offline` (exit 5), as the offline message already said.
 - A target, guard or credential kind is added as a folder or file; a guard's rank and a credential kind's place in the lookup order are data in it.
 
 ## 1.0.0-beta.3
