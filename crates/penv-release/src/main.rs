@@ -34,7 +34,7 @@ fn main() -> ExitCode {
 fn keygen() -> Result<(), String> {
     let pair = signature::generate().map_err(|e| e.to_string())?;
     eprintln!(
-        "penv-release: line 1 is the private key for the {KEY_VAR} secret; line 2 is the public key for PUBLIC_KEYS in crates/penv/src/upgrade.rs and public_keys in install.sh"
+        "penv-release: line 1 is the private key for the {KEY_VAR} secret; line 2 is the public key for PUBLIC_KEYS in crates/penv/src/upgrade.rs, public_keys in install.sh and $publicKeys in install.ps1"
     );
     println!("{}", pair.private);
     println!("{}", pair.public);
