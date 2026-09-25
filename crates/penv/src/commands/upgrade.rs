@@ -93,7 +93,7 @@ pub fn run(out: &Output, channel: Option<&str>, check: bool) -> Result<Report, C
     // The manager owns this file whatever this build could verify, so its advice
     // comes before the key check that would otherwise send the user nowhere.
     let path = current_exe()?;
-    if let Some((name, command)) = manager(&path) {
+    if let Some((name, command)) = manager(&path, tag) {
         return Err(CliError::new(
             "managed_install",
             format!("penv here is managed by {name}; run {command}."),

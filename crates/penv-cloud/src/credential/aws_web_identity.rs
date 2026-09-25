@@ -8,7 +8,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::api::{Api, Bearer, checked_url, url_host};
-use crate::credential::{AwsIam, Obtain};
+use crate::credential::{AwsIam, Find, Obtain, Place};
 use crate::error::{CloudError, Result};
 
 pub const TOKEN_FILE_VAR: &str = "AWS_WEB_IDENTITY_TOKEN_FILE";
@@ -153,6 +153,12 @@ fn form(value: &str) -> String {
         })
         .collect()
 }
+
+/// After keys in the environment, before the container endpoint.
+pub(super) const PLACES: &[Place] = &[Place {
+    rank: 60,
+    find: Find::Env(|env, org| Some(Box::new(AwsWebIdentity::from_env(env)?.for_org(org)))),
+}];
 
 #[cfg(test)]
 mod tests {

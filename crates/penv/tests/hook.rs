@@ -2,7 +2,7 @@
 //! whole policy is readable here.
 
 use penv::commands::hook::{
-    DUMPS_ENV, Decision, READS_ENV, REVEALS_VALUE, Request, decide, extract,
+    DUMPS_ENV, Decision, PULLS_VALUES, READS_ENV, Request, decide, extract,
 };
 use penv_guards::Payload;
 
@@ -181,7 +181,7 @@ fn a_shell_running_something_else_is_decided_on_what_it_runs() {
         ("cmd /c type .env", READS_ENV),
         ("cmd.exe /C \"type .env.local\"", READS_ENV),
         ("/bin/sh -c \"cat .env\"", READS_ENV),
-        ("zsh -c \"penv reveal STRIPE_SECRET_KEY\"", REVEALS_VALUE),
+        ("zsh -c \"penv pull --env production\"", PULLS_VALUES),
         ("bash -c \"sh -c printenv\"", DUMPS_ENV),
     ] {
         denied(command, reason);
@@ -215,16 +215,21 @@ fn running_a_program_with_the_environment_is_not_dumping_it() {
 }
 
 #[test]
-fn the_two_commands_that_print_values_are_refused() {
+fn pull_is_refused_and_reveal_goes_to_its_approval() {
     for command in [
-        "penv reveal STRIPE_SECRET_KEY",
         "penv pull",
         "penv --json pull",
-        "/usr/local/bin/penv reveal PORT",
+        "/usr/local/bin/penv pull --env staging",
     ] {
-        denied(command, REVEALS_VALUE);
+        denied(command, PULLS_VALUES);
     }
-    allowed("penv push");
+    for command in [
+        "penv reveal STRIPE_SECRET_KEY",
+        "/usr/local/bin/penv reveal PORT --approval apr_123",
+        "penv push",
+    ] {
+        allowed(command);
+    }
 }
 
 #[test]
@@ -320,7 +325,7 @@ fn an_undocumented_payload_is_read_for_what_it_has() {
 
 /// The matcher reads a command as text. These get through, and the design says
 /// so: detection changes defaults and friction, it is never the last line of
-/// defence. The sandbox deny rules and short-lived cloud values are.
+/// defence. The sandbox deny rules and the audited cloud reads are.
 #[test]
 fn the_known_evasions_are_known() {
     for command in [

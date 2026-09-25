@@ -9,8 +9,7 @@ use crate::output::Report;
 
 pub const READS_ENV: &str = "penv blocks reads of .env files. Run penv ls for the key names and penv check for what is missing; .env.schema is readable.";
 pub const DUMPS_ENV: &str = "penv blocks dumping the environment, because it prints every value. Run penv ls for the key names.";
-pub const REVEALS_VALUE: &str =
-    "penv reveal and penv pull print values, so they are refused in an agent session.";
+pub const PULLS_VALUES: &str = "penv pull writes every value to a file, so it is refused in an agent session. Run penv run to give a command its values; penv reveal KEY asks a person first.";
 
 /// What a harness handed the hook, reduced to the two things that matter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -307,8 +306,8 @@ fn refuse(segment: &str, depth: u8) -> Option<&'static str> {
     if dumps_environment(&words) {
         return Some(DUMPS_ENV);
     }
-    if reveals_a_value(&words) {
-        return Some(REVEALS_VALUE);
+    if pulls_values(&words) {
+        return Some(PULLS_VALUES);
     }
     if depth < DEPTH
         && let Some(inner) = inner_command(&words)
@@ -418,7 +417,8 @@ fn inline_snippet_prints_the_environment(words: &[String]) -> bool {
             .any(|w| w.contains("process.env") || w.contains("os.environ"))
 }
 
-fn reveals_a_value(words: &[String]) -> bool {
+// `penv reveal` is let through: under an agent it asks a person before it prints anything.
+fn pulls_values(words: &[String]) -> bool {
     let rest = skip_assignments(words);
     let Some(first) = rest.first().map(|w| leaf(w)) else {
         return false;
@@ -429,7 +429,7 @@ fn reveals_a_value(words: &[String]) -> bool {
     rest[1..]
         .iter()
         .find(|w| !w.starts_with('-'))
-        .is_some_and(|w| w == "reveal" || w == "pull")
+        .is_some_and(|w| w == "pull")
 }
 
 fn skip_assignments(words: &[String]) -> &[String] {

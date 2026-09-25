@@ -26,6 +26,9 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
+      # Credential kinds are declared by build.rs, so cargo fmt does not reach them.
+      - run: rustfmt --edition 2024 --check crates/penv-cloud/src/credential/*.rs
+        if: runner.os != 'Windows'
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo test --workspace
 

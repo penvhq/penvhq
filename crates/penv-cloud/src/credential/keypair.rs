@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{Api, Bearer};
 use crate::b64;
-use crate::credential::Obtain;
+use crate::credential::{Find, Obtain, Place};
 use crate::error::{CloudError, Result};
 use crate::keychain::{self, Keychain};
 
@@ -208,6 +208,15 @@ pub fn public_key_der(key: &SigningKey) -> Vec<u8> {
     der.extend_from_slice(&key.verifying_key().to_bytes());
     der
 }
+
+/// After a person's login, before anything the platform hands the process.
+pub(super) const PLACES: &[Place] = &[Place {
+    rank: 30,
+    find: Find::Held(|store, lock_dir| {
+        Ok(BoundKeypair::from_keychain(store)?
+            .map(|keypair| Box::new(keypair.locked_in(lock_dir)) as Box<dyn Obtain>))
+    }),
+}];
 
 #[cfg(test)]
 mod tests {

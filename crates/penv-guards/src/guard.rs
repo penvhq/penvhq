@@ -106,6 +106,9 @@ impl Hook {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Guard {
     pub name: String,
+    /// Where the harness stands in lists and pickers, lowest first; unranked
+    /// guards follow the ranked ones.
+    pub rank: Option<u32>,
     pub description: Option<String>,
     pub scope: Scope,
     /// Paths relative to the repository, or `~`-prefixed for the home directory.
@@ -133,6 +136,8 @@ impl Guard {
 #[serde(deny_unknown_fields)]
 struct File {
     name: String,
+    #[serde(default)]
+    rank: Option<u32>,
     #[serde(default)]
     description: Option<String>,
     #[serde(default = "project")]
@@ -233,6 +238,7 @@ pub fn parse(
 
     Ok(Guard {
         name: file.name,
+        rank: file.rank,
         description: file.description,
         scope: file.scope,
         detect: file.detect,

@@ -5,7 +5,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::api::{Api, Bearer, SignedRequest};
-use crate::credential::Obtain;
+use crate::credential::{Find, Obtain, Place};
 use crate::error::Result;
 
 pub const ACCESS_KEY_VAR: &str = "AWS_ACCESS_KEY_ID";
@@ -211,6 +211,13 @@ fn civil(days: i64) -> (i64, u32, u32) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
+
+/// The AWS SDKs' own order: keys in the environment, web identity (EKS IRSA),
+/// then the container endpoint (ECS task roles, EKS Pod Identity).
+pub(super) const PLACES: &[Place] = &[Place {
+    rank: 50,
+    find: Find::Env(|env, org| Some(Box::new(AwsIam::from_env(env)?.for_org(org)))),
+}];
 
 #[cfg(test)]
 mod tests {

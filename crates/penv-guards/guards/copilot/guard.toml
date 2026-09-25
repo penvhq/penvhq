@@ -1,4 +1,5 @@
 name = "copilot"
+rank = 50
 description = "Copilot CLI read denials for env files. The shape of this config is unverified against a published schema; treat it as best effort until Copilot documents one."
 scope = "project"
 detect = ["~/.copilot", ".github/copilot"]

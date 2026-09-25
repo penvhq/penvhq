@@ -26,7 +26,7 @@ pub struct Dotenv {
     /// Every assignment as (key, first line, last line), repeats included.
     pub assignments: Vec<(String, u32, u32)>,
     /// Keys a `# penv:redacted KEY` line names, in file order, each once:
-    /// present in penv-cloud and withheld from whoever pulled the file.
+    /// present in penv.cloud and withheld from whoever pulled the file.
     pub redacted: Vec<String>,
 }
 

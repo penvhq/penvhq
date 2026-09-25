@@ -17,7 +17,7 @@ try {
   process.stderr.write(
     PUBLISHED.includes(platform)
       ? `penv: ${pkg} is missing, and npm skips an optional dependency it could not install without saying so. ` +
-          `Reinstall with npm i -g @penvhq/cli, or install without npm: curl -fsSL https://penv.cloud/install | sh, ` +
+          `Reinstall with npm i -g @penvhq/cli@${require("../package.json").version}, or install without npm: curl -fsSL https://penv.cloud/install | sh, ` +
           `or on Windows irm https://penv.cloud/install.ps1 | iex\n`
       : `penv: there is no penv build for ${platform}. The releases cover ${PUBLISHED.join(", ")}.\n`,
   );

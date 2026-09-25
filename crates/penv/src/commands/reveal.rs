@@ -1,6 +1,8 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use penv_cloud::provider::Capability;
+
 use penv_agent::Policy;
 use penv_cloud::api::{Address, Approval, Bearer, Fetched, Requested, host_name};
 use penv_cloud::error::CloudError;
@@ -29,6 +31,10 @@ pub fn run(
     let (schema_path, schema) = super::load_schema(cwd)?;
     let at = address(&schema, &environment(env_flag, env, &schema, &schema_path))?;
     let cloud = Cloud::open(env, &detection)?;
+    cloud.require(Capability::Read)?;
+    if approval.is_some() || !policy.reveal_allowed {
+        cloud.require(Capability::Approve)?;
+    }
     let bearer = cloud.bearer(env, schema.org.as_deref())?;
 
     match approval.map(str::trim).filter(|id| !id.is_empty()) {
