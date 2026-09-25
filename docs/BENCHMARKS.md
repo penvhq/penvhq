@@ -1,6 +1,6 @@
-# Benchmarks: penv and varlock
+# Benchmarks
 
-penv and [varlock](https://varlock.dev) run on the same project files, and the generated env file runs in the runtimes and builds it targets. Both scripts are in [`bench/`](../bench) and run on your machine:
+Both scripts are in [`bench/`](../bench) and run penv and [varlock](https://varlock.dev) on the same files, on your machine:
 
 ```bash
 bench/run.sh                  # penv vs varlock: speed, memory, behaviour
@@ -8,11 +8,18 @@ bench/runtimes.sh             # generated env in Node, Bun, Deno, workerd
 bench/runtimes.sh --builds    # plus Next.js, Vite and Parcel builds, checked in headless Chromium
 ```
 
-`PENV=<path>` picks the binary (default: `penv` on PATH). varlock comes from npm (`VARLOCK_VERSION`, default `1.20.0`), or from the binary `VARLOCK=<path>` names, such as its standalone install (`curl -sSfL https://varlock.dev/install.sh | sh`). `RUNS` sets timing iterations (default 30). `run.sh` writes `bench-results.json`.
+| Variable | Default | Sets |
+|---|---|---|
+| `PENV` | `penv` on PATH | the penv binary |
+| `VARLOCK_VERSION` | `1.20.0` | the varlock npm version |
+| `VARLOCK` | none | a varlock binary instead, such as the [standalone install](https://varlock.dev/install.sh) |
+| `RUNS` | `30` | timing iterations |
+
+`run.sh` writes `bench-results.json`.
 
 ## Results
 
-penv 1.0.0-beta.1 release build, varlock 1.20.0 from npm and as its standalone binary, Linux x86_64, Node 22.22, median of 30 runs.
+penv 1.0.0-beta.2 release build, [varlock](https://varlock.dev) 1.20.0 from npm and as its standalone binary, Linux x86_64, Node 22.22, median of 30 runs.
 
 ### Speed and memory
 
@@ -24,9 +31,7 @@ penv 1.0.0-beta.1 release build, varlock 1.20.0 from npm and as its standalone b
 | Peak memory, `run -- true` | 11 MB | 70 MB | 94 MB |
 | Binary | 12.7 MB, static (x86_64 Linux) | 105 MB, bundles Node.js | the npm package on Node.js |
 
-`penv check` also reads the repository's source for undeclared variables since 1.0.0-beta.2, which is the extra 2 ms over beta.1's 4.2 ms.
-
-Absolute times vary by machine; the ratio is what `run.sh` reproduces.
+Since 1.0.0-beta.2, [`penv check`](https://penv.cloud/docs/cli/check) also reads your source for undeclared variables: 2 ms over beta.1's 4.2 ms. Absolute times vary by machine; `run.sh` reproduces the ratio.
 
 ### Behaviour
 
@@ -41,11 +46,11 @@ Absolute times vary by machine; the ratio is what `run.sh` reproduces.
 | Python server returning a secret in a response (`run -- python3 server.py`) | masked in the response bytes | sent unmasked |
 | `.env` holding a secret, not in `.gitignore` | `penv check` fails, exit 3 | `varlock load` passes |
 
-Each row is a block in [`bench/run.sh`](../bench/run.sh) that builds the project from scratch and runs both tools on it.
+Each row is a block in [`bench/run.sh`](../bench/run.sh) that builds a fresh project and runs both tools: [`penv scan`](https://penv.cloud/docs/cli/scan), [`penv run`](https://penv.cloud/docs/cli/run).
 
 ### Generated env file across runtimes and builds
 
-`penv gen ts` writes one `env` for server and client code. Public keys are read by literal name, which bundlers inline; every other key is read by computed name, which no bundler inlines. Results from `bench/runtimes.sh --builds`:
+[`penv gen ts`](https://penv.cloud/docs/cli/gen) writes one `env` for server and client. Public keys are read by literal name (bundlers inline them), every other key by computed name (none do). From `bench/runtimes.sh --builds`:
 
 | Runtime or build | Secret on the server | Secret in the client build | Public key in the client |
 |---|---|---|---|
@@ -58,13 +63,10 @@ Each row is a block in [`bench/run.sh`](../bench/run.sh) that builds the project
 | Vite 8: SSR build, client build | read in SSR | absent from `dist`; throws in Chromium | inlined |
 | Parcel 2.16 | n/a | absent from `dist` (a control `process.env.PORT` was inlined, so Parcel does inline literals); throws in Chromium | inlined |
 
-A bundler configured to inline the whole `process.env` object (`define: { "process.env": ... }`) copies every value into the bundle, whatever the generated file does. `penv run` reads the build output afterwards and fails the build when a secret is in it.
+A bundler that inlines the whole `process.env` (`define: { "process.env": ... }`) copies every value; `penv run` then scans the build output and fails on a secret.
 
-## Where varlock is weaker, and why
+## Differences
 
-- **Startup.** Every varlock command starts a Node.js runtime, bundled into its standalone binary or the one on the machine, and loads its dependency tree. That costs 44× (standalone) to 60× (npm) the time and 6× to 8× the memory of penv on each `run`, and it repeats for every script a `package.json` chains.
-- **Values built from secrets.** varlock warns when a non-sensitive value contains a sensitive one, then loads it. With a public prefix, the build inlines it into client code. penv treats a value built from a secret as a secret and refuses a public key built from one.
-- **No value transforms.** A password holding `@`, `:` or `/` breaks a connection URL, and varlock has no filter to encode it. penv has `urlencode`, `base64`, `lower`, `upper` and `trim`.
-- **Encoded leaks.** `varlock scan` matches the plain value only. `penv scan` also matches base64, hex and URL-encoded forms.
-- **Masking stops at the terminal.** Under `varlock run`, output is redacted, but a server's responses are not. penv's preload masks responses in Node.js, Bun, Deno and Python at the socket, keeping byte lengths so `Content-Length` stays valid.
-- **Committed secrets.** Nothing in varlock checks that the file holding a secret is gitignored. `penv check` asks git and fails.
+- **Startup.** Every [varlock](https://varlock.dev) command starts Node.js and loads its dependencies: 41× to 68× penv's time and 6× to 8.5× its memory per `run`.
+- **Encoded leaks.** `penv scan` matches base64, hex and URL-encoded forms; [`varlock scan`](https://varlock.dev) the plain value only.
+- **Masking.** penv's preload masks responses in Node.js, Bun, Deno and Python, keeping byte lengths so `Content-Length` stays valid.

@@ -168,7 +168,7 @@ penv check                  # in a varlock project, unchanged
 
 penv reads a [varlock](https://varlock.dev) schema and its `.env.*` files. It ignores varlock-only decorators such as `@plugin` with a note, and refuses `exec()` and plugin functions by name. A schema using `@assert`, `@rotate`, `match`, `random` or filters no longer loads in [varlock](https://varlock.dev); `penv check` says so.
 
-Against [varlock](https://varlock.dev) 1.20.0 (penv 1.0.0-beta.1), `penv run -- true` takes 5.7 ms and 11 MB where the varlock standalone binary takes 234 ms and 70 MB: [docs/BENCHMARKS.md](./docs/BENCHMARKS.md). To read penv.cloud from [varlock](https://varlock.dev): [packages/varlock-plugin](./packages/varlock-plugin/README.md).
+Against [varlock](https://varlock.dev) 1.20.0 (penv 1.0.0-beta.2), `penv run -- true` takes 5.7 ms and 11 MB where the varlock standalone binary takes 234 ms and 70 MB: [docs/BENCHMARKS.md](./docs/BENCHMARKS.md). To read penv.cloud from [varlock](https://varlock.dev): [packages/varlock-plugin](./packages/varlock-plugin/README.md).
 
 ## Commands
 
