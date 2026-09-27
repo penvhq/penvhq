@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0-rc.1
+
+The release candidate for 1.0.0. It behaves as 1.0.0-beta.4 does; until 1.0.0 only fixes land.
+
+### Added
+- **Stability.** What a 1.0 minor or patch release keeps as it is (command names, flags, exit codes, JSON output, the `.env.schema` grammar, `.penv/config.toml` keys) and what it may change: [docs/Design.md §13](./docs/Design.md#13-stability) and the README.
+
+### Changed
+- The Copilot CLI guard says it is experimental wherever `init` and `check` describe it: Copilot publishes no schema for its permissions config, so the guard sits outside the stability promise.
+- `sslmode=verify-ca` on a sealed Postgres URL is documented as what it already does: it checks the server's certificate and its host name, as `verify-full` does.
+
+### Fixed
+- `/install` and a plain `penv upgrade` gave 1.0.0-beta.3 after beta.4 shipped: the release workflow counted the old `@penvhq/*@0.x` package releases as plain penv releases. Only `v` tags count now, so they give this release.
+
 ## 1.0.0-beta.4
 
 ### Changed

@@ -37,7 +37,7 @@ $ penv init
 $ penv run -- sh -c 'echo "key=$STRIPE_SECRET_KEY port=$PORT"'
 key=sk▒▒▒▒▒▒ port=3000
 $ penv
-version    1.0.0-beta.4
+version    1.0.0-rc.1
 location   local
 env        development
 next       penv check
@@ -169,6 +169,16 @@ penv check                  # in a varlock project, unchanged
 penv reads a [varlock](https://varlock.dev) schema and its `.env.*` files. It ignores varlock-only decorators such as `@plugin` with a note, and refuses `exec()` and plugin functions by name. `penv check` names the penv-only features a schema uses: `@rotate`, `@assert`, `match()`, `random()`, `penv()`, filters.
 
 Against [varlock](https://varlock.dev) 1.20.0 (penv 1.0.0-beta.2), `penv run -- true` takes 5.7 ms and 11 MB where the varlock standalone binary takes 234 ms and 70 MB: [docs/BENCHMARKS.md](./docs/BENCHMARKS.md). To read penv.cloud from [varlock](https://varlock.dev): [packages/varlock-plugin](./packages/varlock-plugin/README.md).
+
+## Stability
+
+| From 1.0.0, a minor or patch release keeps | It may change |
+|---|---|
+| Command names, flags and exit codes | Text meant for a person: scripts read the JSON |
+| JSON output and the `penv help --json` manifest | The [Copilot CLI guard](https://penv.cloud/docs/guides/keep-agents-out-of-env), marked experimental |
+| The `.env.schema` grammar and `.penv/config.toml` keys | `hook` and `lsp`, whose other side is a harness or an editor |
+
+`1.0.0-rc.1` is 1.0.0 with its behaviour frozen: only fixes land before 1.0.0. Full list: [docs/Design.md §13](./docs/Design.md#13-stability).
 
 ## Commands
 

@@ -182,8 +182,10 @@ jobs:
           set -euo pipefail
           case "$GITHUB_REF_NAME" in
             *-*)
+              # Only penv's own v-tags count: the old @penvhq/*@0.x package tags carry no
+              # "-" and are not penv releases.
               plain=$(gh release list --exclude-drafts --limit 100 --json tagName \
-                --jq '[.[].tagName | select(contains("-") | not)] | length')
+                --jq '[.[].tagName | select(test("^v[0-9]") and (contains("-") | not))] | length')
               if [ "$plain" -gt 0 ]; then
                 gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
               else

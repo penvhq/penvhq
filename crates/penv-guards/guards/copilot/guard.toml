@@ -1,6 +1,6 @@
 name = "copilot"
 rank = 50
-description = "Copilot CLI read denials for env files. The shape of this config is unverified against a published schema; treat it as best effort until Copilot documents one."
+description = "Experimental: Copilot CLI read denials for env files. Copilot publishes no schema for this config, so its shape is unverified and outside the 1.0 stability promise."
 scope = "project"
 detect = ["~/.copilot", ".github/copilot"]
 exe = ["copilot"]
