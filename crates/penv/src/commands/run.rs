@@ -69,6 +69,20 @@ pub fn run(
     let agent = detection.is_agent() || agent_flag;
 
     let environment = source::environment(environment, process_env, &schema, dir);
+    // A provider's value never sets a variable that steers the command. The
+    // declared keys are refused here, before anything is fetched or decrypted.
+    let from_provider = schema.org.is_some()
+        || process_env
+            .get(crate::bundle::KEY_VAR)
+            .is_some_and(|v| !v.is_empty());
+    if from_provider {
+        crate::reserved::check(
+            schema
+                .keys
+                .iter()
+                .map(|k| (k.name.clone(), k.name.as_str())),
+        )?;
+    }
     let mut fetcher = cloud::Fetcher::new(process_env, &detection);
     let resolved = source::values_with(
         &schema,
@@ -78,6 +92,25 @@ pub fn run(
         &mut fetcher,
         source::Generate::Yes,
     )?;
+    // Keys the provider holds and the schema does not declare are known only now.
+    if let Some(at) = &resolved.cloud {
+        crate::reserved::check(
+            fetcher
+                .read_at(at)
+                .iter()
+                .map(|key| (key.address(), key.name.as_str())),
+        )?;
+    }
+    if let Some(bundle) = &resolved.bundle {
+        crate::reserved::check(
+            resolved
+                .layers
+                .origin
+                .iter()
+                .filter(|(_, from)| *from == bundle)
+                .map(|(name, _)| (name.clone(), name.as_str())),
+        )?;
+    }
     if let Some(refused) = source::withheld(&resolved) {
         return Err(refused);
     }
@@ -320,6 +353,13 @@ fn spawn(
             .arg(&argv[1])
             .args(&injection.deno_args)
             .args(&argv[2..]);
+    }
+    // A runner's tokens and step files stay with penv; the values go on after,
+    // so a value file may still name one.
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(crate::reserved::scrubbed) {
+            command.env_remove(name);
+        }
     }
     command.env("PENV_ENV", environment);
     for (key, value) in values {

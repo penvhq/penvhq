@@ -57,7 +57,9 @@ pub(crate) fn identity(token: &str) -> String {
 pub(super) const PLACES: &[Place] = &[
     Place {
         rank: 10,
-        find: Find::Env(|env, _org| Some(Box::new(Token::from_env(env)?))),
+        find: Find::Env(|env, _org| {
+            Ok(Token::from_env(env).map(|token| Box::new(token) as Box<dyn Obtain>))
+        }),
     },
     Place {
         rank: 20,

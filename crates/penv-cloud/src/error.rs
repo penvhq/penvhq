@@ -3,12 +3,25 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, CloudError>;
 
 /// The server's refusal as one shape: the status, the `error` code its body
-/// carried, and the seconds it asked us to wait.
+/// carried, the seconds it asked us to wait, the `message` it wrote for a
+/// person and the `detail` naming what it refused, where the route promises
+/// text that is safe to show, and the machine login it answered, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiError {
     pub status: u16,
     pub code: String,
     pub retry_after: Option<u64>,
+    pub message: Option<String>,
+    pub detail: Option<String>,
+    pub exchange: Option<Exchange>,
+}
+
+/// The machine logins: a platform token, a signed AWS request, a keypair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exchange {
+    Oidc,
+    Aws,
+    Keypair,
 }
 
 impl ApiError {
@@ -17,11 +30,29 @@ impl ApiError {
             status,
             code: code.into(),
             retry_after: None,
+            message: None,
+            detail: None,
+            exchange: None,
         }
+    }
+
+    pub fn during(mut self, exchange: Exchange) -> ApiError {
+        self.exchange = Some(exchange);
+        self
     }
 
     pub fn after(mut self, seconds: Option<u64>) -> ApiError {
         self.retry_after = seconds;
+        self
+    }
+
+    pub fn saying(mut self, message: Option<&str>) -> ApiError {
+        self.message = message.map(printable).filter(|m| !m.is_empty());
+        self
+    }
+
+    pub fn detailing(mut self, detail: Option<&str>) -> ApiError {
+        self.detail = detail.map(printable).filter(|d| !d.is_empty());
         self
     }
 
@@ -37,6 +68,27 @@ impl std::fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+/// The longest server text penv repeats.
+const MAX_SHOWN: usize = 500;
+
+/// Server text as a terminal may show it: no control or bidi characters, so it
+/// cannot move the cursor or reorder what surrounds it, and no longer than
+/// [`MAX_SHOWN`] characters.
+pub fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|c| !c.is_control() && !is_format(*c))
+        .take(MAX_SHOWN)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Bidi controls and zero-width characters.
+pub fn is_format(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CloudError {
@@ -71,6 +123,9 @@ pub enum CloudError {
     #[error("the cache could not be {0}")]
     Cache(String),
 
+    #[error("{0} is a workspace slug, and a CI or AWS login names its workspace by id")]
+    NotWorkspaceId(String),
+
     #[error("no credential")]
     NoCredential,
 
@@ -101,5 +156,20 @@ impl CloudError {
 
     pub fn is(&self, code: &str) -> bool {
         self.code() == Some(code)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_text_cannot_steer_the_terminal() {
+        assert_eq!(
+            printable("Use the \x1b[31mid\x1b[0m\ninstead\u{202E}.\u{200B}"),
+            "Use the [31mid[0m instead."
+        );
+        assert_eq!(printable(&"a".repeat(900)).len(), MAX_SHOWN);
+        assert_eq!(ApiError::new(400, "x").saying(Some(" \n ")).message, None);
     }
 }

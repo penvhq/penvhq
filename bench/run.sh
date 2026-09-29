@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # penv vs varlock on the same files: speed, memory, and behaviour.
 #
-#   bench/run.sh                     # penv from PATH, varlock 1.20.0 from npm
+#   bench/run.sh                     # penv from PATH, varlock 1.21.0 from npm
 #   PENV=./target/release/penv bench/run.sh
 #   VARLOCK_VERSION=latest RUNS=50 bench/run.sh
 #   VARLOCK=~/.config/varlock/bin/varlock bench/run.sh   # varlock's standalone binary
@@ -10,13 +10,12 @@
 # in the current directory. Every secret below is fake.
 set -uo pipefail
 
+. "$(dirname "$0")/lib.sh"
+
 PENV=${PENV:-$(command -v penv || true)}
-VARLOCK_VERSION=${VARLOCK_VERSION:-1.20.0}
+VARLOCK_VERSION=${VARLOCK_VERSION:-1.21.0}
 RUNS=${RUNS:-30}
 OUT=${OUT:-$PWD/bench-results.json}
-SECRET=sk_live_BENCH_4242424242424242
-
-die() { echo "bench: $*" >&2; exit 1; }
 [ -x "$PENV" ] || die "no penv binary: install it or set PENV=<path>"
 # Absolute, because every project below runs from its own directory.
 case $PENV in /*) ;; *) PENV=$PWD/$PENV ;; esac
@@ -39,71 +38,11 @@ echo "varlock: $("$VARLOCK" --version)"
 echo "machine: $(uname -sm), node $(node --version), $RUNS runs per timing"
 echo
 
-# A project both tools load unchanged.
-project() {
-  local dir="$WORK/$1"; mkdir -p "$dir"; cd "$dir" || exit 1
-  git init -q . 2>/dev/null
-  printf '.env\n.env.*\n!.env.schema\n' > .gitignore
-}
-common_schema() {
-  cat > .env.schema <<'EOF'
-# @currentEnv=$APP_ENV
-# ---
-
-# @type=enum(development, production) @sensitive=false
-APP_ENV=development
-
-# @type=port @sensitive=false
-PORT=3000
-
-# @type=string @sensitive
-DB_PASSWORD=
-
-# @type=string @sensitive
-STRIPE_SECRET_KEY=
-
-# @type=url @sensitive=false
-API_URL=https://api.example.com
-EOF
-  printf 'DB_PASSWORD=hunter2hunter2\nSTRIPE_SECRET_KEY=%s\n' "$SECRET" > .env
-  mkdir -p src && for i in $(seq 1 40); do echo "export const v$i = $i;" > "src/m$i.js"; done
-}
-
-# Median wall time in ms of a command, RUNS times, measured by node.
-median_ms() {
-  node -e '
-    const { spawnSync } = require("child_process");
-    const [runs, ...cmd] = process.argv.slice(1);
-    const times = [];
-    for (let i = 0; i < Number(runs); i++) {
-      const t = process.hrtime.bigint();
-      const ran = spawnSync(cmd[0], cmd.slice(1), { stdio: "ignore" });
-      // A command that never started would be timed as the fastest run.
-      if (ran.error) { console.error(`bench: ${cmd[0]}: ${ran.error.message}`); process.exit(1); }
-      times.push(Number(process.hrtime.bigint() - t) / 1e6);
-    }
-    times.sort((a, b) => a - b);
-    console.log(times[Math.floor(times.length / 2)].toFixed(1));
-  ' "$RUNS" "$@"
-}
-
-# Peak resident memory in MB of the command and its children, from getrusage.
-peak_mb() {
-  python3 - "$@" <<'PY'
-import resource, subprocess, sys
-subprocess.run(sys.argv[1:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-print(round(peak / (1048576 if sys.platform == "darwin" else 1024)))
-PY
-}
-
 RESULTS=()
 row() { # name, penv, varlock, penv_wins(yes/no/-)
   printf '| %-46s | %-24s | %-30s |\n' "$1" "$2" "$3"
   RESULTS+=("$(printf '{"check":%s,"penv":%s,"varlock":%s}' \
-    "$(node -p 'JSON.stringify(process.argv[1])' "$1")" \
-    "$(node -p 'JSON.stringify(process.argv[1])' "$2")" \
-    "$(node -p 'JSON.stringify(process.argv[1])' "$3")")")
+    "$(json "$1")" "$(json "$2")" "$(json "$3")")")
 }
 
 echo "| Check                                          | penv                     | varlock                        |"
@@ -201,9 +140,7 @@ row ".env with a secret, not gitignored" "$([ $p -ne 0 ] && echo "check fails (e
   "$([ $v -ne 0 ] && echo "load fails (exit $v)" || echo "passes")"
 
 printf '{"penv":%s,"varlock":%s,"runs":%s,"machine":%s,"results":[%s]}\n' \
-  "$(node -p 'JSON.stringify(process.argv[1])' "$("$PENV" --version)")" \
-  "$(node -p 'JSON.stringify(process.argv[1])' "$("$VARLOCK" --version)")" "$RUNS" \
-  "$(node -p 'JSON.stringify(process.argv[1])' "$(uname -sm)")" \
+  "$(json "$("$PENV" --version)")" "$(json "$("$VARLOCK" --version)")" "$RUNS" "$(json "$(uname -sm)")" \
   "$(IFS=,; echo "${RESULTS[*]}")" > "$OUT"
 echo
 echo "results: $OUT"

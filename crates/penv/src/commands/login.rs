@@ -43,7 +43,10 @@ pub fn run(out: &Output, _cwd: &Path, env: &Env, agent_flag: bool) -> Result<Rep
         .device_start(&penv_cloud::api::host_name())
         .map_err(|e| refuse(e, None))?;
 
-    note(&format!("your code is {}", start.user_code));
+    // The approval page never fills the code in, so the person types it and
+    // compares it with this one before approving.
+    let code = penv_cloud::error::printable(&start.user_code);
+    note(&code_prompt(&out.style().bold(&code)));
     note(&format!("open {}", start.verification_uri));
     if tty && open_browser(&start.verification_uri, cloud.api.base_url()) {
         note("a browser was opened for you");
@@ -58,11 +61,13 @@ pub fn run(out: &Output, _cwd: &Path, env: &Env, agent_flag: bool) -> Result<Rep
     let email = grant.user.as_ref().and_then(|u| u.email.clone());
     let orgs: Vec<String> = grant.orgs.iter().map(|o| o.slug.clone()).collect();
     let style = out.style();
+    // The approver picks one workspace or all of them, so this may be fewer
+    // than the account belongs to.
     let text = format!(
         "{} {}\n{} {}",
         style.green("signed in"),
         email.clone().unwrap_or_else(|| "this account".into()),
-        style.dim("orgs"),
+        style.dim("workspaces this login reaches"),
         if orgs.is_empty() {
             "none yet".to_string()
         } else {
@@ -79,6 +84,11 @@ pub fn run(out: &Output, _cwd: &Path, env: &Env, agent_flag: bool) -> Result<Rep
         }),
         text,
     ))
+}
+
+/// What to type, and when not to approve.
+fn code_prompt(code: &str) -> String {
+    format!("Enter this code in the browser: {code}. Only approve it if you started this login.")
 }
 
 /// The longest a poll waits, however long the server asks for.
@@ -145,6 +155,14 @@ mod tests {
             expires_in,
             interval,
         }
+    }
+
+    #[test]
+    fn the_person_is_told_to_type_the_code_and_approve_only_their_own_login() {
+        assert_eq!(
+            code_prompt("WXYZ-1234"),
+            "Enter this code in the browser: WXYZ-1234. Only approve it if you started this login."
+        );
     }
 
     #[test]

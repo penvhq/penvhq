@@ -51,7 +51,8 @@ pub fn listing(text: &str) -> bool {
     pretty() && cliclack::log::remark(text).is_ok()
 }
 
-/// Arrow keys at a terminal. `None` means this session has to ask another way.
+/// Arrow keys at a terminal. `None` means this session has to ask another way:
+/// no person at a terminal, or stdin is not one, so nothing could answer.
 pub fn select(
     title: &str,
     items: &[String],
@@ -60,14 +61,11 @@ pub fn select(
     if !pretty() {
         return None;
     }
-    let mut picker = cliclack::select(title);
-    if let Some(initial) = initial {
-        picker = picker.initial_value(initial);
-    }
-    for (index, item) in items.iter().enumerate() {
-        picker = picker.item(index, item, "");
-    }
-    Some(picker.interact())
+    let mut picker = crate::picker::Picker::one(title, items, initial);
+    Some(crate::tty::pick(&mut picker)?.and_then(|step| match step {
+        crate::picker::Step::Submit => Ok(picker.cursor),
+        _ => Err(std::io::ErrorKind::Interrupted.into()),
+    }))
 }
 
 pub fn multiselect(
@@ -78,13 +76,11 @@ pub fn multiselect(
     if !pretty() {
         return None;
     }
-    let mut picker = cliclack::multiselect(title)
-        .initial_values(chosen.to_vec())
-        .required(false);
-    for (index, item) in items.iter().enumerate() {
-        picker = picker.item(index, item, "");
-    }
-    Some(picker.interact())
+    let mut picker = crate::picker::Picker::many(title, items, chosen);
+    Some(crate::tty::pick(&mut picker)?.and_then(|step| match step {
+        crate::picker::Step::Submit => Ok(picker.chosen()),
+        _ => Err(std::io::ErrorKind::Interrupted.into()),
+    }))
 }
 
 /// One typed line. `None` means this session has to ask another way.

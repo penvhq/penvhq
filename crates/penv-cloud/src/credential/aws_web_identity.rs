@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::api::{Api, Bearer, checked_url, url_host};
 use crate::credential::{AwsIam, Find, Obtain, Place};
 use crate::error::{CloudError, Result};
+use crate::workspace::WorkspaceId;
 
 pub const TOKEN_FILE_VAR: &str = "AWS_WEB_IDENTITY_TOKEN_FILE";
 pub const ROLE_ARN_VAR: &str = "AWS_ROLE_ARN";
@@ -24,7 +25,7 @@ pub struct AwsWebIdentity {
     session_name: String,
     endpoint: String,
     region: String,
-    org: Option<String>,
+    workspace: Option<WorkspaceId>,
 }
 
 impl fmt::Debug for AwsWebIdentity {
@@ -36,9 +37,9 @@ impl fmt::Debug for AwsWebIdentity {
 }
 
 impl AwsWebIdentity {
-    /// The workspace the signed login names; see [`AwsIam::for_org`].
-    pub fn for_org(mut self, org: Option<&str>) -> AwsWebIdentity {
-        self.org = org.map(str::to_string);
+    /// The workspace the signed login names; see [`AwsIam::for_workspace`].
+    pub fn for_workspace(mut self, workspace: Option<WorkspaceId>) -> AwsWebIdentity {
+        self.workspace = workspace;
         self
     }
 
@@ -53,7 +54,7 @@ impl AwsWebIdentity {
             session_name: at(SESSION_NAME_VAR).unwrap_or_else(|| "penv".to_string()),
             endpoint: endpoint.trim_end_matches('/').to_string(),
             region,
-            org: None,
+            workspace: None,
         })
     }
 
@@ -87,7 +88,7 @@ impl AwsWebIdentity {
             (Some(key), Some(secret)) => {
                 Ok(
                     AwsIam::new(key, secret, tag(&text, "SessionToken"), self.region.clone())
-                        .for_org(self.org.as_deref()),
+                        .for_workspace(self.workspace.clone()),
                 )
             }
             _ => Err(failed("answered without an access key")),
@@ -157,7 +158,10 @@ fn form(value: &str) -> String {
 /// After keys in the environment, before the container endpoint.
 pub(super) const PLACES: &[Place] = &[Place {
     rank: 60,
-    find: Find::Env(|env, org| Some(Box::new(AwsWebIdentity::from_env(env)?.for_org(org)))),
+    find: Find::Env(|env, org| match AwsWebIdentity::from_env(env) {
+        Some(aws) => Ok(Some(Box::new(aws.for_workspace(super::workspace(org)?)))),
+        None => Ok(None),
+    }),
 }];
 
 #[cfg(test)]

@@ -1,34 +1,52 @@
 # Benchmarks
 
-The scripts are in [`bench/`](../bench). `run.sh` runs penv and [varlock](https://varlock.dev) on the same files; `runtimes.sh` runs the file `penv gen ts` writes. Run them on your machine:
+The scripts are in [`bench/`](../bench). `run.sh` runs penv and [varlock](https://varlock.dev) on the same files; `startup.sh` times `run -- true` for penv, varlock, [dotenvx](https://dotenvx.com) and [dotenv-cli](https://github.com/entropitor/dotenv-cli); `runtimes.sh` runs the file `penv gen ts` writes. Run them on your machine:
 
 ```bash
 bench/run.sh                  # penv vs varlock: speed, memory, behaviour
+bench/startup.sh              # run -- true and peak memory: penv, varlock, dotenvx, dotenv-cli
 bench/runtimes.sh             # generated env in Node, Bun, Deno, workerd
 bench/runtimes.sh --builds    # plus Next.js, Vite and Parcel builds, checked in headless Chromium
 ```
 
 | Variable | Default | Sets |
 |---|---|---|
-| `PENV` | `penv` on PATH | the penv binary |
-| `VARLOCK_VERSION` | `1.20.0` | the varlock npm version |
-| `VARLOCK` | none | a varlock binary instead, such as the [standalone install](https://varlock.dev/install.sh) |
+| `PENV` | `penv` on PATH for `run.sh`, none for `startup.sh` | the penv binary; for `startup.sh`, adds a row for it |
+| `VARLOCK_VERSION` | `1.21.0` | the varlock npm version |
+| `VARLOCK` | none | a varlock binary instead, such as the [standalone install](https://varlock.dev/install.sh); for `startup.sh`, adds a row for it |
+| `PENV_VERSION`, `DOTENVX_VERSION`, `DOTENV_CLI_VERSION` | `1.0.0-rc.1`, `2.31.1`, `11.0.0` | the npm versions `startup.sh` installs |
+| `DOTENVX` | none | for `startup.sh`, adds a row for a dotenvx binary |
 | `RUNS` | `30` | timing iterations |
 
-`run.sh` writes `bench-results.json`.
+`run.sh` writes `bench-results.json`; `startup.sh` writes `startup-results.json`.
 
 ## Results
 
-penv 1.0.0-beta.2 release build, [varlock](https://varlock.dev) 1.20.0 from npm and as its standalone binary, Linux x86_64, Node 22.22, median of 30 runs.
+penv 1.0.0-rc.1 (the signed release binary, and `@penvhq/cli` from npm), varlock 1.21.0 from npm, dotenvx 2.31.1 from npm and as its binary (the `@dotenvx/dotenvx-linux-x86_64` package), dotenv-cli 11.0.0 from npm. Linux x86_64, 4 vCPU, Node 22.22, median of 30 runs.
 
-### Speed and memory
+### Startup and memory
 
-| | penv | varlock standalone | varlock from npm |
+From `bench/startup.sh`, every tool on the same `.env`:
+
+| Tool | Build | `run -- true` | Peak memory |
 |---|---|---|---|
-| `run -- true` | 5.7 ms | 234 ms | 386 ms |
-| Validate ([`penv check`](https://penv.cloud/docs/cli/check), `varlock load`) | 6.4 ms | 174 ms | 343 ms |
-| Scan a repository | 3.9 ms | 177 ms | 359 ms |
-| Peak memory, `run -- true` | 11 MB | 70 MB | 94 MB |
+| penv | binary | 9.4 ms | 10 MB |
+| penv | npm | 55.4 ms | 46 MB |
+| dotenv-cli | npm | 108.7 ms | 57 MB |
+| varlock | npm | 296.2 ms | 83 MB |
+| dotenvx | npm | 424.8 ms | 106 MB |
+| dotenvx | binary | 639.5 ms | 171 MB |
+
+varlock's standalone binary is not in this run. In the 1.0.0-beta.2 run it started faster than its npm build (234 ms against 386 ms, varlock 1.20.0); `VARLOCK=<path> bench/startup.sh` adds it. dotenvx and dotenv-cli load `.env` only: they have no schema, validation or scanner, so the rows below are penv against varlock.
+
+### Validate and scan
+
+From `bench/run.sh`:
+
+| | penv binary | varlock npm |
+|---|---|---|
+| Validate ([`penv check`](https://penv.cloud/docs/cli/check), `varlock load`) | 10.2 ms | 302.9 ms |
+| Scan a repository | 6.5 ms | 319.6 ms |
 
 ### Behaviour
 
@@ -64,6 +82,6 @@ A bundler that inlines the whole `process.env` (`define: { "process.env": ... }`
 
 ## Differences
 
-- **Startup.** [varlock](https://varlock.dev) took 41× to 68× penv's time and 6× to 8.5× its memory per `run` above.
+- **Startup.** Against penv's binary, varlock from npm took 31× its time and 8× its memory per `run` above; dotenvx from npm took 45× and 11×.
 - **Encoded leaks.** `penv scan` matches base64, hex, URL-encoded and JSON-escaped forms of a value.
 - **Masking.** penv's preload masks responses in Node.js, Bun, Deno and Python, keeping byte lengths so `Content-Length` stays valid.

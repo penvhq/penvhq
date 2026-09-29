@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.0-rc.2
+
+The second release candidate for 1.0.0. penv.cloud has tightened how machines sign in and what it accepts on a write; this release speaks that contract, and fixes arrow keys in choice prompts.
+
+### Breaking
+- **A CI or AWS login names its workspace by id.** penv.cloud now takes only the workspace id as the OIDC audience and in the signed AWS `x-penv-cloud-org` header. penv asks GitHub Actions for a token with that audience, and refuses a slug in `@penv=` before any request when it would become the audience or the signed header. **Migration:** replace the workspace slug in `@penv=` with the workspace id from Settings → Organization (the Organization ID) in the penv.cloud console. A person's [`penv login`](https://penv.cloud/docs/cli/login) is unchanged. When penv.cloud answers `audience_not_workspace_id`, its message is printed as written.
+
+### Added
+- **[`penv run`](https://penv.cloud/docs/cli/run) keeps the command's own variables.** A provider's key whose variable would change how the command runs (`NODE_OPTIONS`, `LD_PRELOAD`, `BASH_ENV`, `PATH`, `PIP_INDEX_URL`, `YARN_*`, `CARGO_*` and the rest of `reserved.toml`, in any case), or that is not a variable name, fails the run as `reserved_name`, exit 3, naming the parameter. Declared keys are refused before anything is fetched. The child also never inherits a runner's OIDC request token, its runtime, results and cache tokens, the step files (`GITHUB_ENV`, `GITHUB_OUTPUT`, `GITHUB_PATH`, `GITHUB_STATE`), `INPUT_*` or `STATE_*`; run a command that needs one outside `penv run`.
+
+### Changed
+- **`penv login` asks you to type the code.** The approval page no longer fills it in: penv opens the page and prints `Enter this code in the browser: ABCD-EFGH. Only approve it if you started this login.` The device label is the host name reduced to what the page keeps (48 letters, digits, spaces and `._-()'@`). After sign-in penv lists the workspaces the login reaches, which may be one; a 404 says the login may have been approved for another workspace and to run `penv login` again and choose it. A workspace's sign-in policy (single sign-on, two-factor) is printed as the workspace wrote it, and an ended login (30 days from last use, 90 at most, or revoked by a password reset, "Sign out everywhere" or account recovery) says to sign in again.
+- **Writes are checked before they are sent.** [`penv push`](https://penv.cloud/docs/cli/push) and [`penv set`](https://penv.cloud/docs/cli/set) refuse a name, path or value penv.cloud would refuse (names `^[A-Za-z0-9_][A-Za-z0-9_.-]*$` up to 255 characters, values up to 256 KiB), naming the key and never the value, before any upload. A push of more than 1000 keys goes in batches of 1000, after every value's size is checked, so nothing is half-written; `--prune` is refused when a push takes more than one batch. `name_invalid` and `value_too_large` show the server's detail, `too_many_keys` and `body_too_large` are named as a bug, and `machine_change_requires_approval` says to make the change as a person in the console, where it becomes a change request.
+- Each machine-login refusal says what to change: a refused CI trigger (`pull_request_target`) names the trigger and the ones that work, an expired token says it expired, and an untrusted one points at the trust under Connect a Platform. `unavailable` is tried three more times with a growing pause, then named.
+- An AWS login is signed afresh for every try, retries included, since penv.cloud accepts a signed request once.
+- A `.env` reads a backtick escaped inside double quotes without a warning, as the penv.cloud console exports it.
+
+### Fixed
+- **Arrow keys move the selection in every choice prompt** (workspace, project, environment, guards, target options). Up and Down in application cursor mode (`ESC O A`/`ESC O B`, as tmux, screen and many terminals send after an editor) did nothing, and an arrow whose bytes arrived in two reads cancelled the prompt. penv now reads keys itself: raw mode from before the first read until the prompt ends, CSI and SS3 arrows, `j`/`k` and Ctrl-P/Ctrl-N, an unfinished escape given 100 ms before a lone Esc cancels, the cursor and the terminal put back on Enter, Esc, Ctrl-C and errors, and virtual-terminal input on Windows. A prompt is never shown when stdin is not a terminal.
+
+## 1.0.0-rc.1
+
+The release candidate for 1.0.0. It behaves as 1.0.0-beta.4 does; until 1.0.0 only fixes land.
+
+### Added
+- **Stability.** What a 1.0 minor or patch release keeps as it is (command names, flags, exit codes, JSON output, the `.env.schema` grammar, `.penv/config.toml` keys) and what it may change: [docs/Design.md §13](./docs/Design.md#13-stability) and the README.
+
+### Changed
+- The Copilot CLI guard says it is experimental wherever `init` and `check` describe it: Copilot publishes no schema for its permissions config, so the guard sits outside the stability promise.
+- `sslmode=verify-ca` on a sealed Postgres URL is documented as what it already does: it checks the server's certificate and its host name, as `verify-full` does.
+
+### Fixed
+- `/install` and a plain `penv upgrade` gave 1.0.0-beta.3 after beta.4 shipped: the release workflow counted the old `@penvhq/*@0.x` package releases as plain penv releases. Only `v` tags count now, so they give this release.
+
 ## 1.0.0-beta.4
 
 ### Changed
