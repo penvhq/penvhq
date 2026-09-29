@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0-rc.3
+
+The third release candidate for 1.0.0. Masking no longer breaks Next.js middleware, and generated files and `.penv/config.toml` explain themselves in two lines each.
+
+### Fixed
+- **Masking no longer breaks Next.js middleware.** The generated `env.ts` (`mask = true`) and the `penv run` preload replace `Response` with a masking subclass; a `NextResponse` built on the original class then failed Next's `instanceof Response` check, so every request answered 500 ("Expected an instance of Response to be returned"). Responses built on the original class pass `instanceof Response` again.
+
+### Changed
+- Comments in generated files are at most two lines each, and every setting in `.penv/config.toml`, target options (`[targets.<name>.options]`) included, says what it does and the values it takes.
+
 ## 1.0.0-rc.2
 
 The second release candidate for 1.0.0. penv.cloud has tightened how machines sign in and what it accepts on a write; this release speaks that contract, and fixes arrow keys in choice prompts.

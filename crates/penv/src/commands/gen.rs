@@ -602,6 +602,17 @@ fn put(
     })
 }
 
+/// What an option changes, then the values it takes: two lines above it in the config.
+fn option_comment(knob: &penv_targets::Knob) -> String {
+    let default = penv_targets::word(&knob.default);
+    let values = if knob.values.is_empty() {
+        format!("any text (default {default})")
+    } else {
+        format!("{} (default {default})", knob.words().join(" | "))
+    };
+    format!("{}\nValues: {values}.", knob.about)
+}
+
 /// Where a target's settings are kept, for messages.
 fn kept_label(name: &str) -> String {
     format!("{} [targets.{name}]", penv_targets::CONFIG)
@@ -641,6 +652,9 @@ fn remember(dir: &Path, target: &Target, output: &str) -> Result<Option<PathBuf>
         section.insert("options".into(), toml::Value::Table(options));
     }
     config.set_target(&target.name, section);
+    for knob in &target.knobs {
+        config.note_target_option(&target.name, &knob.name, &option_comment(knob));
+    }
 
     let moved = legacy_toml.is_file() || legacy_tmpl.is_file();
     if config.render() == before && !moved {

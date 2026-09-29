@@ -271,6 +271,8 @@
         }
       }
       PenvResponse.__penv = true;
+      // Responses built on the original class (NextResponse) must still pass instanceof Response.
+      Object.defineProperty(PenvResponse, Symbol.hasInstance, { value: (v) => v instanceof Base });
       g.Response = PenvResponse;
     }
   } catch (_) {

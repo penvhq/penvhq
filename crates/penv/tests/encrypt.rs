@@ -238,8 +238,8 @@ fn init_writes_every_setting_with_its_meaning_and_keeps_what_a_config_already_sa
     for line in [
         "preload = true",
         "encrypt = false",
-        "# true: they write enc:v1:",
-        "# false: penv set, penv pull and random() write values in plain text",
+        "# Values: false (plain text) | true (enc:v1:",
+        "# Values: true (the app's own logs and responses are masked) | false",
         "prefixes = []",
         "version = 1",
     ] {

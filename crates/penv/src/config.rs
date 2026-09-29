@@ -15,29 +15,22 @@ pub const TEMPLATE: &str = r#"# penv settings for this repository. Every setting
 
 [schema]
 # The .env.schema language version this repository is written in.
+# Values: {version}.
 version = {version}
 
 [run]
-# Load penv's masking into the Node, Bun, Deno and Python processes penv run
-# starts, so the app's own logs and responses hide secrets.
-# false: only penv run's output pipe hides them; what the app writes to a file
-# or sends over the network is not masked. An AI agent's run keeps it on.
+# Load penv's masking into the Node, Bun, Deno and Python processes penv run starts.
+# Values: true (the app's own logs and responses are masked) | false (only penv run's output is).
 preload = true
 
 [local]
-# Whether penv encrypts the sensitive values it writes to .env files.
-# false: penv set, penv pull and random() write values in plain text, readable
-# by any tool that reads .env itself.
-# true: they write enc:v1:... with a key kept in this machine's keychain, and
-# penv decrypts when it reads. A tool that reads .env itself (docker compose, a
-# framework started without penv run) then sees enc:v1:... instead of the value.
-# penv encrypt turns this on and converts existing values; penv decrypt turns it
-# off and converts them back.
+# How penv set, penv pull and random() write sensitive values to .env files.
+# Values: false (plain text) | true (enc:v1:..., keyed in this machine's keychain; see penv encrypt).
 encrypt = false
 
 [public]
-# Prefixes that ship a key to the browser, beyond the frameworks' own
-# (NEXT_PUBLIC_, VITE_, PUBLIC_, NUXT_PUBLIC_, EXPO_PUBLIC_, REACT_APP_, ...).
+# Prefixes that ship a key to the browser, beyond NEXT_PUBLIC_, VITE_, PUBLIC_ and the like.
+# Values: a list of prefixes, e.g. ["APP_PUBLIC_"]; empty adds none.
 prefixes = []
 "#;
 
@@ -47,6 +40,8 @@ prefixes = []
 pub struct Config {
     table: toml::Table,
     text: Option<String>,
+    /// Comments for `[targets.<name>.options]` keys: (target, option, comment).
+    notes: Vec<(String, String, String)>,
 }
 
 pub fn template() -> String {
@@ -146,6 +141,7 @@ impl Config {
         Ok(Config {
             table: text.parse()?,
             text: Some(text.to_string()),
+            notes: Vec::new(),
         })
     }
 
@@ -162,6 +158,7 @@ impl Config {
         match base.parse::<toml_edit::DocumentMut>() {
             Ok(mut doc) => {
                 upsert(doc.as_table_mut(), &self.table);
+                self.annotate(&mut doc);
                 doc.to_string()
             }
             Err(_) => toml::to_string(&self.table).unwrap_or_default(),
@@ -282,6 +279,38 @@ impl Config {
         }
     }
 
+    /// Say above each `[targets.<name>.options]` key what it does. A key that
+    /// already carries a comment keeps it.
+    pub fn note_target_option(&mut self, target: &str, option: &str, comment: &str) {
+        self.notes
+            .push((target.to_string(), option.to_string(), comment.to_string()));
+    }
+
+    fn annotate(&self, doc: &mut toml_edit::DocumentMut) {
+        for (target, option, comment) in &self.notes {
+            let Some(options) = doc
+                .get_mut("targets")
+                .and_then(|t| t.get_mut(target.as_str()))
+                .and_then(|t| t.get_mut("options"))
+                .and_then(|t| t.as_table_mut())
+            else {
+                continue;
+            };
+            let Some(mut key) = options.key_mut(option) else {
+                continue;
+            };
+            let decor = key.leaf_decor_mut();
+            let has_comment = decor
+                .prefix()
+                .and_then(|p| p.as_str())
+                .is_some_and(|p| p.contains('#'));
+            if !has_comment {
+                let lines: String = comment.lines().map(|l| format!("# {l}\n")).collect();
+                decor.set_prefix(lines);
+            }
+        }
+    }
+
     /// `[rotation]`: the day each key was last written in local mode.
     pub fn rotated(&self, key: &str) -> Option<&str> {
         self.table.get("rotation")?.get(key)?.as_str()
@@ -312,5 +341,25 @@ mod tests {
         let back = Config::parse(&config.render()).unwrap();
         assert_eq!(back.rotated("STRIPE_SECRET_KEY"), Some("2026-09-22"));
         assert!(back.render().contains("[future]"));
+    }
+
+    #[test]
+    fn a_target_option_is_commented_with_its_values_and_a_written_comment_stays() {
+        let mut config =
+            Config::parse("[targets.ts.options]\n# mine\nmask = false\nruntime = \"node\"\n")
+                .unwrap();
+        config.note_target_option("ts", "mask", "Mask secrets.\nValues: true | false.");
+        config.note_target_option(
+            "ts",
+            "runtime",
+            "Where values are read.\nValues: node | deno.",
+        );
+        let text = config.render();
+        assert!(text.contains("# mine\nmask = false"), "{text}");
+        assert!(!text.contains("# Mask secrets."), "{text}");
+        assert!(
+            text.contains("# Where values are read.\n# Values: node | deno.\nruntime = \"node\""),
+            "{text}"
+        );
     }
 }
