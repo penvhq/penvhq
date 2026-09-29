@@ -5,7 +5,8 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$installer = Join-Path $here 'install.ps1'
+$shipped = Join-Path $here 'install.ps1'
+$keyLine = '(?m)^(\s*\$publicKeys = )''[^'']*'''
 $tag = 'v9.9.9'
 # The machine's own value, the way the installer reads it, so an x64 shell on ARM64 agrees with it.
 $machine = [Microsoft.Win32.Registry]::GetValue(
@@ -35,6 +36,9 @@ if (-not $python) {
     exit 0
 }
 
+# Resolved once, since the case with no OpenSSL runs it under a PATH without one.
+$shell = (Get-Command powershell.exe).Source
+
 $failures = 0
 function Check($name, $actual, $expected) {
     if ($actual -eq $expected) { Write-Host "ok   $name" }
@@ -58,6 +62,18 @@ function Mentions($name, $haystack, $needle) {
 $work = Join-Path ([IO.Path]::GetTempPath()) ("penv-install-test-" + [Guid]::NewGuid().ToString('N'))
 $server = $null
 try {
+    New-Item -ItemType Directory -Path $work -Force | Out-Null
+    # The installer with its key list set, the way install.test.sh edits public_keys.
+    function WithKeys($keys, $path) {
+        $text = [Regex]::Replace((Get-Content $shipped -Raw), $keyLine, { param($m) $m.Groups[1].Value + "'$keys'" })
+        Set-Content -Path $path -Value $text -Encoding Ascii -NoNewline
+        $path
+    }
+    # The unsigned cases run the installer as it ships with no release key pasted in.
+    $installer = WithKeys '' (Join-Path $work 'install-keyless.ps1')
+    Check 'the test emptied the key list in its copy of the installer' `
+    ((Get-Content $installer -Raw) -match "(?m)^\s*\`$publicKeys = ''\s*`$") $true
+
     # Three releases laid out the way penv.cloud redirects to them: one whole, one whose
     # digest lies, one whose sums file only covers the archive.
     function Assets($name) { Join-Path $work "serve\$name\releases\download\$tag" }
@@ -110,11 +126,12 @@ try {
     # 'Continue' locally, so a refusal on the child's stderr is output to read rather than a thrown error.
     function Capture([string[]] $arguments) {
         $ErrorActionPreference = 'Continue'
-        $script:output = (& powershell.exe $arguments 2>&1 | Out-String)
+        $script:output = (& $shell $arguments 2>&1 | Out-String)
         $script:code = $LASTEXITCODE
     }
-    function Install($release, $into, $extra) {
-        Capture (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installer,
+    function Install($release, $into, $extra) { InstallWith $installer $release $into $extra }
+    function InstallWith($script, $release, $into, $extra) {
+        Capture (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script,
                 '-Version', $tag, '-ReleaseBase', "http://127.0.0.1:$port/$release", '-InstallDir', $into) + $extra)
     }
 
@@ -124,7 +141,8 @@ try {
     Check 'the binary lands where -InstallDir says' `
     (Get-Content (Join-Path $into 'penv.exe') -Raw -ErrorAction SilentlyContinue) 'not a real binary'
     Mentions 'the install location is printed' $output (Join-Path $into 'penv.exe')
-    Mentions 'the signature it cannot check is called out' $output 'signature not checked'
+    Mentions 'an installer with no release key says the signature went unchecked' $output `
+        'signature not checked: this installer carries no release key'
 
     # No -Version, so the tag comes from the release the base answers with.
     $into = Join-Path $work 'unpinned-bin'
@@ -161,15 +179,6 @@ try {
     Check 'an unknown flag refuses' ($code -ne 0) $true
     Mentions 'the refusal names the flag' $output 'not a flag this installer takes'
 
-    # .NET has no Ed25519, so a signature beside the checksum file changes nothing
-    # either way: the release installs on its digest and says the signature went unread.
-    Set-Content -Path (Join-Path (Assets 'good') "$sums.sig") -Encoding Ascii -NoNewline `
-        -Value 'bm90IGEgc2lnbmF0dXJlIGF0IGFsbA=='
-    $into = Join-Path $work 'signed-bin'
-    Install 'good' $into @()
-    Check 'a release carrying a signature installs on the digest alone' $code 0
-    Mentions 'and still says the signature went unchecked' $output 'signature not checked'
-
     # Piped in, there are no flags to pass, so the same four settings arrive as environment variables.
     $into = Join-Path $work 'piped-bin'
     $piped = @"
@@ -181,6 +190,100 @@ Invoke-Expression (Get-Content '$installer' -Raw)
     Capture @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $piped)
     Check 'the script installs when it is piped through iex' `
     (Get-Content (Join-Path $into 'penv.exe') -Raw -ErrorAction SilentlyContinue) 'not a real binary'
+
+    # The installer's own rule: OpenSSL 1.1.1 or newer, and not LibreSSL, so a host where it
+    # would not verify anyway skips these.
+    $openssl = Get-Command openssl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    function Openssl {
+        $ErrorActionPreference = 'Continue'
+        & $openssl.Source @args 2>$null | Out-Null
+        $LASTEXITCODE -eq 0
+    }
+    $verifies = $false
+    if ($openssl) {
+        $ErrorActionPreference = 'Continue'
+        $said = (& $openssl.Source version 2>$null | Out-String).Trim()
+        $ErrorActionPreference = 'Stop'
+        if ($said -match '^OpenSSL (\d+)\.(\d+)\.(\d+)') {
+            $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
+            $verifies = $major -gt 1 -or ($major -eq 1 -and ($minor -gt 1 -or ($minor -eq 1 -and $patch -ge 1)))
+        }
+    }
+    $signerKey = Join-Path $work 'signer.pem'
+    if (-not $verifies -or -not (Openssl genpkey -algorithm ed25519 -out $signerKey)) {
+        Write-Host 'skip: openssl 1.1.1 or newer signs the fake releases, and there is none on PATH'
+    }
+    else {
+        $otherKey = Join-Path $work 'other.pem'
+        $null = Openssl genpkey -algorithm ed25519 -out $otherKey
+        # The raw 32 key bytes, which is the shape the installer and the binary list.
+        $der = Join-Path $work 'signer.der'
+        $null = Openssl pkey -in $signerKey -pubout -outform DER -out $der
+        $derBytes = [IO.File]::ReadAllBytes($der)
+        $public = [Convert]::ToBase64String($derBytes, $derBytes.Length - 32, 32)
+
+        function SignSums($key, $dir) {
+            $bin = Join-Path $work 'signature.bin'
+            $null = Openssl pkeyutl -sign -inkey $key -rawin -in (Join-Path $dir $sums) -out $bin
+            # One base64 line and a newline, which is what penv-release writes.
+            [IO.File]::WriteAllText((Join-Path $dir "$sums.sig"), [Convert]::ToBase64String([IO.File]::ReadAllBytes($bin)) + "`n")
+        }
+        foreach ($name in @('signed', 'bad-signature')) {
+            $dir = Assets $name
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            foreach ($file in @($asset, "$asset.zip", $sums)) { Copy-Item -Path (Join-Path $good $file) -Destination $dir }
+            Copy-Item -Path (Join-Path $work 'serve\good\releases\latest') -Destination (Join-Path $work "serve\$name\releases\latest")
+        }
+        SignSums $signerKey (Assets 'signed')
+        SignSums $otherKey (Assets 'bad-signature')
+
+        # The installer as it ships once the owner has pasted a release key into it.
+        $signer = WithKeys $public (Join-Path $work 'install-signed.ps1')
+        Check 'the test embedded a key in its copy of the installer' `
+        ((Get-Content $signer -Raw).Contains("`$publicKeys = '$public'")) $true
+
+        $into = Join-Path $work 'signed-bin'
+        InstallWith $signer 'signed' $into @()
+        Check 'a signed release installs' $code 0
+        Check 'the signed binary lands' (Test-Path (Join-Path $into 'penv.exe')) $true
+        Check 'a signed release is verified rather than waved through' ($output -like '*signature not checked*') $false
+
+        # The same key as somebody might paste it, without the = base64 ends on.
+        $unpadded = $public.TrimEnd('=')
+        Check 'the release key ends on the padding this case drops' $unpadded.Length 43
+        $bare = WithKeys $unpadded (Join-Path $work 'install-unpadded.ps1')
+        $into = Join-Path $work 'unpadded-bin'
+        InstallWith $bare 'signed' $into @()
+        Check 'a key pasted without its padding still verifies' $code 0
+        Check 'the binary lands under an unpadded key' (Test-Path (Join-Path $into 'penv.exe')) $true
+        Check 'an unpadded key verifies rather than being waved through' ($output -like '*signature not checked*') $false
+
+        $into = Join-Path $work 'badsig-bin'
+        InstallWith $signer 'bad-signature' $into @()
+        Check 'a signature from another key refuses' ($code -ne 0) $true
+        Mentions 'the refusal names the key list' $output 'is not signed by a penv release key'
+        Check 'nothing is installed after a bad signature' (Test-Path (Join-Path $into 'penv.exe')) $false
+
+        $into = Join-Path $work 'nosig-bin'
+        InstallWith $signer 'good' $into @()
+        Check 'a release carrying no signature refuses' ($code -ne 0) $true
+        Mentions 'the refusal says the signature is missing' $output '.sig could not be downloaded'
+        Check 'nothing is installed without a signature' (Test-Path (Join-Path $into 'penv.exe')) $false
+
+        # With no OpenSSL on PATH the installer falls back to the digest and says so, as install.sh does.
+        $drop = @(Get-Command openssl -CommandType Application -All | ForEach-Object { Split-Path -Parent $_.Source })
+        $savedPath = $env:Path
+        try {
+            $env:Path = (@($env:Path -split [IO.Path]::PathSeparator | Where-Object { $_ -and $drop -notcontains $_ }) -join [IO.Path]::PathSeparator)
+            $into = Join-Path $work 'no-openssl-bin'
+            InstallWith $signer 'bad-signature' $into @()
+        }
+        finally { $env:Path = $savedPath }
+        Check 'with no OpenSSL a release installs on its digest' $code 0
+        Check 'the binary lands with no OpenSSL' (Test-Path (Join-Path $into 'penv.exe')) $true
+        Mentions 'and says the signature went unchecked' $output `
+            'signature not checked: OpenSSL 1.1.1 or newer verifies it, and this host has none'
+    }
 }
 finally {
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }

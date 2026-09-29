@@ -1,6 +1,8 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use penv_cloud::provider::Capability;
+
 use penv_agent::Policy;
 use penv_cloud::api::Fetched;
 use penv_dotenv::ensure_ignored;
@@ -47,6 +49,7 @@ pub fn run(
 
     // Signing in comes first: a folder with no header still has an account to look in.
     let cloud = Cloud::open(env, &detection)?;
+    cloud.require(Capability::Read)?;
     let bearer = cloud.bearer(env, schema.org.as_deref())?;
     if !schema.is_cloud() {
         let may_ask = !detection.is_agent() && !agent_flag && std::io::stdin().is_terminal();
@@ -152,7 +155,7 @@ pub fn run(
     }
     if !redacted.is_empty() {
         lines.push(style.dim(&format!(
-            "Write-only in penv-cloud, written as a redacted marker: {}",
+            "Write-only in penv.cloud, written as a redacted marker: {}",
             redacted.join(", ")
         )));
     }

@@ -75,6 +75,9 @@ fn open_pty() -> (File, String) {
 /// What a session looks like from the terminal's side.
 struct Session {
     master: File,
+    /// The terminal's other end, held so the child exiting is no hang-up that
+    /// could drop what it wrote before the reader got to it.
+    _held: File,
     seen: Arc<Mutex<Vec<u8>>>,
     child: std::process::Child,
 }
@@ -91,6 +94,7 @@ impl Session {
                 .open(&slave)
                 .expect("the terminal's other end")
         };
+        let held = end();
         let child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "child", "--nocapture", "--test-threads=1"])
             .env(CHILD, mode)
@@ -114,6 +118,7 @@ impl Session {
         });
         Session {
             master,
+            _held: held,
             seen,
             child,
         }

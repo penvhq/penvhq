@@ -1,4 +1,5 @@
 name = "claude-code"
+rank = 10
 description = "Deny rules and a sandbox block for Claude Code, plus a PreToolUse hook that is the penv binary itself."
 scope = "project"
 detect = [".claude", "~/.claude"]

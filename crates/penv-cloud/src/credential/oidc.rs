@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::api::{Api, Bearer};
-use crate::credential::Obtain;
+use crate::credential::{Find, Obtain, Place};
 use crate::error::Result;
 use crate::workspace::WorkspaceId;
 
@@ -97,6 +97,21 @@ impl Obtain for Oidc {
         }
     }
 }
+
+/// After what the host holds, before AWS. The workspace id is the audience.
+pub(super) const PLACES: &[Place] = &[Place {
+    rank: 40,
+    find: Find::Env(|env, org| {
+        let Some(oidc) = Oidc::from_env(env) else {
+            return Ok(None);
+        };
+        let oidc = match oidc.requests_audience() {
+            true => oidc.for_workspace(super::workspace(org)?),
+            false => oidc,
+        };
+        Ok(Some(Box::new(oidc)))
+    }),
+}];
 
 #[cfg(test)]
 mod tests {

@@ -2,35 +2,9 @@ use crate::error::Error;
 use crate::folder::{self, BuiltIn, Roots, Source, Tree};
 use crate::target::{Target, is_name, parse};
 
-macro_rules! built_in {
-    ($name:literal) => {
-        BuiltIn {
-            name: $name,
-            files: &[
-                (
-                    "target.toml",
-                    include_str!(concat!("../targets/", $name, "/target.toml")),
-                ),
-                (
-                    "env.tmpl",
-                    include_str!(concat!("../targets/", $name, "/env.tmpl")),
-                ),
-            ],
-        }
-    };
-}
-
-/// The folders shipped inside the binary. The layout on disk is the same one a
-/// user target uses.
-pub const BUILT_IN: &[BuiltIn] = &[
-    built_in!("ts"),
-    built_in!("py"),
-    built_in!("go"),
-    built_in!("rust"),
-    built_in!("php"),
-    built_in!("java"),
-    built_in!("csharp"),
-];
+/// Every folder under `targets/`, shipped inside the binary in name order. The
+/// layout on disk is the same one a user target uses.
+pub const BUILT_IN: &[BuiltIn] = &include!(concat!(env!("OUT_DIR"), "/built_in.rs"));
 
 /// One place a target reads from: its two files, each read once, and where
 /// the `target.toml` really lives, for messages.
@@ -314,10 +288,10 @@ enum = "values | join('|')"
             .iter()
             .map(|t| t.as_ref().unwrap().name.clone())
             .collect();
-        assert_eq!(
-            names,
-            ["csharp", "go", "java", "php", "py", "rust", "ts", "zig"]
-        );
+        let mut want: Vec<String> = BUILT_IN.iter().map(|b| b.name.to_string()).collect();
+        want.push("zig".into());
+        want.sort();
+        assert_eq!(names, want);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::api::{Api, Bearer, checked_url, url_host};
-use crate::credential::{AwsIam, Obtain};
+use crate::credential::{AwsIam, Find, Obtain, Place};
 use crate::error::{CloudError, Result};
 use crate::workspace::WorkspaceId;
 
@@ -154,6 +154,15 @@ fn form(value: &str) -> String {
         })
         .collect()
 }
+
+/// After keys in the environment, before the container endpoint.
+pub(super) const PLACES: &[Place] = &[Place {
+    rank: 60,
+    find: Find::Env(|env, org| match AwsWebIdentity::from_env(env) {
+        Some(aws) => Ok(Some(Box::new(aws.for_workspace(super::workspace(org)?)))),
+        None => Ok(None),
+    }),
+}];
 
 #[cfg(test)]
 mod tests {

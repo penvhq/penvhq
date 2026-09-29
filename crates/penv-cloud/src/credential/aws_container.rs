@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use crate::api::{Api, Bearer};
-use crate::credential::{AwsIam, Obtain};
+use crate::credential::{AwsIam, Find, Obtain, Place};
 use crate::error::{CloudError, Result};
 use crate::workspace::WorkspaceId;
 
@@ -163,6 +163,15 @@ impl Obtain for AwsContainer {
         self.fetch()?.obtain(api, now)
     }
 }
+
+/// After web identity, the last place the AWS SDKs look.
+pub(super) const PLACES: &[Place] = &[Place {
+    rank: 70,
+    find: Find::Env(|env, org| match AwsContainer::from_env(env) {
+        Some(aws) => Ok(Some(Box::new(aws.for_workspace(super::workspace(org)?)))),
+        None => Ok(None),
+    }),
+}];
 
 #[cfg(test)]
 mod tests {

@@ -143,7 +143,7 @@ fn a_value_that_looks_like_a_call_is_written_so_it_reads_back_as_written() {
     }
 }
 
-/// Penv Cloud's console exports a value single-quoted, or double-quoted with
+/// penv.cloud's console exports a value single-quoted, or double-quoted with
 /// `$` and the backtick escaped. Both read back as the value, with no warning.
 #[test]
 fn a_console_export_reads_back_as_the_values_it_holds() {
