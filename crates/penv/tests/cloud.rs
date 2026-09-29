@@ -1767,6 +1767,43 @@ fn the_server_s_audience_refusal_is_printed_as_it_wrote_it() {
 }
 
 #[test]
+fn a_refused_ci_trigger_is_named_with_the_triggers_that_work() {
+    let mock = Mock::new();
+    mock.on(
+        "POST",
+        "/api/v1/auth/oidc",
+        403,
+        &json!({ "error": "refused" }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
+    let output = without_token(&workspace, &mock)
+        .env("PENV_OIDC_TOKEN", "eyJ.FAKE.jwt")
+        .env("GITHUB_EVENT_NAME", "pull_request_target")
+        .args(["--json", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "refused");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("pull_request_target"),
+        "{refused}"
+    );
+    assert!(
+        !stderr(&output).contains("eyJ.FAKE.jwt"),
+        "the token is never shown"
+    );
+    assert_eq!(
+        mock.hits("POST", "/api/v1/auth/oidc").len(),
+        1,
+        "never retried"
+    );
+}
+
+#[test]
 fn a_container_uri_to_an_arbitrary_host_is_never_called() {
     let mock = Mock::new();
     aws_ready(&mock);

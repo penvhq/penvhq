@@ -9,7 +9,7 @@ use ureq::http::{Response, StatusCode};
 use ureq::{Body, RequestBuilder};
 
 use crate::clock::epoch_from_rfc3339;
-use crate::error::{ApiError, CloudError, Result};
+use crate::error::{ApiError, CloudError, Exchange, Result};
 
 /// Where the CLI talks to when nothing says otherwise.
 pub const DEFAULT_BASE_URL: &str = "https://penv.cloud";
@@ -23,6 +23,9 @@ pub const SESSION_HEADER: &str = "X-Penv-Session";
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// A server error is tried once more, this long after the first one.
 const RETRY_PAUSE: Duration = Duration::from_secs(1);
+/// How many more times a machine login is tried while the server answers 503,
+/// the pause doubling each time.
+const UNAVAILABLE_RETRIES: u32 = 3;
 
 /// One path segment, percent-encoded to RFC 3986's unreserved set. Slugs and
 /// environment names are free-form, so nothing in one may reach the router.
@@ -471,6 +474,7 @@ pub struct Api {
     base_url: String,
     agent_name: Option<String>,
     session_id: Option<String>,
+    pause: Duration,
 }
 
 impl Api {
@@ -488,7 +492,14 @@ impl Api {
             base_url: checked_base_url(base_url)?,
             agent_name: None,
             session_id: None,
+            pause: RETRY_PAUSE,
         })
+    }
+
+    /// The first pause before a retry; the tests shorten it.
+    pub fn pausing(mut self, pause: Duration) -> Api {
+        self.pause = pause;
+        self
     }
 
     /// `PENV_URL`, else penv.cloud.
@@ -550,8 +561,44 @@ impl Api {
         if response.status().as_u16() < 500 {
             return Ok(response);
         }
-        std::thread::sleep(RETRY_PAUSE);
+        std::thread::sleep(self.pause);
         send(url, send_once())
+    }
+
+    /// A machine login. A 503 is tried again up to [`UNAVAILABLE_RETRIES`]
+    /// times with the pause doubling, any other server error once, and every
+    /// try sends the body `body` makes for it: a signed AWS request is
+    /// accepted once only, so none is ever sent twice.
+    fn exchange<B: Serialize>(
+        &self,
+        path: &str,
+        during: Exchange,
+        body: impl Fn(u32) -> B,
+    ) -> Result<Response<Body>> {
+        let url = self.url(path);
+        let mut tries = 0;
+        loop {
+            let mut response = send(
+                &url,
+                self.stamp(self.http.post(&url)).send_json(body(tries)),
+            )?;
+            let status = response.status();
+            if [StatusCode::OK, StatusCode::CREATED].contains(&status) {
+                return Ok(response);
+            }
+            let again = match status.as_u16() {
+                503 => tries < UNAVAILABLE_RETRIES,
+                500.. => tries < 1,
+                _ => false,
+            };
+            if !again {
+                return Err(refusal(status.as_u16(), &mut response)
+                    .during(during)
+                    .into());
+            }
+            std::thread::sleep(self.pause.saturating_mul(1 << tries));
+            tries += 1;
+        }
     }
 
     // --- device-code login ---------------------------------------------------
@@ -899,21 +946,23 @@ impl Api {
     // --- credential exchanges ------------------------------------------------
 
     pub fn exchange_oidc(&self, token: &str, now: u64) -> Result<Bearer> {
-        let url = self.url("/auth/oidc");
-        let mut response = self.attempt(&url, || {
-            self.stamp(self.http.post(&url))
-                .send_json(json!({ "token": token }))
-        })?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])?;
-        bearer_from(&url, &mut response, now)
+        let mut response =
+            self.exchange("/auth/oidc", Exchange::Oidc, |_| json!({ "token": token }))?;
+        bearer_from(&self.url("/auth/oidc"), &mut response, now)
     }
 
-    pub fn exchange_aws(&self, signed: &SignedRequest, now: u64) -> Result<Bearer> {
-        let url = self.url("/auth/aws");
-        let mut response =
-            self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(signed))?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])?;
-        bearer_from(&url, &mut response, now)
+    /// `sign` makes the request for the instant it is given. Each try is signed
+    /// afresh, a second or more after the one before, so no two are the same.
+    pub fn exchange_aws(&self, sign: impl Fn(u64) -> SignedRequest, now: u64) -> Result<Bearer> {
+        let started = std::time::Instant::now();
+        let last = std::cell::Cell::new(None::<u64>);
+        let mut response = self.exchange("/auth/aws", Exchange::Aws, |_| {
+            let elapsed = now.saturating_add(started.elapsed().as_secs());
+            let at = last.get().map_or(elapsed, |before| elapsed.max(before + 1));
+            last.set(Some(at));
+            sign(at)
+        })?;
+        bearer_from(&self.url("/auth/aws"), &mut response, now)
     }
 
     pub fn keypair_challenge(&self, credential_id: &str) -> Result<Challenge> {
@@ -943,7 +992,10 @@ impl Api {
         });
         let mut response =
             self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(&body))?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])?;
+        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED]).map_err(|e| match e {
+            CloudError::Api(api) => api.during(Exchange::Keypair).into(),
+            other => other,
+        })?;
         let body: Value = read_json(&url, &mut response)?;
         Ok(KeypairGrant {
             generation: body

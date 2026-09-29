@@ -40,7 +40,8 @@ pub fn region(env: &BTreeMap<String, String>) -> String {
         .unwrap_or_else(|| DEFAULT_REGION.to_string())
 }
 
-/// The caller's own AWS identity, signed once and replayed by the server.
+/// The caller's own AWS identity, signed afresh for each try and forwarded once
+/// by the server.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AwsIam {
     access_key_id: String,
@@ -157,7 +158,7 @@ impl fmt::Debug for AwsIam {
 
 impl Obtain for AwsIam {
     fn obtain(&self, api: &Api, now: u64) -> Result<Bearer> {
-        api.exchange_aws(&self.sign(now), now)
+        api.exchange_aws(|at| self.sign(at), now)
     }
 
     /// The keys themselves: a session's keys change with the session, and so

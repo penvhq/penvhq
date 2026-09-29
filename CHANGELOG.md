@@ -12,6 +12,8 @@
 - **Write-only keys.** A key penv-cloud withholds from a person's login or a static token is `redacted`: present, never missing. `run` and `bundle` refuse it (`redacted`, exit 6) naming every key and the environment, unless a local layer such as `.env.<env>.local` supplies it. `pull` writes `# penv:redacted KEY` in place of the value, and a local-mode `run` refuses on that marker too. `check` notes it, `ls` shows `redacted`, `why` says it is withheld, and `reveal` refuses it.
 
 ### Changed
+- Each machine-login refusal says what to change: a refused CI trigger (`pull_request_target`) names the trigger and the ones that work, an expired token says it expired, and an untrusted one points at the trust under Connect a Platform. `unavailable` is tried three more times with a growing pause, then named.
+- An AWS login is signed afresh for every try, retries included, since Penv Cloud accepts a signed request once.
 - A prerelease no longer becomes the release `/install` and `penv upgrade` give, once a plain release exists.
 
 ### Fixed

@@ -34,7 +34,16 @@ POST /api/v1/auth/revoke            Bearer pcu_ or pck_, revokes itself; idempot
 
 ## Machine exchanges
 
-Unauthenticated, IP limited. Each returns `201 { credential: "pck_...", expiresAt }` with a 15 minute lifetime capped by the trust's own expiry, or `401 { error: "expired" | "unauthorized" }`, or `503 { error: "unavailable" }` which means retry once.
+Unauthenticated, IP limited. Each returns `201 { credential: "pck_...", expiresAt }` with a 15 minute lifetime capped by the trust's own expiry, or one of:
+
+| Status | Body | Meaning | The CLI |
+|---|---|---|---|
+| 403 | `{ "error": "refused" }` | the CI trigger is refused; `pull_request_target` is refused on every exchange | names the trigger (`GITHUB_EVENT_NAME`) and says to run the job on `push`, `pull_request` or `workflow_dispatch` |
+| 401 | `{ "error": "expired" }` | the token or signed request has expired | says so; a CI job is not told to `penv login` |
+| 401 | `{ "error": "unauthorized" }` | the token is invalid or untrusted, including a GitHub token without `event_name` | points at the trust under Connect a Platform |
+| 503 | `{ "error": "unavailable" }` | retryable | tries three more times, 1, 2 and 4 seconds apart, then says the service could not verify the token right now |
+
+A signed AWS login request is accepted once. The CLI never sends one twice: every try, retries included, is signed afresh with a later `x-amz-date`.
 
 ```
 POST /api/v1/auth/oidc               { token }                       the token's audience is the workspace id

@@ -586,6 +586,87 @@ fn an_audience_refusal_keeps_the_message_the_server_wrote() {
 }
 
 #[test]
+fn an_unavailable_aws_login_is_tried_again_each_time_signed_afresh() {
+    let mock = Mock::new();
+    let unavailable = &json!({ "error": "unavailable" }).to_string();
+    mock.on("POST", "/api/v1/auth/aws", 503, unavailable);
+    mock.on("POST", "/api/v1/auth/aws", 503, unavailable);
+    mock.on(
+        "POST",
+        "/api/v1/auth/aws",
+        201,
+        &json!({ "credential": "pck_EXCHANGED" }).to_string(),
+    );
+    let api = api(&mock).pausing(std::time::Duration::ZERO);
+    let aws = AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1").for_workspace(workspace());
+
+    assert_eq!(aws.obtain(&api, NOW).unwrap().token, "pck_EXCHANGED");
+    let sent: Vec<serde_json::Value> = mock
+        .hits("POST", "/api/v1/auth/aws")
+        .iter()
+        .map(|r| r.json())
+        .collect();
+    assert_eq!(sent.len(), 3);
+    let signatures: std::collections::BTreeSet<String> = sent
+        .iter()
+        .map(|r| r["headers"]["authorization"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(signatures.len(), 3, "no signed request is sent twice");
+    let dates: Vec<&str> = sent
+        .iter()
+        .map(|r| r["headers"]["x-amz-date"].as_str().unwrap())
+        .collect();
+    assert!(dates.windows(2).all(|w| w[0] < w[1]), "{dates:?}");
+}
+
+#[test]
+fn a_login_the_server_cannot_verify_now_is_tried_a_few_times_then_named() {
+    let mock = Mock::new();
+    mock.on(
+        "POST",
+        "/api/v1/auth/oidc",
+        503,
+        &json!({ "error": "unavailable" }).to_string(),
+    );
+    let api = api(&mock).pausing(std::time::Duration::ZERO);
+    let oidc = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")])).unwrap();
+    let CloudError::Api(refused) = oidc.obtain(&api, NOW).unwrap_err() else {
+        panic!("not a refusal");
+    };
+    assert_eq!(
+        (refused.status, refused.code.as_str()),
+        (503, "unavailable")
+    );
+    assert_eq!(refused.exchange, Some(penv_cloud::Exchange::Oidc));
+    assert_eq!(
+        mock.hits("POST", "/api/v1/auth/oidc").len(),
+        4,
+        "one try and three more"
+    );
+}
+
+#[test]
+fn a_refused_login_is_not_tried_again_and_says_which_login_it_was() {
+    for (status, code) in [(403, "refused"), (401, "expired"), (401, "unauthorized")] {
+        let mock = Mock::new();
+        mock.on(
+            "POST",
+            "/api/v1/auth/oidc",
+            status,
+            &json!({ "error": code }).to_string(),
+        );
+        let api = api(&mock).pausing(std::time::Duration::ZERO);
+        let oidc = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")])).unwrap();
+        let CloudError::Api(refused) = oidc.obtain(&api, NOW).unwrap_err() else {
+            panic!("not a refusal");
+        };
+        assert_eq!((refused.status, refused.code.as_str()), (status, code));
+        assert_eq!(refused.exchange, Some(penv_cloud::Exchange::Oidc));
+        assert_eq!(mock.hits("POST", "/api/v1/auth/oidc").len(), 1, "{code}");
+    }
+}
+
+#[test]
 fn orgs_and_projects_are_read_and_created() {
     let mock = Mock::new();
     mock.on(

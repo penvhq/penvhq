@@ -24,7 +24,7 @@ pub use clock::{Clock, Fixed, SystemClock, epoch_from_rfc3339};
 pub use credential::{
     AwsIam, BoundKeypair, Enrolled, Obtain, Oidc, TOKEN_VAR, Token, present, resolve,
 };
-pub use error::{ApiError, CloudError, Result};
+pub use error::{ApiError, CloudError, Exchange, Result};
 pub use fetch::sha256_hex;
 pub use keychain::{Keychain, Keyring, MemoryKeychain, NoKeychain};
 pub use workspace::WorkspaceId;

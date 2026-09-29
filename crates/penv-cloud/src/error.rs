@@ -3,14 +3,24 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, CloudError>;
 
 /// The server's refusal as one shape: the status, the `error` code its body
-/// carried, the seconds it asked us to wait, and the `message` it wrote for a
-/// person, where the route promises one that is safe to show.
+/// carried, the seconds it asked us to wait, the `message` it wrote for a
+/// person, where the route promises one that is safe to show, and the machine
+/// login it answered, if it answered one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiError {
     pub status: u16,
     pub code: String,
     pub retry_after: Option<u64>,
     pub message: Option<String>,
+    pub exchange: Option<Exchange>,
+}
+
+/// The machine logins: a platform token, a signed AWS request, a keypair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exchange {
+    Oidc,
+    Aws,
+    Keypair,
 }
 
 impl ApiError {
@@ -20,7 +30,13 @@ impl ApiError {
             code: code.into(),
             retry_after: None,
             message: None,
+            exchange: None,
         }
+    }
+
+    pub fn during(mut self, exchange: Exchange) -> ApiError {
+        self.exchange = Some(exchange);
+        self
     }
 
     pub fn after(mut self, seconds: Option<u64>) -> ApiError {

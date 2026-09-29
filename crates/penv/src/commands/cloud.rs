@@ -398,6 +398,14 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 "Use a name such as billing or staging.",
             )
             .with_exit(Exit::Validation),
+            (403, "refused") if api.exchange.is_some() => refused_trigger(),
+            (401, code) if api.exchange.is_some() => refused_proof(api.exchange, code),
+            (503, _) if api.exchange.is_some() => CliError::new(
+                "unavailable",
+                "Penv Cloud could not verify this machine's token right now; penv tried four times.",
+                "Wait a minute, then run the job again.",
+            )
+            .with_exit(Exit::NoCredential),
             (401, "expired") => CliError::new(
                 "expired",
                 "your login expired.",
@@ -485,6 +493,55 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             "Run this again. If it keeps failing, run penv check to test your setup.",
         ),
     }
+}
+
+/// Penv Cloud refuses a login from some CI triggers: a `pull_request_target`
+/// job, always. GitHub names the trigger in `GITHUB_EVENT_NAME`.
+fn refused_trigger() -> CliError {
+    let trigger = std::env::var("GITHUB_EVENT_NAME")
+        .ok()
+        .map(|name| penv_cloud::error::printable(&name))
+        .filter(|name| !name.is_empty() && name.len() <= 64);
+    CliError::new(
+        "refused",
+        match trigger {
+            Some(name) => format!("Penv Cloud refuses a login from a job triggered by {name}."),
+            None => "Penv Cloud refuses a login from the trigger that started this job.".to_string(),
+        },
+        "Run the job on push, pull_request or workflow_dispatch; pull_request_target is refused on every login.",
+    )
+    .with_exit(Exit::Auth)
+}
+
+/// A 401 from a machine login: the token or signed request it sent.
+fn refused_proof(exchange: Option<penv_cloud::Exchange>, code: &str) -> CliError {
+    use penv_cloud::Exchange;
+    let what = match exchange {
+        Some(Exchange::Aws) => "the signed AWS request",
+        Some(Exchange::Keypair) => "this machine's keypair proof",
+        _ => "the CI platform's OIDC token",
+    };
+    if code == "expired" {
+        return CliError::new(
+            "expired",
+            format!("{what} has expired, so Penv Cloud would not exchange it."),
+            match exchange {
+                Some(Exchange::Aws) => "Check this machine's clock and that its AWS credentials are current, then run this again.",
+                _ => "Run the job again so the platform mints a fresh token. A token held in PENV_OIDC_TOKEN or ID_TOKEN must be current.",
+            },
+        )
+        .with_exit(Exit::Auth);
+    }
+    CliError::new(
+        "unauthorized",
+        format!("Penv Cloud does not trust {what}: no trust configured for this workspace matches it."),
+        match exchange {
+            Some(Exchange::Aws) => "Check the AWS trust for this identity's account and role in the Penv Cloud console, under Connect a Platform.",
+            Some(Exchange::Keypair) => "Enroll this machine again with penv machine enroll <secret>, using a fresh enrolment secret from the console.",
+            _ => "Check the OIDC trust in the Penv Cloud console, under Connect a Platform: issuer, subject and claims must match this job. A GitHub token must carry event_name, which Actions tokens do.",
+        },
+    )
+    .with_exit(Exit::Auth)
 }
 
 /// Everything penv says while a command is still working goes to stderr, so
@@ -776,6 +833,65 @@ mod tests {
         assert_eq!(refused.message, said);
         let bare = refuse(ApiError::new(400, "audience_not_workspace_id").into(), None);
         assert!(bare.message.contains("by its id"), "{}", bare.message);
+    }
+
+    #[test]
+    fn each_machine_login_refusal_says_what_to_change() {
+        use penv_cloud::Exchange;
+        let during =
+            |status, code, kind| refuse(ApiError::new(status, code).during(kind).into(), None);
+
+        let trigger = during(403, "refused", Exchange::Oidc);
+        assert_eq!((trigger.code, trigger.exit), ("refused", Exit::Auth));
+        assert!(
+            trigger
+                .fix
+                .contains("push, pull_request or workflow_dispatch"),
+            "{}",
+            trigger.fix
+        );
+
+        let expired = during(401, "expired", Exchange::Oidc);
+        assert_eq!(expired.code, "expired");
+        assert!(
+            expired.message.contains("token has expired"),
+            "{}",
+            expired.message
+        );
+        assert!(
+            !expired.fix.contains("penv login"),
+            "a CI job cannot sign in: {}",
+            expired.fix
+        );
+
+        let untrusted = during(401, "unauthorized", Exchange::Oidc);
+        assert_eq!(untrusted.code, "unauthorized");
+        assert!(
+            untrusted.fix.contains("Connect a Platform"),
+            "{}",
+            untrusted.fix
+        );
+        assert!(untrusted.fix.contains("event_name"), "{}", untrusted.fix);
+        let aws = during(401, "unauthorized", Exchange::Aws);
+        assert!(
+            aws.message.contains("signed AWS request"),
+            "{}",
+            aws.message
+        );
+
+        let unavailable = during(503, "unavailable", Exchange::Aws);
+        assert_eq!(unavailable.code, "unavailable");
+        assert!(
+            unavailable.message.contains("could not verify"),
+            "{}",
+            unavailable.message
+        );
+    }
+
+    #[test]
+    fn a_person_s_expired_login_still_says_to_sign_in_again() {
+        let expired = refuse(ApiError::new(401, "expired").into(), None);
+        assert!(expired.fix.contains("penv login"), "{}", expired.fix);
     }
 
     #[test]
