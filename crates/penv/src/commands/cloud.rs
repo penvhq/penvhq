@@ -692,6 +692,14 @@ impl<'a> Fetcher<'a> {
         Ok(resolved.body.keys)
     }
 
+    /// The keys already read at the address `label` names, without asking again.
+    pub fn read_at(&self, label: &str) -> &[penv_cloud::api::CloudKey] {
+        self.read
+            .iter()
+            .find(|(l, _)| l == label)
+            .map_or(&[], |(_, keys)| keys.as_slice())
+    }
+
     pub fn values(&mut self, at: &Address) -> Result<penv_schema::Values, CliError> {
         Ok(self
             .keys(at)?

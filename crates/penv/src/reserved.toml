@@ -1,0 +1,44 @@
+# Environment names `penv run` never sets from a provider's value, because each
+# changes how the command it starts runs: a shell's startup file, a runtime's
+# options, a loader's preload, a package index. Matched without regard to case.
+# This list mirrors the hosted GitHub Action's list and must stay in sync with it.
+[refused]
+names = [
+  "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS1", "PS2", "PS3", "PS4", "PROMPT_COMMAND",
+  "IFS", "CDPATH", "GLOBIGNORE", "EXECIGNORE", "FPATH", "ZDOTDIR", "SHELL", "PATH", "HOME",
+  "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_DIRS", "GCONV_PATH", "GETCONF_DIR",
+  "GLIBC_TUNABLES", "HOSTALIASES", "LOCALDOMAIN", "LOCPATH", "NIS_PATH", "NLSPATH",
+  "RESOLV_HOST_CONF", "RES_OPTIONS", "TMPDIR", "TZDIR",
+  "NODE_OPTIONS", "NODE_PATH", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_EXTRA_CA_CERTS",
+  "NODE_REPL_EXTERNAL_MODULE", "NODE_V8_COVERAGE", "NODE_ICU_DATA", "NODE_REDIRECT_WARNINGS",
+  "NODE_COMPILE_CACHE", "COREPACK_NPM_REGISTRY", "COREPACK_HOME",
+  "RUBYOPT", "RUBYLIB", "RUBYSHELL",
+  "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_OPTS", "JAVA_OPTIONS",
+  "JAVA_HOME", "CLASSPATH", "MAVEN_OPTS", "MAVEN_ARGS", "GRADLE_OPTS", "SBT_OPTS", "ANT_OPTS",
+  "DOTNET_STARTUP_HOOKS", "DOTNET_ADDITIONAL_DEPS", "COR_ENABLE_PROFILING", "COR_PROFILER",
+  "COR_PROFILER_PATH", "PHPRC", "PHP_INI_SCAN_DIR", "TCLLIBPATH",
+  "GOFLAGS", "GOENV", "GOTOOLCHAIN", "GOPROXY", "GOSUMDB", "GONOSUMDB", "GONOSUMCHECK",
+  "GOINSECURE", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTDOC",
+  "CC", "CXX", "CPP", "LD", "AR", "AS", "MAKEFLAGS", "MFLAGS", "MAKEFILES",
+  "OPENSSL_CONF", "OPENSSL_ENGINES", "OPENSSL_MODULES",
+  "EDITOR", "VISUAL", "PAGER", "MANPAGER", "BROWSER", "LESSOPEN", "LESSCLOSE",
+  "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "SSH_AUTH_SOCK", "SUDO_ASKPASS",
+  "GH_HOST", "GH_ENTERPRISE_TOKEN", "GITHUB_API_URL",
+]
+prefixes = [
+  "LD_", "DYLD_", "BASH_", "MALLOC_", "PYTHON", "PERL", "GIT_", "NPM_CONFIG_", "CORECLR_",
+  "LUA_PATH", "LUA_CPATH", "LUA_INIT", "R_PROFILE", "R_ENVIRON", "CARGO_", "RUSTUP_", "PIP_",
+  "PIPX_", "UV_", "POETRY_", "CONDA_", "YARN_", "PNPM_", "BUNDLE_", "GEM_", "COMPOSER_",
+  "NUGET_", "GITHUB_", "RUNNER_", "ACTIONS_", "INPUT_", "STATE_", "PENV_",
+]
+
+# Variables `penv run` inherits and never hands the command, whatever the
+# secrets are: a CI runner's OIDC request token, its cache and results tokens,
+# and the files a step writes its outputs to. Run a command outside `penv run`
+# when it needs one of them.
+[scrubbed]
+names = [
+  "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_RESULTS_URL",
+  "GITHUB_STATE", "GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH",
+]
+prefixes = ["ACTIONS_RUNTIME_", "ACTIONS_CACHE_", "INPUT_", "STATE_"]

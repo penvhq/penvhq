@@ -1024,6 +1024,128 @@ fn a_host_with_no_credential_says_so_with_exit_five() {
     assert!(mock.requests().is_empty(), "it never asked");
 }
 
+#[test]
+fn a_declared_key_that_would_steer_the_command_is_refused_before_any_read() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let schema = format!("{}\n# @sensitive=false\nnode_Options=\n", cloud_schema());
+    let workspace = Workspace::new(&[(".env.schema", &schema)]);
+    let output = workspace.run(&mock, &["--json", "run", "--", "true"]);
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "reserved_name");
+    assert!(
+        refused["message"].as_str().unwrap().contains(
+            "node_Options maps to NODE_OPTIONS, which would change how your command runs."
+        ),
+        "{refused}"
+    );
+    assert!(
+        mock.requests().is_empty(),
+        "no credential exchanged, no value fetched"
+    );
+}
+
+#[test]
+fn an_undeclared_cloud_key_that_would_steer_the_command_is_refused_before_it_starts() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        ENVS,
+        200,
+        &json!({
+            "keys": [
+                { "path": "", "name": "STRIPE_SECRET_KEY", "kind": "static", "version": 2, "value": SECRET },
+                { "path": "", "name": "PORT", "kind": "static", "version": 1, "value": "3000" },
+                { "path": "boot", "name": "LD_PRELOAD", "kind": "static", "version": 1, "value": "/tmp/FAKE.so" },
+                { "path": "", "name": "pip_index_url", "kind": "static", "version": 1, "value": "https://FAKE.invalid/simple" },
+            ]
+        })
+        .to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let marker = workspace.path().join("started");
+    let script = format!("echo started > {}", marker.display());
+    let output = workspace
+        .command(&mock)
+        .args(["--json", "run", "--"])
+        .args(SHELL)
+        .arg(&script)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    let message = refused["message"].as_str().unwrap();
+    assert!(
+        message.contains("boot/LD_PRELOAD maps to LD_PRELOAD"),
+        "{message}"
+    );
+    assert!(
+        message.contains("pip_index_url maps to PIP_INDEX_URL"),
+        "{message}"
+    );
+    assert!(!message.contains("FAKE"), "never a value: {message}");
+    assert!(!marker.exists(), "the command never started");
+}
+
+#[test]
+fn a_runner_s_tokens_and_step_files_never_reach_the_command() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    #[cfg(windows)]
+    let list = "set";
+    #[cfg(not(windows))]
+    let list = "env";
+    let output = workspace
+        .command(&mock)
+        .env("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.invalid/")
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE")
+        .env("ACTIONS_RUNTIME_TOKEN", "runtime_FAKE")
+        .env("ACTIONS_RESULTS_URL", "https://results.invalid/")
+        .env("ACTIONS_CACHE_URL", "https://cache.invalid/")
+        .env("GITHUB_ENV", "/tmp/github_env")
+        .env("GITHUB_OUTPUT", "/tmp/github_output")
+        .env("GITHUB_PATH", "/tmp/github_path")
+        .env("GITHUB_STATE", "/tmp/github_state")
+        .env("INPUT_TOKEN", "input_FAKE")
+        .env("STATE_SAVED", "state_FAKE")
+        .env("GITHUB_SHA", "0123abc")
+        .env("PENV_URL", mock.url())
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(list)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let seen = stdout(&output);
+    for gone in [
+        "ACTIONS_ID_TOKEN_REQUEST_URL=",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN=",
+        "ACTIONS_RUNTIME_TOKEN=",
+        "ACTIONS_RESULTS_URL=",
+        "ACTIONS_CACHE_URL=",
+        "GITHUB_ENV=",
+        "GITHUB_OUTPUT=",
+        "GITHUB_PATH=",
+        "GITHUB_STATE=",
+        "INPUT_TOKEN=",
+        "STATE_SAVED=",
+    ] {
+        assert!(
+            !seen.lines().any(|line| line.starts_with(gone)),
+            "{gone} reached the command"
+        );
+    }
+    assert!(
+        seen.lines().any(|line| line == "GITHUB_SHA=0123abc"),
+        "{seen}"
+    );
+}
+
 // --- state ------------------------------------------------------------------
 
 #[test]
