@@ -1,8 +1,8 @@
 # Providers
 
-A provider is where penv reads an environment's values from when the schema names one. penv.cloud is provider `penv`, and the default. Every other provider follows this document and passes the same tests.
+A provider is where penv reads an environment's values. We, [penv.cloud](https://penv.cloud), are provider `penv`, the default. This page is the contract a new provider meets.
 
-## Using a provider
+## Choose a provider
 
 ```dotenv
 # .env.schema
@@ -24,90 +24,87 @@ penv run --provider penv -- npm run dev      # another one, for this command
 
 | Setting | Precedence, first wins |
 |---|---|
-| Provider | `--provider`, the `@penv=` prefix, `penv` |
+| Provider | [`--provider`](https://penv.cloud/docs/cli/global-options), the `@penv=` prefix, `penv` |
 | API root | `PENV_URL` (provider `penv` only), `[providers.<slug>] url`, the provider's default |
+| Slug | `a-z`, `0-9`, `-`; starts with a letter; at most 32 characters |
 
-A root that only `.penv/config.toml` names receives only a login or keypair this machine holds for that root. `PENV_TOKEN`, CI OIDC tokens and AWS proofs are withheld from it: a committed file can be changed in a pull request, and CI would otherwise hand its credentials to whatever URL the pull request names. The command exits 5 with `credential_withheld`. To send them on purpose, name the root in `PENV_URL`.
+An unknown slug fails with `unknown_provider` before any request.
 
-A slug is a lowercase word: `a-z`, `0-9`, `-`, starting with a letter, at most 32 characters. A slug penv does not have is refused by name before any request is sent. Local files, masking, taint, `check`, the build scan and the agent rules work the same whatever the provider.
+### Roots named only in config.toml
 
-## What a provider is
+Such a root gets only the login or keypair this machine holds for it. A pull request can change a committed file, so penv withholds `PENV_TOKEN`, CI OIDC and AWS proofs and exits 5 with `credential_withheld`. To send them, set `PENV_URL` to that root.
 
-A provider is compiled into penv. penv never loads a provider at runtime and never runs a program a schema or config names, so a repository cannot make penv run code. A new provider arrives as a pull request.
+## Parts of a provider
+
+Providers are compiled in; penv loads none at runtime. A new provider arrives as a pull request.
 
 | Part | Where |
 |---|---|
-| Registry entry: slug, name, default URL, capabilities | `crates/penv-cloud/src/provider.rs`, one element of `PROVIDERS` |
-| Client: auth and read, and write if declared | `crates/penv-cloud/src/provider/<slug>.rs` |
-| Dispatch | one match arm in `Fetcher::keys` (`crates/penv/src/commands/cloud.rs`) |
-| Conformance | `crates/penv/tests/providers/<slug>.rs`, the shared suite run against a mock of the provider's API |
-| Docs | a row in the table below, and the address mapping |
-
-Adding a provider touches no other provider.
+| Registry entry: slug, name, default URL, capabilities | one element of `PROVIDERS` in `crates/penv-cloud/src/provider.rs` |
+| Client: authenticate, read, and write if declared | today `crates/penv-cloud/src/api.rs` for `penv` |
+| Read path | `Fetcher::keys` in `crates/penv/src/commands/cloud.rs` |
+| Tests | today `crates/penv/tests/cloud.rs` and `crates/penv-cloud/tests/cloud.rs` for `penv` |
+| Docs | a row in [Address](#address) and [Registered providers](#registered-providers) |
 
 ## Capabilities
 
-| Capability | penv commands | Required |
-|---|---|---|
-| `read` | `run`, `check`, `ls`, `penv(...)` values, `gen` against a linked schema | yes |
-| `write` | `set`, `unset`, `push` | no |
-| `manage` | `project`, `env`, `pull` of a project list | no |
-| `approve` | `reveal` in an agent session: a person approves in the provider | no |
-| `audit` | `@rotate` reminders from the provider's write times; who read what | no |
+`Capability` in `provider.rs`. penv refuses a command whose capability the provider does not declare (`unsupported`, naming the provider and the capability) before it sends a request.
 
-A command that needs a capability the provider does not declare is refused with the provider and the capability named. An agent's `reveal` is refused outright when the provider has no `approve`.
+| Capability | Commands | Required |
+|---|---|---|
+| `read` | every cloud read: [`penv run`](https://penv.cloud/docs/cli/run), [`penv pull`](https://penv.cloud/docs/cli/pull), [`penv reveal`](https://penv.cloud/docs/cli/reveal), [`penv check`](https://penv.cloud/docs/cli/check) | yes |
+| `write` | [`penv set`](https://penv.cloud/docs/cli/set), [`penv unset`](https://penv.cloud/docs/cli/unset), [`penv push`](https://penv.cloud/docs/cli/push) | no |
+| `manage` | [`penv project`](https://penv.cloud/docs/cli/project), [`penv env`](https://penv.cloud/docs/cli/env) | no |
+| `approve` | `penv reveal` under an agent, and `--approval` | no |
+| `audit` | `@rotate` in `penv check`; without it, the check notes that rotation was not checked | no |
 
 ## Address
 
-penv addresses a value as `org/project/environment/KEY`. Each provider documents how that maps to its own terms, in the table below, and nothing else in penv changes:
+penv addresses a value as `org/project/environment/KEY`; each provider maps it to its own terms:
 
 | Provider | `org` | `project` | `environment` |
 |---|---|---|---|
 | `penv` | organization | project | environment |
 
-## The read contract
+## Read contract
 
-`read(address) -> keys` returns every key of one environment:
+A read returns every key of one environment (`CloudKey` in `api.rs`):
 
 | Field | Meaning |
 |---|---|
 | `name` | the key, as the schema names it |
-| `value` | the value; absent when the key has none stored |
+| `value` | the value; absent when none is stored |
 | `version` | the provider's version of this value, when it has one |
-| `updatedAt` | when the value was last written, for `@rotate`, when `audit` is declared |
+| `updatedAt` | when the value was last written; `@rotate` counts from it |
+| `redacted` | present and withheld from this identity; never the same as no value |
 
-Rules every client follows:
+Every client follows the `penv` client's rules:
 
-1. **HTTPS only**, except `http://127.0.0.1` and `http://localhost` for tests and local proxies.
-2. **No redirects** to another host. A redirect is refused, not followed.
-3. **Timeouts** on every request; a read that times out fails the command. It never falls back to an empty environment.
-4. **Values stay out of errors, logs and panics.** An error names the provider, the address and the HTTP status or the provider's error code.
-5. **Credentials are never written to disk in plain text.** A login goes to the OS keychain, keyed by API root, so an overridden `url` never receives a login stored for another root. Credentials from the environment go only to the provider's default root or to one named in the environment, never to a root only `config.toml` names.
-6. **Trust** follows penv: the compiled-in roots, or `SSL_CERT_FILE` under its agent rule.
-7. **One read per address per command**; penv caches across commands only where the provider's terms allow.
+1. **HTTPS only**, except `http://` to `127.0.0.1`, `localhost` or `[::1]`.
+2. **No redirects.** A 3xx other than 304 fails the request; penv never follows it.
+3. **A 30 s timeout.**
+4. **Logins in the OS keychain**, keyed by API root, never in a plain file.
+5. **Trust**: the compiled-in roots, or `SSL_CERT_FILE` under its agent rule.
+6. **One read per address per command.**
 
-Authentication uses penv's credential kinds where the provider supports them, tried in this order: a token variable (`<SLUG>_TOKEN`, or `PENV_TOKEN` for `penv`), a person's login, an enrolled keypair, CI OIDC, then the AWS role.
+For `penv`, credentials are tried in this order: `PENV_TOKEN`, a person's login, an enrolled keypair, CI OIDC, then AWS (keys, web identity, container).
 
-## Conformance
+## Exit codes a read must produce
 
-The shared suite runs against a mock of the provider's API and must pass on Linux, macOS and Windows:
+Your tests show these outcomes ([exit codes](https://penv.cloud/docs/reference/errors)):
 
-| Test | Passes when |
+| Case | Outcome |
 |---|---|
-| Read | values reach the child process, masked in its output |
-| Missing value | a key with no stored value is reported by name; the others still load |
-| Unknown address | a clear error naming the address; exit 1 |
-| Auth refused | exit 2, and the message names the fix |
+| Key with no stored value | reported by name; the other keys still load |
+| Unknown address | the error names the address; exit 1 |
+| Credential refused (401) | exit 2, and the message names the fix |
 | No credential | exit 5 |
-| Redirect | refused; no second request is sent |
+| Environment refused (403) | exit 6 |
+| Redirect | refused; no second request |
 | Plain HTTP to a remote host | refused before connecting |
-| Values in errors | no value appears in any stdout or stderr the suite captures |
 | URL override | `[providers.<slug>] url` sends the read there |
-| Capability not declared | the command is refused, naming it |
 
-The `penv` provider's tests are the reference: `crates/penv/tests/cloud.rs`.
-
-## Providers
+## Registered providers
 
 | Slug | Name | Capabilities |
 |---|---|---|

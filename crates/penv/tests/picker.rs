@@ -60,6 +60,10 @@ const O_NOCTTY: i32 = 0x20000;
 /// A pseudo-terminal: the master end this test types into and reads, and the
 /// path of the end the child is given.
 fn open_pty() -> (File, String) {
+    // `ptsname` answers in one static buffer, so two tests opening a terminal
+    // at once could both be handed the same other end.
+    static OPENING: Mutex<()> = Mutex::new(());
+    let _one_at_a_time = OPENING.lock().unwrap();
     unsafe {
         let master = posix_openpt(O_RDWR | O_NOCTTY);
         assert!(master >= 0, "posix_openpt");
@@ -75,6 +79,9 @@ fn open_pty() -> (File, String) {
 /// What a session looks like from the terminal's side.
 struct Session {
     master: File,
+    /// The terminal's other end, held so the child exiting is no hang-up that
+    /// could drop what it wrote before the reader got to it.
+    _held: File,
     seen: Arc<Mutex<Vec<u8>>>,
     child: std::process::Child,
 }
@@ -91,6 +98,7 @@ impl Session {
                 .open(&slave)
                 .expect("the terminal's other end")
         };
+        let held = end();
         let child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "child", "--nocapture", "--test-threads=1"])
             .env(CHILD, mode)
@@ -114,6 +122,7 @@ impl Session {
         });
         Session {
             master,
+            _held: held,
             seen,
             child,
         }
@@ -138,15 +147,26 @@ impl Session {
         }
     }
 
-    fn send(&mut self, bytes: &[u8]) {
-        self.master.write_all(bytes).unwrap();
-        self.master.flush().unwrap();
-        std::thread::sleep(Duration::from_millis(30));
+    /// One key, as the pieces a terminal's bytes may arrive in: each piece its
+    /// own write, back to back, as a split sequence does. No pause inside a
+    /// key: a busy runner can stretch any sleep past the escape's window.
+    fn send(&mut self, pieces: &[&[u8]]) {
+        for piece in pieces {
+            self.master.write_all(piece).unwrap();
+            self.master.flush().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 
     /// Type `keys`, one write each, once the prompt is on screen, and return
     /// the line the child ends on.
-    fn answer(mut self, keys: &[&[u8]]) -> String {
+    fn answer(self, keys: &[&[u8]]) -> String {
+        let whole: Vec<[&[u8]; 1]> = keys.iter().map(|key| [*key]).collect();
+        let pieces: Vec<&[&[u8]]> = whole.iter().map(|key| key.as_slice()).collect();
+        self.answer_in_pieces(&pieces)
+    }
+
+    fn answer_in_pieces(mut self, keys: &[&[&[u8]]]) -> String {
         self.wait_for("enter to");
         for key in keys {
             self.send(key);
@@ -182,8 +202,13 @@ fn application_cursor_mode_arrows_move_the_same_way() {
 
 #[test]
 fn an_arrow_split_across_writes_is_an_arrow_and_not_a_cancel() {
-    let said = Session::start("one", None).answer(&[b"\x1b", b"[B", b"\x1b", b"O", b"B", ENTER]);
-    assert_eq!(said, "PICKED charlie.");
+    let said = Session::start("one", None).answer_in_pieces(&[
+        &[b"\x1b", b"[B"],
+        &[b"\x1b", b"O", b"B"],
+        &[b"\x1b[", b"1;5", b"B"],
+        &[ENTER],
+    ]);
+    assert_eq!(said, "PICKED delta.");
 }
 
 #[test]
@@ -202,7 +227,7 @@ fn esc_alone_and_ctrl_c_cancel_and_the_terminal_is_put_back() {
     let session = Session::start("one", None);
     session.wait_for("enter to");
     let mut session = session;
-    session.send(b"\x03");
+    session.send(&[b"\x03"]);
     let text = session.wait_for(".\r\n");
     assert!(
         text.contains("\x1b[?25h"),

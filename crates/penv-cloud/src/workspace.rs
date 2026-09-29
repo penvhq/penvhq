@@ -1,4 +1,4 @@
-//! The workspace a machine login is for. Penv Cloud takes only its id as the
+//! The workspace a machine login is for. penv.cloud takes only its id as the
 //! OIDC audience and in the signed AWS header; a slug is refused here, before
 //! any request, and never looked up.
 

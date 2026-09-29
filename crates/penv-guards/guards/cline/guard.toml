@@ -1,4 +1,5 @@
 name = "cline"
+rank = 70
 description = "A Cline PreToolUse hook script whose only line execs the penv binary."
 scope = "project"
 detect = [".clinerules", "~/.cline"]

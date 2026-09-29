@@ -149,7 +149,7 @@ pub fn tag_of(release: &Value) -> Result<&str, CliError> {
 /// behind one of them leaves the manager describing a version that is gone.
 const MANAGERS: [(&str, &str, &str); 7] = [
     // npm leads: a global install lands under whichever prefix installed node, Homebrew's included.
-    ("/node_modules/", "npm", "npm i -g @penvhq/cli"),
+    ("/node_modules/", "npm", "npm i -g @penvhq/cli@{version}"),
     ("/opt/homebrew/", "Homebrew", "brew upgrade penv"),
     ("/usr/local/cellar/", "Homebrew", "brew upgrade penv"),
     ("/home/linuxbrew/", "Homebrew", "brew upgrade penv"),
@@ -159,13 +159,15 @@ const MANAGERS: [(&str, &str, &str); 7] = [
 ];
 
 /// The manager that installed this path, if one did, with the command that
-/// upgrades through it.
-pub fn manager(path: &Path) -> Option<(&'static str, &'static str)> {
+/// upgrades it to `version`. npm names the version, since its `latest` tag never
+/// holds a prerelease.
+pub fn manager(path: &Path, version: &str) -> Option<(&'static str, String)> {
     let path = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    let version = version.trim_start_matches('v');
     MANAGERS
         .iter()
         .find(|(marker, _, _)| path.contains(marker))
-        .map(|(_, name, command)| (*name, *command))
+        .map(|(_, name, command)| (*name, command.replace("{version}", version)))
 }
 
 /// How long until the rate limit lifts, from the epoch second a header carries.
@@ -661,6 +663,25 @@ mod tests {
     }
 
     #[test]
+    fn the_windows_installer_lists_the_same_keys_as_this_build() {
+        const INSTALLER: &str = include_str!("../../../install.ps1");
+        let declared = INSTALLER
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("$publicKeys = "))
+            .expect("install.ps1 declares $publicKeys");
+        let listed: Vec<&str> = declared
+            .trim()
+            .trim_matches('\'')
+            .split_whitespace()
+            .collect();
+        assert_eq!(
+            listed.as_slice(),
+            PUBLIC_KEYS,
+            "install.ps1 and PUBLIC_KEYS carry different release keys"
+        );
+    }
+
+    #[test]
     fn every_key_this_build_ships_is_a_key() {
         for key in PUBLIC_KEYS {
             assert!(
@@ -796,55 +817,70 @@ mod tests {
     #[test]
     fn a_managed_install_is_named_by_the_manager_that_owns_it() {
         assert_eq!(
-            manager(Path::new("/opt/homebrew/bin/penv")),
-            Some(("Homebrew", "brew upgrade penv"))
+            manager(Path::new("/opt/homebrew/bin/penv"), "v1.2.0"),
+            Some(("Homebrew", "brew upgrade penv".to_string()))
         );
         assert_eq!(
-            manager(Path::new("/usr/local/Cellar/penv/1.0.0/bin/penv")),
-            Some(("Homebrew", "brew upgrade penv"))
+            manager(Path::new("/usr/local/Cellar/penv/1.0.0/bin/penv"), "v1.2.0"),
+            Some(("Homebrew", "brew upgrade penv".to_string()))
         );
         assert_eq!(
-            manager(Path::new("/home/linuxbrew/.linuxbrew/bin/penv")),
-            Some(("Homebrew", "brew upgrade penv"))
+            manager(Path::new("/home/linuxbrew/.linuxbrew/bin/penv"), "v1.2.0"),
+            Some(("Homebrew", "brew upgrade penv".to_string()))
         );
         assert_eq!(
-            manager(Path::new("/nix/store/abc-penv-1.0.0/bin/penv")).map(|(name, _)| name),
+            manager(Path::new("/nix/store/abc-penv-1.0.0/bin/penv"), "v1.2.0")
+                .map(|(name, _)| name),
             Some("Nix")
         );
         assert_eq!(
-            manager(Path::new(
-                r"C:\Users\dev\AppData\Local\Microsoft\WinGet\Packages\penv\penv.exe"
-            ))
+            manager(
+                Path::new(r"C:\Users\dev\AppData\Local\Microsoft\WinGet\Packages\penv\penv.exe"),
+                "v1.2.0"
+            )
             .map(|(_, command)| command),
-            Some("winget upgrade penv")
+            Some("winget upgrade penv".to_string())
         );
         assert_eq!(
-            manager(Path::new(r"C:\Users\dev\scoop\apps\penv\current\penv.exe"))
-                .map(|(_, command)| command),
-            Some("scoop update penv")
+            manager(
+                Path::new(r"C:\Users\dev\scoop\apps\penv\current\penv.exe"),
+                "v1.2.0"
+            )
+            .map(|(_, command)| command),
+            Some("scoop update penv".to_string())
         );
         assert_eq!(
-            manager(Path::new(
-                "/usr/local/lib/node_modules/@penvhq/cli-linux-x64/bin/penv"
-            )),
-            Some(("npm", "npm i -g @penvhq/cli"))
+            manager(
+                Path::new("/usr/local/lib/node_modules/@penvhq/cli-linux-x64/bin/penv"),
+                "v1.2.0"
+            ),
+            Some(("npm", "npm i -g @penvhq/cli@1.2.0".to_string()))
         );
         assert_eq!(
-            manager(Path::new(
-                "/opt/homebrew/lib/node_modules/@penvhq/cli-darwin-arm64/bin/penv"
-            ))
+            manager(
+                Path::new("/opt/homebrew/lib/node_modules/@penvhq/cli-darwin-arm64/bin/penv"),
+                "v1.2.0"
+            )
             .map(|(name, _)| name),
             Some("npm")
         );
         assert_eq!(
             manager(Path::new(
                 r"C:\Users\dev\AppData\Roaming\npm\node_modules\@penvhq\cli-win32-x64\bin\penv.exe"
-            ))
+            ), "v1.2.0")
             .map(|(name, _)| name),
             Some("npm")
         );
-        assert_eq!(manager(Path::new("/usr/local/bin/penv")), None);
-        assert_eq!(manager(Path::new(r"C:\tools\penv.exe")), None);
+        assert_eq!(
+            manager(
+                Path::new("/usr/local/lib/node_modules/@penvhq/cli-linux-x64/bin/penv"),
+                "v1.3.0-beta.1"
+            )
+            .map(|(_, command)| command),
+            Some("npm i -g @penvhq/cli@1.3.0-beta.1".to_string())
+        );
+        assert_eq!(manager(Path::new("/usr/local/bin/penv"), "v1.2.0"), None);
+        assert_eq!(manager(Path::new(r"C:\tools\penv.exe"), "v1.2.0"), None);
     }
 
     #[test]

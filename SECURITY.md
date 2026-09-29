@@ -8,7 +8,7 @@ Include the penv version (`penv --version`), the operating system, the steps tha
 
 ## Supported versions
 
-Only the latest release receives fixes. Upgrade with `penv upgrade`, the installer, or `npm i -g @penvhq/cli`.
+Only the latest release receives fixes. Upgrade: [upgrade the CLI](https://penv.cloud/docs/cli/upgrade-the-cli), or [`penv upgrade`](https://penv.cloud/docs/cli/upgrade).
 
 ## Scope
 
@@ -17,9 +17,9 @@ In scope:
 | Area | Examples |
 |---|---|
 | Value disclosure | a sensitive value printed by any command other than `reveal` and `pull`; a masking bypass in `run` output or in the preload; a secret missed by the client bundle check |
-| Agent controls | a way for an agent session to disable masking, the preload or approval, read `.env` past a `penv guard` rule, or use a CA bundle it wrote |
+| Agent controls | a way for an agent session to disable masking, the preload or approval, read `.env` past a [`penv guard`](https://penv.cloud/docs/cli/guard) rule, or use a CA bundle it wrote |
 | Supply chain | an installer, `penv upgrade` or the image accepting a binary whose checksum or signature does not verify |
-| Credentials | a penv.cloud credential written in plain text, sent to a host other than penv.cloud, or kept past its lifetime |
+| Credentials | a penv.cloud credential written in plain text, sent to a host other than the API root it belongs to, or kept past its lifetime |
 | Schema and files | a schema, value file or `@import` that makes penv read, write or run something outside the project |
 
 Out of scope, as documented in [Design, inside the process](./docs/Design.md#inside-the-process) and the claim `penv guard --check` prints:
@@ -31,4 +31,4 @@ Out of scope, as documented in [Design, inside the process](./docs/Design.md#ins
 
 ## Release signing
 
-Each release signs its checksum files with an Ed25519 key. The public key is in `install.sh` and `crates/penv/src/upgrade.rs`. Rotation and verification: [Design, distribution](./docs/Design.md#10-distribution).
+Each release signs its checksum files with an Ed25519 key. The public key is in `install.sh`, `install.ps1` and `crates/penv/src/upgrade.rs`. Rotation and verification: [Design, distribution](./docs/Design.md#10-distribution).

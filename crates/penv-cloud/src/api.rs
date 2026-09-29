@@ -78,7 +78,7 @@ pub fn host_name() -> String {
     device_label(named.as_deref().unwrap_or_default())
 }
 
-/// The longest device label Penv Cloud keeps.
+/// The longest device label penv.cloud keeps.
 pub const MAX_DEVICE_LABEL: usize = 48;
 
 /// A label already within what the approval page keeps: letters, digits,
@@ -495,6 +495,7 @@ pub struct Api {
     agent_name: Option<String>,
     session_id: Option<String>,
     pause: Duration,
+    credential_ttl: Option<u64>,
 }
 
 impl Api {
@@ -513,6 +514,7 @@ impl Api {
             agent_name: None,
             session_id: None,
             pause: RETRY_PAUSE,
+            credential_ttl: None,
         })
     }
 
@@ -536,6 +538,13 @@ impl Api {
     pub fn stamped(mut self, agent_name: Option<&str>, session_id: Option<&str>) -> Api {
         self.agent_name = agent_name.filter(|v| !v.is_empty()).map(str::to_string);
         self.session_id = session_id.filter(|v| !v.is_empty()).map(str::to_string);
+        self
+    }
+
+    /// The lifetime, in seconds, every exchange asks for as `ttlSeconds`. The
+    /// server mints no longer; without it the server's own default holds.
+    pub fn lasting(mut self, ttl_secs: u64) -> Api {
+        self.credential_ttl = Some(ttl_secs);
         self
     }
 
@@ -965,9 +974,18 @@ impl Api {
 
     // --- credential exchanges ------------------------------------------------
 
+    /// An exchange body with the lifetime this session asks for.
+    fn exchange_body(&self, mut body: Value) -> Value {
+        if let (Some(ttl), Some(fields)) = (self.credential_ttl, body.as_object_mut()) {
+            fields.insert("ttlSeconds".into(), ttl.into());
+        }
+        body
+    }
+
     pub fn exchange_oidc(&self, token: &str, now: u64) -> Result<Bearer> {
-        let mut response =
-            self.exchange("/auth/oidc", Exchange::Oidc, |_| json!({ "token": token }))?;
+        let mut response = self.exchange("/auth/oidc", Exchange::Oidc, |_| {
+            self.exchange_body(json!({ "token": token }))
+        })?;
         bearer_from(&self.url("/auth/oidc"), &mut response, now)
     }
 
@@ -980,7 +998,13 @@ impl Api {
             let elapsed = now.saturating_add(started.elapsed().as_secs());
             let at = last.get().map_or(elapsed, |before| elapsed.max(before + 1));
             last.set(Some(at));
-            sign(at)
+            let signed = sign(at);
+            self.exchange_body(json!({
+                "method": signed.method,
+                "url": signed.url,
+                "body": signed.body,
+                "headers": signed.headers,
+            }))
         })?;
         bearer_from(&self.url("/auth/aws"), &mut response, now)
     }
@@ -1004,12 +1028,12 @@ impl Api {
         now: u64,
     ) -> Result<KeypairGrant> {
         let url = self.url("/auth/keypair");
-        let body = json!({
+        let body = self.exchange_body(json!({
             "credentialId": credential_id,
             "nonce": nonce,
             "generation": generation,
             "signature": signature,
-        });
+        }));
         let mut response =
             self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(&body))?;
         expect(&mut response, &[StatusCode::OK, StatusCode::CREATED]).map_err(|e| match e {

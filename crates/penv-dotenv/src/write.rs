@@ -46,7 +46,7 @@ pub fn write(entries: &[(&str, &str)]) -> Result<String, WriteError> {
     Ok(out)
 }
 
-/// [`write`], then one `# penv:redacted KEY` line for each key penv-cloud
+/// [`write`], then one `# penv:redacted KEY` line for each key penv.cloud
 /// holds and withheld. A comment, so no loader reads it as a value.
 pub fn write_redacted(entries: &[(&str, &str)], redacted: &[&str]) -> Result<String, WriteError> {
     let mut out = write(entries)?;

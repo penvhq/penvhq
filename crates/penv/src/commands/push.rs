@@ -2,6 +2,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use penv_cloud::api::{Address, Bearer, CloudKey, PutResult};
+use penv_cloud::provider::Capability;
 use penv_cloud::write::MAX_BATCH;
 use penv_schema::Schema;
 use serde_json::json;
@@ -60,6 +61,7 @@ pub fn run(
     let mut opened = None;
     let wanted = if asks {
         let cloud = Cloud::open(env, &detection)?;
+        cloud.require(Capability::Write)?;
         let bearer = cloud.bearer(env, schema.org.as_deref())?;
         let wanted = pick_environment(&cloud, &bearer, &schema, &schema_path, env_flag, env, true)?;
         opened = Some((cloud, bearer));
@@ -105,7 +107,7 @@ pub fn run(
         .with_exit(Exit::Validation));
     }
 
-    // Everything Penv Cloud would refuse is refused here, before any batch goes.
+    // Everything penv.cloud would refuse is refused here, before any batch goes.
     let mut keys = payload(&schema, &values);
     super::cloud::writable(&keys)?;
     prunable(prune, keys.len())?;
@@ -114,6 +116,7 @@ pub fn run(
         Some(pair) => pair,
         None => {
             let cloud = Cloud::open(env, &detection)?;
+            cloud.require(Capability::Write)?;
             let bearer = cloud.bearer(env, schema.org.as_deref())?;
             (cloud, bearer)
         }

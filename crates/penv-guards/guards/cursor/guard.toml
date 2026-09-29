@@ -1,4 +1,5 @@
 name = "cursor"
+rank = 30
 description = "Cursor CLI deny rules, and read and shell hooks that fail closed."
 scope = "project"
 detect = [".cursor", "~/.cursor"]

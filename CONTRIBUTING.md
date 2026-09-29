@@ -7,52 +7,59 @@
 ```bash
 cargo check --workspace
 cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace -- -D warnings
 cargo fmt --all -- --check
 ```
 
-CI runs `fmt`, `clippy` and `test` on Linux, macOS and Windows. A change under `crates/penv-targets/` also runs `crates/penv-targets/tests/compile.sh`, which compiles and runs every language snapshot with Go, Rust, PHP, Java and .NET; locally it skips a toolchain you do not have. A change to the varlock plugin runs `npm test` in `packages/varlock-plugin`. `--all-targets` also lints the tests, which CI does not; run it anyway. Release builds run only in CI; `.cargo/config.toml` pins two build jobs.
+Release builds run only in CI. `.cargo/config.toml` pins two build jobs; do not raise it.
+
+## CI
+
+| Workflow | Trigger | Runs |
+|---|---|---|
+| `ci.yml` | every pull request | fmt, clippy and test on Linux, macOS, Windows; `install.test.sh` and the npm launcher test |
+| `targets.yml` | `crates/penv-targets/**` | `tests/compile.sh`: builds and runs every language snapshot |
+| `sealed.yml` | `crates/penv/**`, `crates/penv-schema/**` | sealed runs against real clients |
+| `varlock-plugin.yml` | `packages/varlock-plugin/**` | typecheck and `npm test` |
+| `vscode.yml` | `packages/vscode/**`, `crates/penv-schema/**`, `lsp.rs`, `source.rs` | typecheck, `npm test`, the extension on VS Code 1.90 and stable |
+
+`compile.sh` skips a toolchain you lack; CI fails instead.
 
 ## Where things go
 
 | Change | Where |
 |---|---|
-| Schema syntax, validation, computed values | `crates/penv-schema` (pure, no I/O) |
+| Schema syntax, validation, computed values | `crates/penv-schema` (pure) |
 | `.env` reading, writing, file cascade | `crates/penv-dotenv` (pure) |
 | Output masking | `crates/penv-mask` (pure) |
 | Agent detection | `crates/penv-agent` |
-| Commands, files, processes, the preload | `crates/penv` |
+| Commands, files, processes, preload | `crates/penv` |
 | penv.cloud API, credentials, TLS | `crates/penv-cloud` |
-| A language shipped with penv | a folder in `crates/penv-targets/targets/<name>/`: `target.toml` and `env.tmpl`, one line in `BUILT_IN` (`load.rs`), a snapshot in `tests/snapshots/`, and a block in `tests/compile.sh` that builds and runs it |
+| A language shipped with penv | `crates/penv-targets/targets/<name>/` (`target.toml`, `env.tmpl`); `PENV_BLESS=1 cargo test -p penv-targets` writes its snapshots |
+| A coding tool for [`penv guard`](https://penv.cloud/docs/cli/guard) | `crates/penv-guards/guards/<name>/` (`guard.toml` with its `rank`, and the templates it names) |
+| A cloud credential kind | a file in `crates/penv-cloud/src/credential/` whose `PLACES` give its rank in the lookup order |
 | Sealed runs: the HTTPS, Postgres and Redis proxies | `crates/penv/src/sealed/` |
 | Encryption at rest | `crates/penv/src/localcrypt.rs` |
-| The varlock plugin | `packages/varlock-plugin/` (TypeScript, published as `@penvhq/varlock-plugin`) |
-| A language for one repository | `[targets.<name>]` in `.penv/config.toml` and `.penv/<name>.tmpl`; no Rust |
-| A coding tool for `penv guard` | a folder in `crates/penv-guards/guards/<name>/` |
-| A cloud credential kind | one file in `crates/penv-cloud/src/credential/` and one line in `mod.rs` |
-
-Adding a target, guard or credential kind adds files and edits nothing beside them. If it needs a sibling changed, the boundary is wrong; fix the boundary first.
+| The varlock plugin ([varlock.dev](https://varlock.dev)) | `packages/varlock-plugin/` (`@penvhq/varlock-plugin`) |
+| The editor extension | `packages/vscode/` |
 
 ## Rules
 
-- **Never print a value.** Outside `reveal` and `pull`, no code path writes a sensitive value to stdout, stderr, a log or a fixture. Error messages name keys, never values.
-- **Fake values in tests.** Use `sk_test_FAKE…`-style strings. A test that could leak asserts the value is absent from every output.
-- **Pure cores.** Parsing, validation, masking and resolution take values and return values. Filesystem, network and clock stay in `crates/penv` and `crates/penv-cloud`.
+[AGENTS.md](./AGENTS.md#culture), plus:
 
-- **One name per concept.** No aliases for decorators, flags or commands.
-- **Portable tests.** Integration tests run under `cmd` on Windows. Shell snippets branch on `cfg!(windows)` (`echo %KEY%` / `echo $KEY`); use `exit 0`, not `true`.
-- **Comments** give the reason in one line when the code does not show it.
+- **Fake values.** `sk_test_FAKE…`-style strings. A test that could leak asserts the value is absent from all output.
+- **Portable.** Integration tests run under `cmd` on Windows. Shell snippets branch on `cfg!(windows)` (`echo %KEY%` / `echo $KEY`); use `exit 0`, not `true`.
 
 ## Pull requests
 
-1. The four commands above pass.
+1. The four commands pass; `cargo test` also checks [`penv help`](https://penv.cloud/docs/cli/help) `--json` against `docs/manifest.schema.json`.
 2. Behaviour changes update `docs/Design.md`; user-facing changes update `README.md`.
 3. `penv help --json` changes only when a command, flag or exit code changes.
 4. The description says what changed, what was tested, and what was not.
 
 ## Security reports
 
-Not in issues. See [SECURITY.md](./SECURITY.md).
+[SECURITY.md](./SECURITY.md), never an issue.
 
 ## Conduct
 

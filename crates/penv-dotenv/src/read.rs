@@ -26,7 +26,7 @@ pub struct Dotenv {
     /// Every assignment as (key, first line, last line), repeats included.
     pub assignments: Vec<(String, u32, u32)>,
     /// Keys a `# penv:redacted KEY` line names, in file order, each once:
-    /// present in penv-cloud and withheld from whoever pulled the file.
+    /// present in penv.cloud and withheld from whoever pulled the file.
     pub redacted: Vec<String>,
 }
 
@@ -387,7 +387,7 @@ fn unescape(value: &str, line_no: u32, at: usize, out: &mut Dotenv) -> String {
                 result.push('\t');
             } // Kept escaped: `\$` is how a computed value says a literal dollar.
             Some((_, '$')) => result.push_str("\\$"),
-            // Penv Cloud's export escapes a backtick along with `$`.
+            // penv.cloud's export escapes a backtick along with `$`.
             Some((_, '`')) => result.push('`'),
             Some((_, quoted @ ('"' | '\\'))) => {
                 warn(out, index);

@@ -1,204 +1,200 @@
 # Cloud API for the CLI
 
-The surface `penv` speaks to penv.cloud. It is new in v1 and lives beside the existing machine-only `/api/v1/secrets` routes, which the retired TypeScript provider used and which nothing else needs. Every route is under `/api/v1`, answers JSON, and is authenticated with `Authorization: Bearer <credential>` unless stated. Error bodies are `{ "error": "<code>" }` with the status codes below.
+The HTTP contract `penv` speaks to provider `penv`: our hosted [penv.cloud](https://penv.cloud), or any server you point `PENV_URL` or `[providers.penv] url` at ([providers](./PROVIDERS.md)). The client is `crates/penv-cloud/src/api.rs`, one method per route.
 
-## Principals and credentials
+| Rule | Value |
+|---|---|
+| Base path | `{root}/api/v1` |
+| Transport | HTTPS; plain HTTP only to `127.0.0.1`, `localhost`, `[::1]` |
+| Redirects | never followed; any 3xx but 304 fails the request |
+| Timeout | 30 s per request |
+| Auth | `Authorization: Bearer <credential>`, except the unauthenticated routes marked below |
+| Every request | `User-Agent: penv/<version>`; `X-Penv-Agent` and `X-Penv-Session` when an agent is detected |
+| Path segments | percent-encoded to RFC 3986 unreserved; a segment made only of dots is refused before sending |
+| Error body | `{ "error": "<code>" }`, with a `message` or `detail` where a route below says so; `retry-after` header (or `retryAfter` in the body) on 429 |
+| Retry | a 5xx is sent once more after 1 s; a machine exchange's `503` up to three more times (below) |
+| Server text | a `message` or `detail` the CLI shows loses control, bidi and zero-width characters and stops at 500 characters |
 
-| Prefix | Who | How obtained | Lifetime |
+## Credentials
+
+| Prefix | Who | Obtained by | Lifetime on penv.cloud |
 |---|---|---|---|
-| `pcu_` | a person | device-code login | 30 days from last use (every authenticated request extends `expiresAt`) and never past 90 days from issue; revoked by `logout`, a password reset, "Sign out everywhere" and account recovery |
-| `pck_` | a machine identity | console-issued token, or exchanged from OIDC, AWS SigV4 or a bound keypair | as today; exchanges mint 15 minutes for the CLI |
-
-Both resolve through one verifier to the same claims shape and one RBAC evaluator. A user credential carries the user's own role assignments and no fixed scope. A machine credential is bound to one project and environment; a request whose address is another environment is `403 forbidden`.
-
-Claims: `{ principal: "user" | "machine", principalId, credentialId, orgId, projectId?, environmentId?, grants, plan }`.
+| `pcu_` | a person | [`penv login`](https://penv.cloud/docs/cli/login) (device code) | 30 days from last use, never past 90 days from issue; revoked by [`penv logout`](https://penv.cloud/docs/cli/logout), a password reset, "Sign out everywhere" and account recovery |
+| `pck_` | a machine | a console token (`PENV_TOKEN`), or an OIDC, AWS or keypair exchange | exchanges: 15 minutes, 5 under an agent (`ttlSeconds`) |
 
 ## Device-code login
 
-```
-POST /api/v1/auth/device            unauthenticated, IP limited
-  -> 201 { deviceCode, userCode, verificationUri, expiresIn: 600, interval: 5 }
+| Route | Body | Answers |
+|---|---|---|
+| `POST /auth/device` (unauthenticated) | `{ device }`: the host name the approval page shows | `201 { deviceCode, userCode, verificationUri, expiresIn, interval }` |
+| `POST /auth/device/token` (unauthenticated) | `{ deviceCode }` | `201 { credential, expiresAt, user: { email }, orgs: [{ slug, name }] }`; `428 authorization_pending`; `429` (any code); `410 expired`; `403 denied` |
+| `POST /auth/revoke` | none; revokes the bearer itself | `200` or `204` |
 
-POST /api/v1/auth/device/token      body { deviceCode }
-  -> 428 { error: "authorization_pending" }
-  -> 429 { error: "slow_down" }
-  -> 410 { error: "expired" }
-  -> 403 { error: "denied" }
-  -> 201 { credential: "pcu_...", expiresAt, user: { email }, orgs: [{ slug, name }] }
+The CLI polls every `interval` seconds; on any 429 it switches to the `retry-after` the answer names. `user.email` may be null. On penv.cloud, `expiresIn` is 600, `interval` is 5 and `userCode` is `XXXX-XXXX`, case-insensitive.
 
-console page /device                signed-in person enters userCode, sees the device name and IP, approves or denies; step-up MFA applies
-POST /api/v1/auth/revoke            Bearer pcu_ or pck_, revokes itself; idempotent
-```
-
-`POST /auth/device` accepts `{ "device": "<host name>" }`, shown on the approval page; the server keeps 48 plain characters (letters, digits, space and `._-()'@`), and the CLI sends the host name already reduced to them. The approval page does not fill the code in from the URL: the CLI opens `verificationUri` and tells the person to type the code it shows (`Enter this code in the browser: ABCD-EFGH. Only approve it if you started this login.`). The approver picks one workspace, the default, or all of them, so a login may reach fewer workspaces than the person belongs to: `orgs` in the token answer lists the ones it reaches, and the CLI prints them. A `404 not_found` for another workspace says the login was approved for a different workspace and to run `penv login` again and choose it.
-
-A workspace's sign-in policy may refuse a login with `403 { "error": "forbidden", "message": "…" }` (single sign-on or two-factor required); the CLI prints `message` as written. A `403 forbidden` without `message` keeps its own copy. A `401 expired` or `401 unauthorized` from a stored login means it has ended: the CLI says to run `penv login` again, and neither retries nor loops. The user code is eight characters in two groups, `XXXX-XXXX`, case-insensitive, normalised server-side. Approval marks the row; the credential is minted by the first successful poll after approval, once. While polling, any 429 (the IP ceiling's `rate_limited` as well as `slow_down`) means back off, honouring `retry-after`. `user.email` may be null.
+| Rule | The CLI |
+|---|---|
+| The approval page does not fill the code in from the URL | opens `verificationUri` and prints `Enter this code in the browser: ABCD-EFGH. Only approve it if you started this login.` |
+| `device` is kept as 48 plain characters (letters, digits, space, `._-()'@`) | sends the host name already reduced to them |
+| The approver picks one workspace (the default) or all | lists `orgs`, the workspaces the login reaches, after sign-in; a `404` says the login may have been approved for a different workspace and to run `penv login` again and choose it |
+| `403 { "error": "forbidden", "message" }`: a workspace's sign-in policy (single sign-on, two-factor) | prints `message` as written; a `forbidden` without one keeps its own copy |
+| `401 expired` or `401 unauthorized` from a stored login | says the login ended and to run `penv login` again; no retry, no loop |
 
 ## Machine exchanges
 
-Unauthenticated, IP limited. Each returns `201 { credential: "pck_...", expiresAt }` with a 15 minute lifetime capped by the trust's own expiry, or one of:
+All unauthenticated. Each answers `201 { credential: "pck_...", expiresAt }` (200 accepted), where `expiresAt` is the real expiry.
 
-| Status | Body | Meaning | The CLI |
-|---|---|---|---|
-| 403 | `{ "error": "refused" }` | the CI trigger is refused; `pull_request_target` is refused on every exchange | names the trigger (`GITHUB_EVENT_NAME`) and says to run the job on `push`, `pull_request` or `workflow_dispatch` |
-| 401 | `{ "error": "expired" }` | the token or signed request has expired | says so; a CI job is not told to `penv login` |
-| 401 | `{ "error": "unauthorized" }` | the token is invalid or untrusted, including a GitHub token without `event_name` | points at the trust under Connect a Platform |
-| 503 | `{ "error": "unavailable" }` | retryable | tries three more times, 1, 2 and 4 seconds apart, then says the service could not verify the token right now |
+The workspace a machine login names is its id, a UUID: the Organization ID under Settings → Organization in the console. A slug is refused before any lookup with `400 { "error": "audience_not_workspace_id", "message" }`, and the CLI prints `message` as written. The CLI takes the workspace from `@penv=<org>/<project>`: where a login asks for an audience (GitHub Actions) or signs the header (AWS), it validates the org as a UUID and refuses a slug before any request, saying where the id is. There is no slug-to-id lookup. A held token (`ID_TOKEN`, `PENV_OIDC_TOKEN`) carries whatever audience it was minted with. Routes a person's `penv login` reaches by slug are unchanged.
 
-A signed AWS login request is accepted once. The CLI never sends one twice: every try, retries included, is signed afresh with a later `x-amz-date`.
+Every route that mints a `pck_` (`/auth/oidc`, `/auth/aws`, `/auth/keypair`) also takes an optional integer `ttlSeconds` in its body: the CLI sends 300 under a detected or declared agent and 900 otherwise. The server mints for the least of `ttlSeconds`, 900 and the trust's own cap; absent means 15 minutes; a non-integer or anything below 60 is `400`. The CLI never reuses a minted credential past its session's `ttlSeconds`, whatever `expiresAt` says.
 
-```
-POST /api/v1/auth/oidc               { token }                       the token's audience is the workspace id
-POST /api/v1/auth/aws                { method, url, body, headers }  a SigV4-signed STS GetCallerIdentity request; x-penv-cloud-org, the workspace id, must be among the signed headers
-POST /api/v1/auth/keypair/enroll     { secret: "pce_...", publicKey }  SPKI DER base64, Ed25519 -> 201 { credentialId, generation: 1 }
-POST /api/v1/auth/keypair/challenge  { credentialId } -> 200 { nonce }   valid 120 s
-POST /api/v1/auth/keypair            { credentialId, nonce, generation, signature } -> 201 { credential, expiresAt, generation }
-```
+| Route | Body |
+|---|---|
+| `POST /auth/oidc` | `{ token, ttlSeconds }`; the CLI asks the CI platform for a token whose audience is the workspace id |
+| `POST /auth/aws` | `{ method, url, body, headers, ttlSeconds }`: a SigV4-signed STS `GetCallerIdentity`, with `x-penv-cloud-org`, the workspace id, among the signed headers. Accepted once: every try, retries included, is signed afresh with a later `x-amz-date` |
+| `POST /auth/keypair/enroll` | `{ secret: "pce_...", publicKey }` (Ed25519 SPKI DER, base64) answers `{ credentialId, generation }` |
+| `POST /auth/keypair/challenge` | `{ credentialId }` answers `{ nonce }` |
+| `POST /auth/keypair` | `{ credentialId, nonce, generation, signature, ttlSeconds }` answers `{ credential, expiresAt, generation }` |
 
-The workspace a machine login names is its id, a UUID: the Organization ID under Settings → Organization in the console. A slug is refused before any lookup with `400 { "error": "audience_not_workspace_id", "message": "…" }`, whose `message` is safe to show and the CLI prints as written. The CLI takes the workspace from `@penv=<org>/<project>`: where a login asks for an audience (GitHub Actions) or signs the header (AWS), it validates the org as a UUID first and refuses a slug locally, saying where the id is. There is no public slug-to-id lookup. A held OIDC token (`ID_TOKEN`, `PENV_OIDC_TOKEN`) carries whatever audience it was minted with. Routes a person's `penv login` reaches by slug (`/envs/{org}/…`) are unchanged.
+| Refusal | Meaning | The CLI |
+|---|---|---|
+| `403 refused` | the CI trigger is refused; `pull_request_target` always | names the trigger (`GITHUB_EVENT_NAME`) and says to run on `push`, `pull_request` or `workflow_dispatch` |
+| `401 expired` | the token or signed request expired | says so; a CI job is not told to `penv login` |
+| `401 unauthorized` | invalid or untrusted, including a GitHub token without `event_name` | points at the trust under Connect a Platform |
+| `503 unavailable` | retryable | three more tries, 1, 2 and 4 s apart, then says the token could not be verified right now |
 
-The keypair signs the UTF-8 bytes of `penv-cloud:keypair:v1\n{credentialId}\n{nonce}\n{generation}` (four lines joined by newline); the signature is base64. The client persists the returned `generation` before using the credential. A generation mismatch that is not a replay answers `409 { error: "cloned" }` and revokes the keypair and everything it minted.
-
-The CLI stores the credential in the OS keychain under the API base URL. `PENV_TOKEN` in the environment takes precedence over the keychain and is how CI and servers pass a `pck_`.
+The keypair signs the UTF-8 bytes of `penv-cloud:keypair:v1\n{credentialId}\n{nonce}\n{generation}` (base64 signature) and persists the returned `generation` before using the credential. `409 cloned` means a second machine used the keypair; we revoke it.
 
 ## Environments
 
-An address is `{org}/{project}/{environment}`; org and project are slugs, environment is the free-form name the console knows.
+An address is `{org}/{project}/{environment}`: org and project slugs, and the environment's free-form name.
 
-```
-HEAD /api/v1/envs/{org}/{project}/{environment}     If-None-Match honoured
-  -> 304
-  -> 200 with ETag: "<hash>"    hash over every (parameter id, latest version, meta) in the environment; changes when any value or decorator changes
-  -> 404 not_found | 403 forbidden
+| Route | Command | Request | Answers |
+|---|---|---|---|
+| `HEAD /envs/{org}/{project}/{environment}` | cached reads | `If-None-Match` | `304`, or `200` with `ETag` |
+| `GET /envs/{org}/{project}/{environment}` | [`penv run`](https://penv.cloud/docs/cli/run), [`penv reveal`](https://penv.cloud/docs/cli/reveal) and every read | `If-None-Match` | `304`, or `200` with `ETag` and the body below |
+| `PUT /envs/{org}/{project}/{environment}` | [`penv push`](https://penv.cloud/docs/cli/push) | `{ keys: [{ path, name, schema?, value? }], prune }` | `200 { written, unchanged, pruned, etag }` |
+| `PATCH /envs/.../keys/{path...}/{name}` | [`penv set`](https://penv.cloud/docs/cli/set) | `{ value?, schema? }` | `200 { version, etag }` |
+| `DELETE /envs/.../keys/{path...}/{name}` | [`penv unset`](https://penv.cloud/docs/cli/unset) | none | `200 { etag }` |
 
-GET  /api/v1/envs/{org}/{project}/{environment}     If-None-Match honoured
-  -> 304
-  -> 200 ETag + {
-       "keys": [ { "path": "", "name": "DATABASE_URL", "kind": "static", "version": 3,
-                   "updatedAt": "2026-09-22T14:05:00Z",     not yet served; the CLI reads it for @rotate (Design section 8)
-                   "schema": { <one key of the .env.schema JSON IR> },
-                   "value": "..." },
-                 { "path": "", "name": "DB_PASSWORD", "kind": "static", "version": 4,
-                   "redacted": true } ],    write-only environment, identity not a workload: present, no "value"
-       "skipped": [ "path/name" ],     dynamic keys and keys with no version; absent when empty
-       "writeOnly": true               the environment is write-only; absent otherwise
-     }
-  requires secret:reveal; `?values=false` lists with schema only and requires secret:read
-
-PUT  /api/v1/envs/{org}/{project}/{environment}     push
-  body { "keys": [ { "path", "name", "schema", "value"? } ], "prune": false }
-  -> 200 { "written": n, "unchanged": n, "pruned": n, "etag": "..." }
-  a key with no value updates the schema only; prune=true deletes keys not in the body; requires secret:write (and secret:delete when pruning)
-
-PATCH  /api/v1/envs/{org}/{project}/{environment}/keys/{path...}/{name}   set
-  body { "value"?: string, "schema"?: {...} }
-  -> 200 { "version": n, "etag": "..." }
-
-DELETE /api/v1/envs/{org}/{project}/{environment}/keys/{path...}/{name}   unset
-  -> 200 { "etag": "..." }
+```json
+{
+  "keys": [
+    { "path": "", "name": "DATABASE_URL", "kind": "static", "version": 3,
+      "updatedAt": "2026-09-22T14:05:00Z", "schema": { "sensitive": true }, "value": "..." },
+    { "path": "", "name": "DB_PASSWORD", "kind": "static", "version": 4, "redacted": true }
+  ],
+  "skipped": ["path/name"],
+  "writeOnly": true
+}
 ```
 
-A write names a key by `^[A-Za-z0-9_][A-Za-z0-9_.-]*$`, at most 255 characters and no `/`; its path is empty or `/`-joined segments, none empty, `.` or `..`, each at most 255 characters and the whole at most 1024, with no control, whitespace, bidi or zero-width character and none of ``\ $ ` " ' = # ; & | < > ( ) { } * ? !``. A value is at most 256 KiB in UTF-8 bytes, and a `PUT` carries at most 1000 keys. The CLI checks all of it before sending and splits a larger push into batches; the server answers `400 name_invalid`, `413 value_too_large`, `413 too_many_keys` or `413 body_too_large`, each with a `detail` naming the address. An environment that requires a second approver refuses a machine credential's write, delete or schema change with `409 machine_change_requires_approval` and a `detail`; a person makes that change in the console, where it becomes a change request.
+| Field | Meaning |
+|---|---|
+| `updatedAt` | last value write; `@rotate` counts from it |
+| `skipped` | keys with no value to give (dynamic, or never written); absent when empty |
+| `redacted` | present and withheld from this identity |
+| `writeOnly` | the environment is write-only; absent otherwise |
 
-A `.env` the console exports quotes each value in single quotes, or in double quotes with `$` and the backtick escaped; the CLI reads both.
+On `PUT`, a key with no `value` updates its schema only, and `prune: true` deletes the keys the body leaves out, except dynamic ones. The `ETag` changes when any value, schema or the write-only flag changes.
 
-Every address and key segment is percent-encoded by the client; environment names are free-form. The per-key schema is stored in `parameters.meta` as the same JSON object the CLI emits for that key in `penv schema --json`, minus `name`: `type {name, raw, members, constraints}`, `required`, `sensitive`, `default`, `description`, `example`, `docs`, `since`, `deprecated` (a string note), `rotate`, `dynamic` (boolean), `dynamicFrom`, `hosts` (below). The client omits absent fields; the server treats `null` as absent. Anything else is `400 schema_invalid`. Writes to a dynamic key answer `409 dynamic`. The console renders and edits it. `must_encrypt` follows `sensitive`.
+| Write limit | The CLI, before sending |
+|---|---|
+| name `^[A-Za-z0-9_][A-Za-z0-9_.-]*$`, at most 255 characters, no `/` | refuses as `name_invalid`, naming the key |
+| path empty or `/`-joined segments: none empty, `.` or `..`; each at most 255 characters, the whole at most 1024; no control, whitespace, bidi or zero-width character, none of ``\ $ ` " ' = # ; & \| < > ( ) { } * ? !`` | refuses as `name_invalid`, naming the key |
+| value at most 256 KiB of UTF-8 | refuses as `value_too_large`, naming the key and never the value |
+| at most 1000 keys per `PUT` | splits a push into batches after checking every value's size; refuses `--prune` for more than one batch |
+
+A console export of an environment quotes each value in single quotes, or in double quotes with `$` and the backtick escaped; the CLI's `.env` reader takes both.
+
+### Per-key schema
+
+`schema` is the key's object from [`penv schema --json`](https://penv.cloud/docs/cli/schema) minus `name`.
+
+| Refusal | Meaning | CLI exit |
+|---|---|---|
+| `400 schema_invalid` | a schema field is refused; `field` names it | 1 |
+| `400 name_invalid` | a name or path outside the write limits; `detail` names the address | 3 |
+| `413 value_too_large` | a value over 256 KiB; `detail` names the address | 3 |
+| `413 too_many_keys`, `413 body_too_large` | a request over the limits; the CLI batches, so it names this a bug in penv | 1 |
+| `409 machine_change_requires_approval` | the environment requires a second approver, so a machine credential cannot write, delete or change its schema; `detail` says more | 2; a person makes the change in the console, where it becomes a change request |
+| `409 dynamic` | the key's value is generated; the CLI cannot write it | 3 |
 
 ### Write-only environments
 
-An environment the console marks write-only (Pro plan and above) hands plaintext to workload identities only: a `pck_` exchanged from OIDC, AWS IAM or a bound keypair. A person's `pcu_` and a static `pck_` token get each key with `"redacted": true` and no `value`; `path`, `name`, `kind`, `version`, `updatedAt` and `schema` are still sent. The `ETag` changes when the flag flips.
+In a write-only environment, only workload identities get plaintext: a `pck_` exchanged from OIDC, AWS or a bound keypair. A `pcu_` and a console `pck_` get each key with `"redacted": true` and no `value`; the other fields still arrive.
 
-| Route | Write-only, identity not a workload |
+| Route | Identity not a workload |
 |---|---|
-| `GET /envs/...` | `200`, `"writeOnly": true`, each key `"redacted": true` with no `value` |
-| `GET /secrets/...` | `409 { "error": "redacted" }` |
-| `POST /approvals` | `409 { "error": "redacted" }`: an approval cannot release a write-only value |
+| `GET /envs/...` | `200`, `"writeOnly": true`, each key `"redacted": true` |
+| `POST /approvals` | `409 redacted`: an approval cannot release a write-only value |
 
-A redacted key has a value. The CLI never reports it as missing and never tells anyone to `penv set` it.
+A redacted key has a value: the CLI never reports it missing and exits 6 where it needs one. A value in `.env.<env>.local` wins over redaction on that machine.
 
-| Command | A redacted key no local layer supplies |
-|---|---|
-| `run`, `bundle` | refused: `redacted`, exit 6, naming every such key and the environment |
-| `pull` | writes the comment `# penv:redacted KEY` in place of a value line; JSON `"redacted": [names]` |
-| `check` | a note, not a failure; JSON `"redacted": [names]` |
-| `ls` | value `redacted` |
-| `why KEY` | state `redacted`, set in the cloud environment and withheld |
-| `reveal KEY` | refused: `redacted`, exit 6 |
+### hosts
 
-A value in `.env.<env>.local` (or any value file, or the process environment) wins over redaction on that machine.
-
-### `hosts`
-
-The hosts a value may be sent to (`@hosts` in `.env.schema`). When a key has them, an agent's process gets a placeholder and penv puts the real value into requests to these hosts only. The server stores the list and hands it back; it enforces nothing with it.
+`hosts` is the list `@hosts` declares: the hosts a value may be sent to. We store it and hand it back unchanged; it grants and enforces nothing on our side.
 
 ```json
-{ "type": { "name": "string", "raw": "string(startsWith=sk_live_)", "constraints": { "startsWith": "sk_live_" } },
-  "sensitive": true, "hosts": ["api.stripe.com", "*.stripe.com"] }
+{ "type": { "name": "string" }, "sensitive": true, "hosts": ["api.stripe.com", "*.stripe.com"] }
 ```
 
-Accept it when every rule holds; otherwise `400 schema_invalid` with `"field": "hosts"`:
-
-| Rule | Accept | Refuse |
+| Rule | Accept | Refuse (`400 schema_invalid`, `"field": "hosts"`) |
 |---|---|---|
-| An array of 1 to 32 strings; an empty array is absent | `["api.stripe.com"]` | `"api.stripe.com"`, `[]` kept as a value, 33 entries |
-| Each is a host name or IPv4 address: lowercase labels of `a-z`, `0-9`, `-`, 1 to 63 characters, not starting or ending with `-`, 253 characters in all | `db-1.internal`, `10.0.0.5`, `localhost` | `API.stripe.com`, `-a.com`, `a..com` |
-| A wildcard only as the whole first label, followed by at least two labels, and never directly over a domain where anyone can get a name (the CLI's list: `SHARED_SUFFIXES` in `crates/penv-schema/src/placeholder.rs`) | `*.stripe.com`, `*.acme.vercel.app` | `*`, `*.com`, `api.*.com`, `*.co.uk`, `*.vercel.app` |
+| An array of 1 to 32 strings; `[]` is absent | `["api.stripe.com"]` | `"api.stripe.com"`, 33 entries |
+| Host names or IPv4: lowercase labels of `a-z`, `0-9`, `-`, 1 to 63 characters, no leading or trailing `-`, 253 in all | `db-1.internal`, `10.0.0.5`, `localhost` | `API.stripe.com`, `-a.com`, `a..com` |
+| A wildcard only as the whole first label, over at least two labels, never over a shared suffix (`SHARED_SUFFIXES` in `crates/penv-schema/src/placeholder.rs`) | `*.stripe.com`, `*.acme.vercel.app` | `*`, `*.com`, `api.*.com`, `*.co.uk`, `*.vercel.app` |
 | No scheme, port, path, query or user | | `https://a.com`, `a.com:443`, `a.com/v1`, `u@a.com` |
 | No duplicates | | `["a.com", "a.com"]` |
 
-Storage and round trip:
-
-1. Store the array as given, in the key's `parameters.meta`, in the order sent.
-2. Return it unchanged wherever the per-key schema is returned: `GET /envs` (`keys[].schema.hosts`) and `?values=false`.
-3. A `PUT` or `PATCH` whose schema has no `hosts` removes it, like any other schema field.
-4. `hosts` changes no permission and no audit row. It is a schema change: bump the environment `ETag`.
-5. Console: list the hosts on the key, editable with the same rules, and mark the key as "sent only to these hosts".
-
-The CLI sends `hosts` on `push` and `set`. Until the server accepts it, a `400 schema_invalid` on a write that carried `hosts` is retried once without it, and the CLI warns that the cloud copy lacks it. So the server can ship this at any time, with no CLI release.
+A `PUT` or `PATCH` whose schema has no `hosts` removes it. When a server answers `400 schema_invalid` to a write that carried `hosts`, the CLI retries once without it and warns that the cloud copy lacks it.
 
 ## Reveal approvals
 
-An agent session may ask for a value; only a person may release one. This is phase 2b, and it exists.
+An agent may ask for a value; only a person releases one. The CLI side is on the [`penv reveal`](https://penv.cloud/docs/cli/reveal) page.
 
-```
-POST /api/v1/approvals            bearer: the user credential (pcu_), agent session headers as on every request
-  body { org, project, environment, key, device }
-  201 { id, url, expiresAt }      requires secret:reveal for the caller; 10 minute expiry
-  409 { error: "approval_pending", id, url } when an unexpired request for the same key and session exists
-GET  /api/v1/approvals/{id}       200 { id, status: "pending"|"approved"|"denied"|"expired"|"redeemed", key, url, expiresAt }
-POST /api/v1/approvals/{id}/redeem
-  200 { key, value }              once; status becomes "redeemed"; audited as secret.reveal with the approver, the agent harness and session id
-  409 { error: "approval_pending" | "approval_denied" | "approval_expired" | "approval_redeemed" }
-```
+| Route | Body | Answers |
+|---|---|---|
+| `POST /approvals` | `{ org, project, environment, key, device }` | `201 { id, url, expiresAt }`; `409 { error: "approval_pending", id, url }` when one is open for the same key and session |
+| `GET /approvals/{id}` | none | `200 { id, status, key, url, expiresAt }` |
+| `POST /approvals/{id}/redeem` | none | `200 { key, value }`, once; `409` `approval_pending`, `approval_denied`, `approval_expired` or `approval_redeemed` |
 
-`device` is the machine name the console page shows. The harness and the session are not body members: they reach the row from the `X-Penv-Agent` and `X-Penv-Session` headers the CLI stamps on every request, and the server reads them there. The 409 reuse answer carries the id and the url and no `expiresAt`, so the CLI passes none on.
+The harness and session reach the approval from the `X-Penv-Agent` and `X-Penv-Session` headers, not the body. `status` is `pending`, `approved`, `denied`, `expired` or `redeemed`. On penv.cloud, only a `pcu_` with `secret:reveal` can ask, and the request expires after 10 minutes.
 
-The CLI side: `penv reveal KEY` under an agent creates the request and exits 4 with `{ "error": "approval_required", "message", "approval": id, "url", "expiresAt", "fix": "A person approves at <url>, then run penv reveal KEY --approval <id>." }`; a 409 answers in the same shape with no `expiresAt` and a message saying the key already has an open approval. `penv reveal KEY --approval <id>` reads `GET /approvals/{id}` first and refuses with its own `approval_mismatch` at exit 4, fix `Run penv reveal KEY for its own approval.`, when that approval names another key, so an id is never spent on a key nobody released. Otherwise it redeems: the value on 200, and on a 409 either exit 4 again (`approval_pending`, whose page and expiry come from that first read; `approval_expired` and `approval_redeemed`, whose fix is a fresh `penv reveal KEY`) or exit 2 (`approval_denied`). For a person at a terminal nothing changes: `reveal` is a plain read gated by `secret:reveal`, and `--approval` redeems an id they were handed the same way.
+## Projects and environments
 
-## Projects
+The routes behind [`penv project`](https://penv.cloud/docs/cli/project) and [`penv env`](https://penv.cloud/docs/cli/env).
 
-```
-GET  /api/v1/orgs                                   -> { orgs: [{ slug, name }] }
-GET  /api/v1/orgs/{org}/projects                    -> { projects: [{ slug, name, environments: [name] }] }
-POST /api/v1/orgs/{org}/projects                    body { name, environments: ["development"] } -> 201 ; requires project:create
-```
+| Route | Command | Body | Answers |
+|---|---|---|---|
+| `GET /orgs` | `penv push`, linking a schema | none | `{ orgs: [{ slug, name }] }` |
+| `GET /orgs/{org}/projects` | [`penv project ls`](https://penv.cloud/docs/cli/project-ls) | none | `{ projects: [{ slug, name, environments: [name] }] }` |
+| `POST /orgs/{org}/projects` | [`penv project new`](https://penv.cloud/docs/cli/project-new), `penv push` | `{ name, environments }` | `201 { slug, name, environments }` |
+| `PATCH /orgs/{org}/projects/{project}` | [`penv project rename`](https://penv.cloud/docs/cli/project-rename) | `{ name }` | `200 { slug, name }` |
+| `DELETE /orgs/{org}/projects/{project}` | [`penv project rm`](https://penv.cloud/docs/cli/project-rm) | none | `200 { name, environments, parameters }` |
+| `POST /orgs/{org}/projects/{project}/environments` | [`penv env new`](https://penv.cloud/docs/cli/env-new), [`penv env copy`](https://penv.cloud/docs/cli/env-copy) | `{ name, from? }` | `201 { name, copied }` |
+| `PATCH .../environments/{environment}` | [`penv env rename`](https://penv.cloud/docs/cli/env-rename) | `{ name }` | `200` |
+| `DELETE .../environments/{environment}` | [`penv env rm`](https://penv.cloud/docs/cli/env-rm) | none | `200 { name, parameters }` |
 
-Slugs are derived from names server-side; an ambiguous address is refused, never guessed. `penv push` on a schema with no `@penv=` header creates the project from the directory name after printing what it will do, and writes the `slug` the 201 body returns into the header. Project creation over the plan limit answers `409 quota_exceeded`, and a name another project in the workspace already answers to `409 ambiguous`. The CLI names it `project_taken`.
+The new slug comes back in the answer; `penv push` writes it into the `@penv=` header. `from` copies another environment's keys and their decorators, never its values.
 
 ## Errors
 
-| Status | Codes |
+The CLI turns each refusal into an [exit code](https://penv.cloud/docs/reference/errors):
+
+| Status and code | CLI exit |
 |---|---|
-| 400 | `name_invalid`, `schema_invalid`, `name_required`, `keys_required`, `value_must_be_a_string`, `token_required`, `audience_not_workspace_id` (the `message` is shown as written) |
-| 401 | `expired` (say so: run `penv login` again), `unauthorized` |
-| 403 | `forbidden`, `denied` |
-| 404 | `not_found` |
-| 413 | `value_too_large`, `too_many_keys`, `body_too_large` |
-| 409 | `dynamic`, `cloned`, `quota_exceeded`, `ambiguous`, `machine_change_requires_approval`, `approval_pending`, `approval_denied`, `approval_expired`, `approval_redeemed`, `redacted` (the CLI exits 6) |
-| 429 | `rate_limited`, `slow_down`, both with `retry-after` seconds |
-| 503 | `unavailable`, retry once |
-| other 5xx | one retry after one second, then exit 1 naming the status |
-
-## Rate limits and audit
-
-As today: IP ceiling, then per-principal per-op plan limits. A user credential shares the identity bucket keyed by `principalId`. Every request may carry `X-Penv-Agent: <name>` and `X-Penv-Session: <id>` from the CLI's agent detection; every route that writes an audit row, including orgs, projects and the exchanges, stamps both into the row's metadata, truncated to 128 characters each and treated as data, so the console can answer "what did the agent session touch". An approval is three such rows: the request, the console's approve or deny, and the redemption, whose `secret.reveal` row names the approver beside the session that asked.
+| `401 expired`, `401` any other | 2; run `penv login` again |
+| `403` on an environment | 6 (`environment_refused`) |
+| `403` elsewhere | 2 (`forbidden`) |
+| `404` | 1 (`not_found`) |
+| `409 ambiguous` from project create | 3 (`project_taken`) |
+| `409 org_ambiguous` | 2 |
+| `400 audience_not_workspace_id` | 2, with the server's `message` |
+| `409 cloned` | 2 |
+| `409 redacted` | 6 |
+| `409 quota_exceeded`, `live_leases`, `exists` | 1, 1, 3 |
+| `429` | 1, naming `retry-after` |
+| `5xx` twice | 1, naming the status |
+| a 3xx | 1 (`cloud_failed`) |
+| no answer | 5 (`offline`) |

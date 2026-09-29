@@ -1,4 +1,4 @@
-//! What Penv Cloud accepts on a write, checked before anything is sent so a
+//! What penv.cloud accepts on a write, checked before anything is sent so a
 //! refusal arrives before the upload rather than halfway through it.
 
 use std::fmt;
@@ -18,7 +18,7 @@ pub const MAX_BATCH: usize = 1000;
 /// zero-width characters.
 const PATH_FORBIDDEN: &str = "\\$`\"'=#;&|<>(){}*?!";
 
-/// One key Penv Cloud would refuse. It names the key and never its value.
+/// One key penv.cloud would refuse. It names the key and never its value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     Name { address: String, why: &'static str },
@@ -33,7 +33,7 @@ impl fmt::Display for Refusal {
             Refusal::Path { address, why } => write!(f, "the path of {address} {why}"),
             Refusal::TooLarge { address, bytes } => write!(
                 f,
-                "the value of {address} is {bytes} bytes, and Penv Cloud stores at most {MAX_VALUE} (256 KiB)"
+                "the value of {address} is {bytes} bytes, and penv.cloud stores at most {MAX_VALUE} (256 KiB)"
             ),
         }
     }
@@ -88,7 +88,7 @@ pub fn check_path(path: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// One key as Penv Cloud would judge it.
+/// One key as penv.cloud would judge it.
 pub fn check(key: &CloudKey) -> Result<(), Refusal> {
     let address = || printable(&key.address());
     check_path(&key.path).map_err(|why| Refusal::Path {
