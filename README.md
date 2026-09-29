@@ -37,7 +37,7 @@ $ penv init
 $ penv run -- sh -c 'echo "key=$STRIPE_SECRET_KEY port=$PORT"'
 key=sk▒▒▒▒▒▒ port=3000
 $ penv
-version    1.0.0-rc.2
+version    1.0.0-rc.3
 location   local
 env        development
 next       penv check
@@ -178,7 +178,7 @@ With penv 1.0.0-rc.1, `penv run -- true` takes 9.4 ms and 10 MB where varlock 1.
 | JSON output and the `penv help --json` manifest | The [Copilot CLI guard](https://penv.cloud/docs/guides/keep-agents-out-of-env), marked experimental |
 | The `.env.schema` grammar and `.penv/config.toml` keys | `hook` and `lsp`, whose other side is a harness or an editor |
 
-`1.0.0-rc.2` is the second release candidate for 1.0.0: only fixes, and the changes penv.cloud's own contract requires, land before 1.0.0. Full list: [docs/Design.md §13](./docs/Design.md#13-stability).
+`1.0.0-rc.3` is the third release candidate for 1.0.0: only fixes, and the changes penv.cloud's own contract requires, land before 1.0.0. Full list: [docs/Design.md §13](./docs/Design.md#13-stability).
 
 ## Commands
 
