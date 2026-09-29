@@ -302,6 +302,9 @@ pub fn with_hosts_fallback<T>(
     }
 }
 
+/// Where a person finds the id a machine login needs.
+const WORKSPACE_ID_FIX: &str = "The id is the Organization ID under Settings → Organization in the Penv Cloud console; the Connect a Platform snippet already carries it.";
+
 /// One refusal shape for every cloud failure, with the exit code the design
 /// publishes for it.
 pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
@@ -350,10 +353,12 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 "Pick another name, or point @penv= at the existing project.",
             )
             .with_exit(Exit::Validation),
-            (_, "org_ambiguous") => CliError::new(
-                "org_ambiguous",
-                "more than one workspace answers to the org in @penv=, and both trust this identity.",
-                "Rename one of the two workspaces in the console so their slugs differ, then run this again.",
+            (_, "audience_not_workspace_id") => CliError::new(
+                "audience_not_workspace_id",
+                api.message.clone().unwrap_or_else(|| {
+                    "Penv Cloud accepts a CI or AWS login only for a workspace named by its id.".to_string()
+                }),
+                WORKSPACE_ID_FIX,
             )
             .with_exit(Exit::Auth),
             (_, "undecryptable") => CliError::new(
@@ -447,6 +452,13 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 "Run penv check to find problems in .env.schema, fix them, then run this again.",
             ),
         },
+
+        CloudError::NotWorkspaceId(slug) => CliError::new(
+            "audience_not_workspace_id",
+            format!("@penv= names the workspace {slug}, a slug, and a CI or AWS login to Penv Cloud needs the workspace id."),
+            format!("Replace {slug} in @penv= with the workspace id. {WORKSPACE_ID_FIX}"),
+        )
+        .with_exit(Exit::Auth),
 
         CloudError::Keychain(_) => CliError::new(
             "keychain",
@@ -697,7 +709,6 @@ mod tests {
                 "project_taken",
                 "a project with that name already exists",
             ),
-            (409, "org_ambiguous", "more than one workspace answers"),
             (409, "undecryptable", "cannot decrypt it"),
             (400, "name_invalid", "upper-case key names only"),
             (409, "redacted", "is write-only in penv-cloud"),
@@ -731,6 +742,40 @@ mod tests {
             "{}",
             unnamed.message
         );
+    }
+
+    #[test]
+    fn a_slug_where_a_workspace_id_belongs_says_where_the_id_is() {
+        let refused = refuse(CloudError::NotWorkspaceId("acme".into()), None);
+        assert_eq!(refused.code, "audience_not_workspace_id");
+        assert_eq!(refused.exit, Exit::Auth);
+        assert!(refused.message.contains("acme"), "{}", refused.message);
+        assert!(
+            refused.fix.contains("Replace acme in @penv="),
+            "{}",
+            refused.fix
+        );
+        assert!(
+            refused.fix.contains("Settings → Organization"),
+            "{}",
+            refused.fix
+        );
+    }
+
+    #[test]
+    fn the_server_s_own_audience_message_is_shown_as_written() {
+        let said =
+            "Use the workspace id instead: the Organization ID under Settings, Organization.";
+        let refused = refuse(
+            ApiError::new(400, "audience_not_workspace_id")
+                .saying(Some(said))
+                .into(),
+            None,
+        );
+        assert_eq!(refused.code, "audience_not_workspace_id");
+        assert_eq!(refused.message, said);
+        let bare = refuse(ApiError::new(400, "audience_not_workspace_id").into(), None);
+        assert!(bare.message.contains("by its id"), "{}", bare.message);
     }
 
     #[test]

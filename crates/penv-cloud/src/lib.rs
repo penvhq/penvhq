@@ -11,6 +11,7 @@ pub mod keychain;
 pub mod provider;
 pub mod signature;
 pub mod tls;
+pub mod workspace;
 
 pub use api::{
     AGENT_HEADER, Address, Api, Approval, Bearer, Challenge, CloudKey, DEFAULT_BASE_URL,
@@ -26,6 +27,7 @@ pub use credential::{
 pub use error::{ApiError, CloudError, Result};
 pub use fetch::sha256_hex;
 pub use keychain::{Keychain, Keyring, MemoryKeychain, NoKeychain};
+pub use workspace::WorkspaceId;
 
 /// Bytes from the operating system's generator, for values penv generates
 /// (`random()` in a schema). The same source the credential and cache use.

@@ -18,6 +18,11 @@ use serde_json::json;
 
 const ENVS: &str = "/api/v1/envs/acme/api/development";
 const NOW: u64 = 1_757_000_000;
+const WORKSPACE: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+
+fn workspace() -> Option<penv_cloud::WorkspaceId> {
+    Some(penv_cloud::WorkspaceId::parse(WORKSPACE).unwrap())
+}
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -94,7 +99,7 @@ fn a_held_oidc_token_is_exchanged_for_a_short_lived_credential() {
         200,
         &json!({ "credential": "pck_EXCHANGED", "expiresAt": "2026-09-08T12:34:56Z" }).to_string(),
     );
-    let oidc = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")]), Some("acme")).unwrap();
+    let oidc = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")])).unwrap();
     let bearer = oidc.obtain(&api(&mock), NOW).unwrap();
 
     assert_eq!(bearer.token, "pck_EXCHANGED");
@@ -110,7 +115,7 @@ fn a_held_oidc_token_is_exchanged_for_a_short_lived_credential() {
 }
 
 #[test]
-fn github_actions_fetches_its_token_for_the_org_before_exchanging_it() {
+fn github_actions_fetches_its_token_for_the_workspace_id_before_exchanging_it() {
     let mock = Mock::new();
     mock.on(
         "GET",
@@ -124,22 +129,24 @@ fn github_actions_fetches_its_token_for_the_org_before_exchanging_it() {
         200,
         &json!({ "credential": "pck_EXCHANGED" }).to_string(),
     );
-    let oidc = Oidc::from_env(
-        &env(&[
-            (
-                "ACTIONS_ID_TOKEN_REQUEST_URL",
-                &format!("{}/token", mock.url()),
-            ),
-            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE"),
-        ]),
-        Some("acme"),
-    )
-    .unwrap();
+    let oidc = Oidc::from_env(&env(&[
+        (
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            &format!("{}/token", mock.url()),
+        ),
+        ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE"),
+    ]))
+    .unwrap()
+    .for_workspace(workspace());
     let bearer = oidc.obtain(&api(&mock), NOW).unwrap();
 
     assert_eq!(bearer.token, "pck_EXCHANGED");
     let minted = mock.last("GET", "/token");
-    assert!(minted.target.contains("audience=acme"), "{}", minted.target);
+    assert!(
+        minted.target.contains(&format!("audience={WORKSPACE}")),
+        "{}",
+        minted.target
+    );
     assert_eq!(minted.header("authorization"), Some("Bearer request_FAKE"));
     assert_eq!(
         mock.last("POST", "/api/v1/auth/oidc").json()["token"],
@@ -532,33 +539,49 @@ fn push_and_the_per_key_writes_speak_the_documented_shapes() {
 }
 
 #[test]
-fn an_ambiguous_answer_is_named_by_the_call_that_got_it() {
+fn a_taken_project_name_is_named_for_the_call_that_got_it() {
     let mock = Mock::new();
     let refused = &json!({ "error": "ambiguous" }).to_string();
     mock.on("POST", "/api/v1/orgs/acme/projects", 409, refused);
-    mock.on("POST", "/api/v1/auth/oidc", 409, refused);
-    mock.on("POST", "/api/v1/auth/aws", 409, refused);
-    let api = api(&mock);
-    let code = |e: penv_cloud::CloudError| e.code().map(str::to_string);
-
-    let taken = api
+    let taken = api(&mock)
         .create_project(&Bearer::new("pcu_FAKE"), "acme", "API", &[])
         .unwrap_err();
-    assert_eq!(code(taken).as_deref(), Some("project_taken"));
-    let oidc = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")]), Some("acme")).unwrap();
-    assert_eq!(
-        code(oidc.obtain(&api, NOW).unwrap_err()).as_deref(),
-        Some("org_ambiguous")
-    );
-    let aws = AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1").for_org(Some("acme"));
-    assert_eq!(
-        code(aws.obtain(&api, NOW).unwrap_err()).as_deref(),
-        Some("org_ambiguous")
-    );
+    assert_eq!(taken.code(), Some("project_taken"));
+}
+
+#[test]
+fn an_audience_refusal_keeps_the_message_the_server_wrote() {
+    let mock = Mock::new();
+    let refused = &json!({
+        "error": "audience_not_workspace_id",
+        "message": "Use the workspace id instead: the Organization ID under Settings, Organization."
+    })
+    .to_string();
+    mock.on("POST", "/api/v1/auth/oidc", 400, refused);
+    mock.on("POST", "/api/v1/auth/aws", 400, refused);
+    let api = api(&mock);
+    let message = |e: CloudError| match e {
+        CloudError::Api(api) => (api.code, api.message),
+        other => panic!("{other:?}"),
+    };
+
+    let oidc = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")])).unwrap();
+    let aws = AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1").for_workspace(workspace());
+    for refused in [
+        oidc.obtain(&api, NOW).unwrap_err(),
+        aws.obtain(&api, NOW).unwrap_err(),
+    ] {
+        let (code, said) = message(refused);
+        assert_eq!(code, "audience_not_workspace_id");
+        assert_eq!(
+            said.as_deref(),
+            Some("Use the workspace id instead: the Organization ID under Settings, Organization.")
+        );
+    }
     assert_eq!(
         mock.last("POST", "/api/v1/auth/aws").json()["headers"]["x-penv-cloud-org"],
-        "acme",
-        "the workspace travels, signed, with the AWS proof"
+        WORKSPACE,
+        "the workspace id travels, signed, with the AWS proof"
     );
 }
 

@@ -37,12 +37,14 @@ POST /api/v1/auth/revoke            Bearer pcu_ or pck_, revokes itself; idempot
 Unauthenticated, IP limited. Each returns `201 { credential: "pck_...", expiresAt }` with a 15 minute lifetime capped by the trust's own expiry, or `401 { error: "expired" | "unauthorized" }`, or `503 { error: "unavailable" }` which means retry once.
 
 ```
-POST /api/v1/auth/oidc               { token }                       audience is the org's slug or id
-POST /api/v1/auth/aws                { method, url, body, headers }  a SigV4-signed STS GetCallerIdentity request; x-penv-cloud-org (slug or id) must be among the signed headers
+POST /api/v1/auth/oidc               { token }                       the token's audience is the workspace id
+POST /api/v1/auth/aws                { method, url, body, headers }  a SigV4-signed STS GetCallerIdentity request; x-penv-cloud-org, the workspace id, must be among the signed headers
 POST /api/v1/auth/keypair/enroll     { secret: "pce_...", publicKey }  SPKI DER base64, Ed25519 -> 201 { credentialId, generation: 1 }
 POST /api/v1/auth/keypair/challenge  { credentialId } -> 200 { nonce }   valid 120 s
 POST /api/v1/auth/keypair            { credentialId, nonce, generation, signature } -> 201 { credential, expiresAt, generation }
 ```
+
+The workspace a machine login names is its id, a UUID: the Organization ID under Settings → Organization in the console. A slug is refused before any lookup with `400 { "error": "audience_not_workspace_id", "message": "…" }`, whose `message` is safe to show and the CLI prints as written. The CLI takes the workspace from `@penv=<org>/<project>`: where a login asks for an audience (GitHub Actions) or signs the header (AWS), it validates the org as a UUID first and refuses a slug locally, saying where the id is. There is no public slug-to-id lookup. A held OIDC token (`ID_TOKEN`, `PENV_OIDC_TOKEN`) carries whatever audience it was minted with. Routes a person's `penv login` reaches by slug (`/envs/{org}/…`) are unchanged.
 
 The keypair signs the UTF-8 bytes of `penv-cloud:keypair:v1\n{credentialId}\n{nonce}\n{generation}` (four lines joined by newline); the signature is base64. The client persists the returned `generation` before using the credential. A generation mismatch that is not a replay answers `409 { error: "cloned" }` and revokes the keypair and everything it minted.
 
@@ -166,13 +168,13 @@ GET  /api/v1/orgs/{org}/projects                    -> { projects: [{ slug, name
 POST /api/v1/orgs/{org}/projects                    body { name, environments: ["development"] } -> 201 ; requires project:create
 ```
 
-Slugs are derived from names server-side; an ambiguous address is refused, never guessed. `penv push` on a schema with no `@penv=` header creates the project from the directory name after printing what it will do, and writes the `slug` the 201 body returns into the header. Project creation over the plan limit answers `409 quota_exceeded`, and a name another project in the workspace already answers to `409 ambiguous`. An OIDC or AWS exchange also answers `409 ambiguous` when two workspaces share the slug and both trust the identity. The CLI names the two by the call that got them: `project_taken` and `org_ambiguous`.
+Slugs are derived from names server-side; an ambiguous address is refused, never guessed. `penv push` on a schema with no `@penv=` header creates the project from the directory name after printing what it will do, and writes the `slug` the 201 body returns into the header. Project creation over the plan limit answers `409 quota_exceeded`, and a name another project in the workspace already answers to `409 ambiguous`. The CLI names it `project_taken`.
 
 ## Errors
 
 | Status | Codes |
 |---|---|
-| 400 | `schema_invalid`, `name_required`, `keys_required`, `value_must_be_a_string`, `token_required` |
+| 400 | `schema_invalid`, `name_required`, `keys_required`, `value_must_be_a_string`, `token_required`, `audience_not_workspace_id` (the `message` is shown as written) |
 | 401 | `expired` (say so: run `penv login` again), `unauthorized` |
 | 403 | `forbidden`, `denied` |
 | 404 | `not_found` |

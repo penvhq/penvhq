@@ -348,7 +348,7 @@ Cloud-side: the schema is stored per key next to values; the console renders and
 1. `updatedAt` (RFC 3339) on every key in `GET /envs`. **Closed on `development`:** the server sends it, and `check` counts `@rotate` from it.
 2. `hosts` in the per-key schema, as [Cloud-API, `hosts`](./Cloud-API.md#hosts) specifies. **Closed on `development`:** the server validates and stores it beside `requiredIn` and `defaultExpr`. Until that release is deployed, a `400 schema_invalid` on a write carrying `hosts` is retried once without it and the CLI warns; the retry goes once the release is out. The committed `.env.schema` keeps `@hosts` either way.
 3. A verified override round trip. A local value file wins over the cloud on its machine, but today `run` cannot tell a deliberate override from a stale pulled copy, so every override warns the same way. The fix, now the CLI's alone since the server sends `version` and `updatedAt` on every key: `pull` records each key's `version` beside the file it writes, and `run` compares it with the cloud's, so it can say "stale: the cloud is at v7, `.env.production` holds v5" instead of "replaced".
-4. **The OIDC and AWS audience** (found in review). **Closed:** the server accepts the org's slug as well as its id as the OIDC `aud` and in the signed AWS `x-penv-cloud-org` header, and the CLI signs that header with the org from `@penv=`. A slug two workspaces answer to, both trusting the same identity, is refused as `409 ambiguous` before any outbound fetch, and the CLI names it `org_ambiguous`.
+4. **The OIDC and AWS audience.** **Closed:** the server accepts only the workspace id, a UUID, as the OIDC `aud` and in the signed AWS `x-penv-cloud-org` header, and refuses a slug as `400 audience_not_workspace_id` before any lookup. The CLI asks GitHub Actions for a token with that audience and signs the header with the org from `@penv=`, validated as a UUID first: a slug there fails before any request, naming Settings → Organization → Organization ID in the console. There is no slug-to-id lookup, public or otherwise.
 
 Must verify:
 
@@ -408,10 +408,12 @@ Under a header the cloud decides what is withheld and markers are ignored; a dep
 
 Credentials are tried in this order: `PENV_TOKEN`, a person's login, an enrolled keypair, the platform's OIDC token (GitHub Actions, GitLab `ID_TOKEN`, or `PENV_OIDC_TOKEN`), then AWS: keys in the environment, web identity (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`, which EKS IRSA sets; exchanged with STS `AssumeRoleWithWebIdentity`, honouring `AWS_ENDPOINT_URL_STS`), then the container endpoint (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` for ECS task roles, `..._FULL_URI` with `..._AUTHORIZATION_TOKEN[_FILE]` for EKS Pod Identity). A full URI is called only over https or to loopback and the ECS and EKS link-local hosts, never with user info in it, and no request follows a redirect. Whatever the kind, the server receives a signed `GetCallerIdentity`, never a secret key.
 
+A CI or AWS login names its workspace by id, so a schema a pipeline reads names it that way: `# @penv=<workspace id>/<project>`, the id being the Organization ID under Settings → Organization in the Penv Cloud console (the Connect a Platform snippet carries it). A slug in that place fails before any request. A person's `penv login` reads the same header with either.
+
 An enrolled keypair lives in the OS keychain. A container has none, so `penv machine enroll` does not apply there; a container proves itself with `PENV_TOKEN`, OIDC or its AWS role. With no keychain there is also no value cache: every start reads penv.cloud.
 
 ```yaml
-# GitHub Actions
+# GitHub Actions; .env.schema starts with # @penv=<workspace id>/<project>
 permissions: { id-token: write, contents: read }
 steps:
   - uses: actions/checkout@v4

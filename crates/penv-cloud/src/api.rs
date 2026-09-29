@@ -904,8 +904,7 @@ impl Api {
             self.stamp(self.http.post(&url))
                 .send_json(json!({ "token": token }))
         })?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])
-            .map_err(|e| recoded(e, "ambiguous", "org_ambiguous"))?;
+        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])?;
         bearer_from(&url, &mut response, now)
     }
 
@@ -913,8 +912,7 @@ impl Api {
         let url = self.url("/auth/aws");
         let mut response =
             self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(signed))?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])
-            .map_err(|e| recoded(e, "ambiguous", "org_ambiguous"))?;
+        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])?;
         bearer_from(&url, &mut response, now)
     }
 
@@ -1088,8 +1086,8 @@ fn redirected(status: u16) -> bool {
     (300..400).contains(&status) && status != 304
 }
 
-/// The server answers `ambiguous` for a taken project name and for an org slug
-/// two workspaces share; the call that got it says which.
+/// The server answers `ambiguous` for a taken project name; the call that got it
+/// says so.
 fn recoded(error: CloudError, from: &str, to: &str) -> CloudError {
     match error {
         CloudError::Api(mut api) if api.code == from => {
@@ -1108,7 +1106,8 @@ fn expect(response: &mut Response<Body>, ok: &[StatusCode]) -> Result<()> {
     Err(refusal(status.as_u16(), response).into())
 }
 
-/// The body's `error` code, the status, and how long the server asked us to wait.
+/// The body's `error` code and `message`, the status, and how long the server
+/// asked us to wait.
 fn refusal(status: u16, response: &mut Response<Body>) -> ApiError {
     let retry_after = response
         .headers()
@@ -1134,7 +1133,13 @@ fn refusal(status: u16, response: &mut Response<Body>) -> ApiError {
             .and_then(|b| b.get("retryAfter"))
             .and_then(Value::as_u64)
     });
-    ApiError::new(status, code).after(retry_after)
+    let message = body
+        .as_ref()
+        .and_then(|b| b.get("message"))
+        .and_then(Value::as_str);
+    ApiError::new(status, code)
+        .after(retry_after)
+        .saying(message)
 }
 
 fn read_json<T: DeserializeOwned>(url: &str, response: &mut Response<Body>) -> Result<T> {

@@ -40,6 +40,16 @@ fn cloud_schema() -> String {
     format!("# @penv=acme/{PROJECT} @schema=1\n\n{KEYS}")
 }
 
+/// The id a CI or AWS login names its workspace by.
+const WORKSPACE_ID: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+const MACHINE_ENVS: &str =
+    "/api/v1/envs/3f2504e0-4f89-11d3-9a0c-0305e82c3301/api-gateway/development";
+
+/// A schema that names its workspace by id, as a machine login needs.
+fn machine_schema() -> String {
+    format!("# @penv={WORKSPACE_ID}/{PROJECT} @schema=1\n\n{KEYS}")
+}
+
 #[cfg(windows)]
 const SHELL: [&str; 2] = ["cmd", "/C"];
 #[cfg(windows)]
@@ -1588,7 +1598,7 @@ fn a_computed_default_fetches_its_address_once_for_every_key_that_names_it() {
 // --- AWS credentials for containers -------------------------------------------
 
 fn aws_ready(mock: &Mock) {
-    mock.on("GET", ENVS, 200, &values_body());
+    mock.on("GET", MACHINE_ENVS, 200, &values_body());
     mock.on(
         "POST",
         "/api/v1/auth/aws",
@@ -1630,7 +1640,7 @@ fn an_ecs_or_eks_pod_identity_container_proves_itself_with_its_endpoint_credenti
         &json!({ "AccessKeyId": "ASIACONTAINER", "SecretAccessKey": "s3cr3t", "Token": "t0k" })
             .to_string(),
     );
-    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
     std::fs::write(workspace.path().join("pod-token"), "pod-auth\n").unwrap();
     let output = without_token(&workspace, &mock)
         .env(
@@ -1660,10 +1670,107 @@ fn an_ecs_or_eks_pod_identity_container_proves_itself_with_its_endpoint_credenti
 }
 
 #[test]
+fn a_slug_in_the_header_stops_a_ci_or_aws_login_before_any_request() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "GET",
+        "/token",
+        200,
+        &json!({ "value": "jwt_FAKE" }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let token_url = format!("{}/token", mock.url());
+    let kinds: [&[(&str, &str)]; 2] = [
+        &[
+            ("ACTIONS_ID_TOKEN_REQUEST_URL", &token_url),
+            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE"),
+        ],
+        &[
+            ("AWS_ACCESS_KEY_ID", "AKIAFAKE"),
+            ("AWS_SECRET_ACCESS_KEY", "FAKEsecret"),
+        ],
+    ];
+    for vars in kinds {
+        let mut command = without_token(&workspace, &mock);
+        for (k, v) in vars {
+            command.env(k, v);
+        }
+        let out = command
+            .args(["--json", "run", "--", "true"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{vars:?}: {}", stderr(&out));
+        let refused = json_of(&stderr(&out));
+        assert_eq!(refused["error"], "audience_not_workspace_id");
+        let fix = refused["fix"].as_str().unwrap();
+        assert!(fix.contains("Replace acme in @penv="), "{fix}");
+        assert!(fix.contains("Organization ID"), "{fix}");
+    }
+    assert!(mock.requests().is_empty(), "no lookup, no exchange");
+}
+
+#[test]
+fn github_actions_asks_for_a_token_whose_audience_is_the_workspace_id() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "GET",
+        "/token",
+        200,
+        &json!({ "value": "jwt_FAKE" }).to_string(),
+    );
+    mock.on(
+        "POST",
+        "/api/v1/auth/oidc",
+        201,
+        &json!({ "credential": "pck_FAKE_EXCHANGED", "expiresIn": 900 }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
+    let output = without_token(&workspace, &mock)
+        .env(
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            format!("{}/token", mock.url()),
+        )
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE")
+        .args(["run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let asked = mock.last("GET", "/token").target;
+    assert!(
+        asked.contains(&format!("audience={WORKSPACE_ID}")),
+        "{asked}"
+    );
+}
+
+#[test]
+fn the_server_s_audience_refusal_is_printed_as_it_wrote_it() {
+    let mock = Mock::new();
+    let said = "The audience is a slug. Use the workspace id instead: the Organization ID under Settings, Organization.";
+    mock.on(
+        "POST",
+        "/api/v1/auth/oidc",
+        400,
+        &json!({ "error": "audience_not_workspace_id", "message": said }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
+    let output = without_token(&workspace, &mock)
+        .env("PENV_OIDC_TOKEN", "eyJ.FAKE.jwt")
+        .args(["--json", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "audience_not_workspace_id");
+    assert_eq!(refused["message"], said);
+}
+
+#[test]
 fn a_container_uri_to_an_arbitrary_host_is_never_called() {
     let mock = Mock::new();
     aws_ready(&mock);
-    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
     let output = without_token(&workspace, &mock)
         .env(
             "AWS_CONTAINER_CREDENTIALS_FULL_URI",
@@ -1692,7 +1799,7 @@ fn an_eks_irsa_pod_trades_its_token_file_for_keys_then_proves_itself() {
         200,
         "<AssumeRoleWithWebIdentityResponse><AssumeRoleWithWebIdentityResult><Credentials><AccessKeyId>ASIAWEBID</AccessKeyId><SecretAccessKey>w3bs3cr3t</SecretAccessKey><SessionToken>st</SessionToken></Credentials></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>",
     );
-    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
     std::fs::write(workspace.path().join("sa-token"), "eyJ.pod.jwt\n").unwrap();
     let output = without_token(&workspace, &mock)
         .env(
@@ -1729,7 +1836,7 @@ fn a_refused_web_identity_says_why_without_echoing_the_token() {
         403,
         "<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>",
     );
-    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
     std::fs::write(workspace.path().join("sa-token"), "eyJ.secret.jwt").unwrap();
     let output = without_token(&workspace, &mock)
         .env(

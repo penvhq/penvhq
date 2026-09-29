@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Breaking
+- **A CI or AWS login names its workspace by id.** Penv Cloud now takes only the workspace id as the OIDC audience and in the signed AWS `x-penv-cloud-org` header. penv asks GitHub Actions for a token with that audience, and refuses a slug in `@penv=` before any request when it would become the audience or the signed header. **Migration:** replace the workspace slug in `@penv=` with the workspace id from Settings → Organization (the Organization ID) in the Penv Cloud console. A person's `penv login` is unchanged. When Penv Cloud answers `audience_not_workspace_id`, its message is printed as written.
+
 ### Added
 - **Editor support.** `penv lsp` serves `.env.schema` over the Language Server Protocol: the problems `penv check` reports for the schema, completion and hover for every decorator, function and filter (marked penv, @env-spec or varlock-only), go-to-definition for key references, and an outline. It reads no value file and sends no request.
 - **penv for VS Code**, published from `packages/vscode` to the Marketplace and Open VSX. It runs `penv lsp`, finds the platform binary behind an npm install, and runs beside varlock's @env-spec extension.
@@ -13,7 +16,7 @@
 
 ### Fixed
 - An AWS login (keys, web identity or a container role) signs the workspace in `x-penv-cloud-org`, which penv.cloud requires; without it every AWS exchange was refused.
-- A taken project name and an org slug two workspaces share each get their own message (`project_taken`, `org_ambiguous`) instead of "matches more than one project or environment"; a value the cloud cannot decrypt (`undecryptable`) and a lowercase key name on push (`name_invalid`) are named too.
+- A taken project name gets its own message (`project_taken`) instead of "matches more than one project or environment"; a value the cloud cannot decrypt (`undecryptable`) and a lowercase key name on push (`name_invalid`) are named too.
 - `gen ts` declared `inlined` when no public key used it (`noUnusedLocals`), and `Response.json` lacked `override` (`noImplicitOverride`). The targets job now type-checks the output with both on.
 
 ## 1.0.0-beta.2

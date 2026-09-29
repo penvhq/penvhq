@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::api::{Api, Bearer, SignedRequest};
 use crate::credential::Obtain;
 use crate::error::Result;
+use crate::workspace::WorkspaceId;
 
 pub const ACCESS_KEY_VAR: &str = "AWS_ACCESS_KEY_ID";
 pub const SECRET_KEY_VAR: &str = "AWS_SECRET_ACCESS_KEY";
@@ -18,8 +19,8 @@ const SERVICE: &str = "sts";
 const ALGORITHM: &str = "AWS4-HMAC-SHA256";
 const BODY: &str = "Action=GetCallerIdentity&Version=2011-06-15";
 const CONTENT_TYPE: &str = "application/x-www-form-urlencoded; charset=utf-8";
-/// The workspace the login is for. The server requires it signed, so a
-/// `GetCallerIdentity` signed for another service cannot be replayed to it.
+/// The id of the workspace the login is for. The server requires it signed, so
+/// a `GetCallerIdentity` signed for another service cannot be replayed to it.
 pub const ORG_HEADER: &str = "x-penv-cloud-org";
 
 /// `AWS_REGION`, then `AWS_DEFAULT_REGION`, then us-east-1. A value that is not
@@ -46,7 +47,7 @@ pub struct AwsIam {
     secret_access_key: String,
     session_token: Option<String>,
     region: String,
-    org: Option<String>,
+    workspace: Option<WorkspaceId>,
 }
 
 impl AwsIam {
@@ -61,13 +62,13 @@ impl AwsIam {
             secret_access_key: secret_access_key.into(),
             session_token,
             region: region.into(),
-            org: None,
+            workspace: None,
         }
     }
 
-    /// The workspace, by slug or id, that the signed request names.
-    pub fn for_org(mut self, org: Option<&str>) -> AwsIam {
-        self.org = org.map(str::to_string);
+    /// The workspace, by id, that the signed request names.
+    pub fn for_workspace(mut self, workspace: Option<WorkspaceId>) -> AwsIam {
+        self.workspace = workspace;
         self
     }
 
@@ -79,7 +80,7 @@ impl AwsIam {
             secret_access_key: at(SECRET_KEY_VAR)?,
             session_token: at(SESSION_TOKEN_VAR),
             region: region(env),
-            org: None,
+            workspace: None,
         })
     }
 
@@ -100,8 +101,8 @@ impl AwsIam {
         if let Some(token) = &self.session_token {
             headers.insert("x-amz-security-token".into(), token.clone());
         }
-        if let Some(org) = &self.org {
-            headers.insert(ORG_HEADER.into(), org.clone());
+        if let Some(workspace) = &self.workspace {
+            headers.insert(ORG_HEADER.into(), workspace.as_str().to_string());
         }
 
         let signed_headers = headers.keys().cloned().collect::<Vec<_>>().join(";");
@@ -278,9 +279,11 @@ mod tests {
 
     #[test]
     fn the_workspace_is_signed_so_the_login_cannot_be_replayed_elsewhere() {
-        let aws = AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1").for_org(Some("acme"));
+        let id = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        let aws = AwsIam::new("AKIAFAKE", "secretFAKE", None, "us-east-1")
+            .for_workspace(Some(WorkspaceId::parse(id).unwrap()));
         let signed = aws.sign(1_369_353_600);
-        assert_eq!(signed.headers[ORG_HEADER], "acme");
+        assert_eq!(signed.headers[ORG_HEADER], id);
         assert!(
             signed.headers["authorization"]
                 .contains("SignedHeaders=content-type;host;x-amz-date;x-penv-cloud-org,"),
