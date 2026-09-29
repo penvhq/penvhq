@@ -147,17 +147,26 @@ impl Session {
         }
     }
 
-    fn send(&mut self, bytes: &[u8]) {
-        self.master.write_all(bytes).unwrap();
-        self.master.flush().unwrap();
-        // Long enough that the child reads each write on its own, and far
-        // inside the 100 ms an unfinished escape is given even on a slow runner.
+    /// One key, as the pieces a terminal's bytes may arrive in: each piece its
+    /// own write, back to back, as a split sequence does. No pause inside a
+    /// key: a busy runner can stretch any sleep past the escape's window.
+    fn send(&mut self, pieces: &[&[u8]]) {
+        for piece in pieces {
+            self.master.write_all(piece).unwrap();
+            self.master.flush().unwrap();
+        }
         std::thread::sleep(Duration::from_millis(5));
     }
 
     /// Type `keys`, one write each, once the prompt is on screen, and return
     /// the line the child ends on.
-    fn answer(mut self, keys: &[&[u8]]) -> String {
+    fn answer(self, keys: &[&[u8]]) -> String {
+        let whole: Vec<[&[u8]; 1]> = keys.iter().map(|key| [*key]).collect();
+        let pieces: Vec<&[&[u8]]> = whole.iter().map(|key| key.as_slice()).collect();
+        self.answer_in_pieces(&pieces)
+    }
+
+    fn answer_in_pieces(mut self, keys: &[&[&[u8]]]) -> String {
         self.wait_for("enter to");
         for key in keys {
             self.send(key);
@@ -193,8 +202,13 @@ fn application_cursor_mode_arrows_move_the_same_way() {
 
 #[test]
 fn an_arrow_split_across_writes_is_an_arrow_and_not_a_cancel() {
-    let said = Session::start("one", None).answer(&[b"\x1b", b"[B", b"\x1b", b"O", b"B", ENTER]);
-    assert_eq!(said, "PICKED charlie.");
+    let said = Session::start("one", None).answer_in_pieces(&[
+        &[b"\x1b", b"[B"],
+        &[b"\x1b", b"O", b"B"],
+        &[b"\x1b[", b"1;5", b"B"],
+        &[ENTER],
+    ]);
+    assert_eq!(said, "PICKED delta.");
 }
 
 #[test]
@@ -213,7 +227,7 @@ fn esc_alone_and_ctrl_c_cancel_and_the_terminal_is_put_back() {
     let session = Session::start("one", None);
     session.wait_for("enter to");
     let mut session = session;
-    session.send(b"\x03");
+    session.send(&[b"\x03"]);
     let text = session.wait_for(".\r\n");
     assert!(
         text.contains("\x1b[?25h"),
