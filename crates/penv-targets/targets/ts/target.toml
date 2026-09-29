@@ -25,7 +25,7 @@ about = "Mask the app's secret values in its logs and responses wherever it runs
 name = "runtime"
 default = "node"
 values = ["node", "vite", "deno", "workers"]
-about = "Where values are read: node (process.env, then Deno.env or Netlify.env), vite (import.meta.env for public keys), deno (Deno.env.get), workers (cloudflare:workers bindings)."
+about = "Where values are read: node (process.env), vite (import.meta.env), deno (Deno.env.get), workers (bindings)."
 
 [[suggest]]
 option = "runtime"
