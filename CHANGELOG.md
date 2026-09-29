@@ -21,6 +21,7 @@
 - A prerelease no longer becomes the release `/install` and `penv upgrade` give, once a plain release exists.
 
 ### Fixed
+- **Arrow keys move the selection in every choice prompt** (workspace, project, environment, guards, target options). Up and Down in application cursor mode (`ESC O A`/`ESC O B`, as tmux, screen and many terminals send after an editor) did nothing, and an arrow whose bytes arrived in two reads cancelled the prompt. penv now reads keys itself: raw mode from before the first read until the prompt ends, CSI and SS3 arrows, `j`/`k` and Ctrl-P/Ctrl-N, an unfinished escape given 100 ms before a lone Esc cancels, the cursor and the terminal put back on Enter, Esc, Ctrl-C and errors, and virtual-terminal input on Windows. A prompt is never shown when stdin is not a terminal.
 - An AWS login (keys, web identity or a container role) signs the workspace in `x-penv-cloud-org`, which penv.cloud requires; without it every AWS exchange was refused.
 - A taken project name gets its own message (`project_taken`) instead of "matches more than one project or environment"; a value the cloud cannot decrypt (`undecryptable`) and a refused key name on push (`name_invalid`) are named too.
 - `gen ts` declared `inlined` when no public key used it (`noUnusedLocals`), and `Response.json` lacked `override` (`noImplicitOverride`). The targets job now type-checks the output with both on.
