@@ -60,6 +60,10 @@ const O_NOCTTY: i32 = 0x20000;
 /// A pseudo-terminal: the master end this test types into and reads, and the
 /// path of the end the child is given.
 fn open_pty() -> (File, String) {
+    // `ptsname` answers in one static buffer, so two tests opening a terminal
+    // at once could both be handed the same other end.
+    static OPENING: Mutex<()> = Mutex::new(());
+    let _one_at_a_time = OPENING.lock().unwrap();
     unsafe {
         let master = posix_openpt(O_RDWR | O_NOCTTY);
         assert!(master >= 0, "posix_openpt");
@@ -146,7 +150,9 @@ impl Session {
     fn send(&mut self, bytes: &[u8]) {
         self.master.write_all(bytes).unwrap();
         self.master.flush().unwrap();
-        std::thread::sleep(Duration::from_millis(30));
+        // Long enough that the child reads each write on its own, and far
+        // inside the 100 ms an unfinished escape is given even on a slow runner.
+        std::thread::sleep(Duration::from_millis(5));
     }
 
     /// Type `keys`, one write each, once the prompt is on screen, and return
