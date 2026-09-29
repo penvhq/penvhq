@@ -514,4 +514,4 @@ From 1.0.0, a minor or patch release keeps these as they are, and changing one i
 
 Not covered: the wording of text meant for a person (read the JSON instead), `hook` and `lsp`, whose other side is a harness or an editor, and a guard marked experimental, today Copilot CLI.
 
-A release candidate is the release it names with its behaviour frozen: between `1.0.0-rc.1` and `1.0.0` only fixes land, each listed in CHANGELOG.md.
+A release candidate is the release it names with its behaviour frozen: between `1.0.0-rc.1` and `1.0.0` only fixes land, and the changes penv.cloud's own contract requires (`1.0.0-rc.2`: a machine login names its workspace by id), each listed in CHANGELOG.md.
