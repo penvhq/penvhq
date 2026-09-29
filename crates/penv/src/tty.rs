@@ -161,11 +161,12 @@ mod platform {
 
     const TCSANOW: i32 = 0;
     const STDIN: i32 = 0;
+    #[cfg(not(target_os = "macos"))]
     const POLLIN: i16 = 1;
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     type Nfds = u64;
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
     type Nfds = u32;
 
     /// Wider than any real `termios`, so the C call fills a prefix of it.
@@ -173,6 +174,7 @@ mod platform {
     #[derive(Clone, Copy)]
     struct Termios([Flag; 24]);
 
+    #[cfg(not(target_os = "macos"))]
     #[repr(C)]
     struct PollFd {
         fd: i32,
@@ -183,6 +185,7 @@ mod platform {
     unsafe extern "C" {
         fn tcgetattr(fd: i32, termios: *mut Termios) -> i32;
         fn tcsetattr(fd: i32, actions: i32, termios: *const Termios) -> i32;
+        #[cfg(not(target_os = "macos"))]
         fn poll(fds: *mut PollFd, nfds: Nfds, timeout: i32) -> i32;
         #[link_name = "read"]
         fn read_fd(fd: i32, buf: *mut u8, count: usize) -> isize;
@@ -223,14 +226,8 @@ mod platform {
 
     /// True when stdin has bytes, within `timeout` or forever.
     pub fn wait(timeout: Option<Duration>) -> io::Result<bool> {
-        let millis = timeout.map_or(-1, |t| t.as_millis().min(i32::MAX as u128) as i32);
         loop {
-            let mut fd = PollFd {
-                fd: STDIN,
-                events: POLLIN,
-                revents: 0,
-            };
-            match unsafe { poll(&mut fd, 1, millis) } {
+            match ready(timeout) {
                 -1 => {
                     let error = io::Error::last_os_error();
                     if error.kind() != io::ErrorKind::Interrupted {
@@ -240,6 +237,60 @@ mod platform {
                 0 => return Ok(false),
                 _ => return Ok(true),
             }
+        }
+    }
+
+    /// `poll` on stdin: the count of ready descriptors, 0 on timeout, -1 on error.
+    #[cfg(not(target_os = "macos"))]
+    fn ready(timeout: Option<Duration>) -> i32 {
+        let millis = timeout.map_or(-1, |t| t.as_millis().min(i32::MAX as u128) as i32);
+        let mut fd = PollFd {
+            fd: STDIN,
+            events: POLLIN,
+            revents: 0,
+        };
+        unsafe { poll(&mut fd, 1, millis) }
+    }
+
+    /// macOS cannot poll a terminal, so it waits with `select`, as its own
+    /// tools do.
+    #[cfg(target_os = "macos")]
+    fn ready(timeout: Option<Duration>) -> i32 {
+        /// `fd_set`: 1024 bits in 32-bit words.
+        #[repr(C)]
+        struct FdSet([i32; 32]);
+        #[repr(C)]
+        struct Timeval {
+            sec: i64,
+            usec: i32,
+        }
+        unsafe extern "C" {
+            #[cfg_attr(target_arch = "x86_64", link_name = "select$1050")]
+            fn select(
+                nfds: i32,
+                read: *mut FdSet,
+                write: *mut FdSet,
+                error: *mut FdSet,
+                timeout: *mut Timeval,
+            ) -> i32;
+        }
+        let mut read = FdSet([0; 32]);
+        read.0[0] = 1 << STDIN;
+        let mut limit = timeout.map(|t| Timeval {
+            sec: t.as_secs().min(i64::MAX as u64) as i64,
+            usec: t.subsec_micros() as i32,
+        });
+        let limit = limit
+            .as_mut()
+            .map_or(std::ptr::null_mut(), |t| t as *mut Timeval);
+        unsafe {
+            select(
+                STDIN + 1,
+                &mut read,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                limit,
+            )
         }
     }
 
