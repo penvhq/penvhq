@@ -40,6 +40,16 @@ fn cloud_schema() -> String {
     format!("# @penv=acme/{PROJECT} @schema=1\n\n{KEYS}")
 }
 
+/// The id a CI or AWS login names its workspace by.
+const WORKSPACE_ID: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+const MACHINE_ENVS: &str =
+    "/api/v1/envs/3f2504e0-4f89-11d3-9a0c-0305e82c3301/api-gateway/development";
+
+/// A schema that names its workspace by id, as a machine login needs.
+fn machine_schema() -> String {
+    format!("# @penv={WORKSPACE_ID}/{PROJECT} @schema=1\n\n{KEYS}")
+}
+
 #[cfg(windows)]
 const SHELL: [&str; 2] = ["cmd", "/C"];
 #[cfg(windows)]
@@ -1014,6 +1024,128 @@ fn a_host_with_no_credential_says_so_with_exit_five() {
     assert!(mock.requests().is_empty(), "it never asked");
 }
 
+#[test]
+fn a_declared_key_that_would_steer_the_command_is_refused_before_any_read() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let schema = format!("{}\n# @sensitive=false\nnode_Options=\n", cloud_schema());
+    let workspace = Workspace::new(&[(".env.schema", &schema)]);
+    let output = workspace.run(&mock, &["--json", "run", "--", "true"]);
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "reserved_name");
+    assert!(
+        refused["message"].as_str().unwrap().contains(
+            "node_Options maps to NODE_OPTIONS, which would change how your command runs."
+        ),
+        "{refused}"
+    );
+    assert!(
+        mock.requests().is_empty(),
+        "no credential exchanged, no value fetched"
+    );
+}
+
+#[test]
+fn an_undeclared_cloud_key_that_would_steer_the_command_is_refused_before_it_starts() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        ENVS,
+        200,
+        &json!({
+            "keys": [
+                { "path": "", "name": "STRIPE_SECRET_KEY", "kind": "static", "version": 2, "value": SECRET },
+                { "path": "", "name": "PORT", "kind": "static", "version": 1, "value": "3000" },
+                { "path": "boot", "name": "LD_PRELOAD", "kind": "static", "version": 1, "value": "/tmp/FAKE.so" },
+                { "path": "", "name": "pip_index_url", "kind": "static", "version": 1, "value": "https://FAKE.invalid/simple" },
+            ]
+        })
+        .to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let marker = workspace.path().join("started");
+    let script = format!("echo started > {}", marker.display());
+    let output = workspace
+        .command(&mock)
+        .args(["--json", "run", "--"])
+        .args(SHELL)
+        .arg(&script)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    let message = refused["message"].as_str().unwrap();
+    assert!(
+        message.contains("boot/LD_PRELOAD maps to LD_PRELOAD"),
+        "{message}"
+    );
+    assert!(
+        message.contains("pip_index_url maps to PIP_INDEX_URL"),
+        "{message}"
+    );
+    assert!(!message.contains("FAKE"), "never a value: {message}");
+    assert!(!marker.exists(), "the command never started");
+}
+
+#[test]
+fn a_runner_s_tokens_and_step_files_never_reach_the_command() {
+    let mock = Mock::new();
+    mock.on("GET", ENVS, 200, &values_body());
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    #[cfg(windows)]
+    let list = "set";
+    #[cfg(not(windows))]
+    let list = "env";
+    let output = workspace
+        .command(&mock)
+        .env("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.invalid/")
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE")
+        .env("ACTIONS_RUNTIME_TOKEN", "runtime_FAKE")
+        .env("ACTIONS_RESULTS_URL", "https://results.invalid/")
+        .env("ACTIONS_CACHE_URL", "https://cache.invalid/")
+        .env("GITHUB_ENV", "/tmp/github_env")
+        .env("GITHUB_OUTPUT", "/tmp/github_output")
+        .env("GITHUB_PATH", "/tmp/github_path")
+        .env("GITHUB_STATE", "/tmp/github_state")
+        .env("INPUT_TOKEN", "input_FAKE")
+        .env("STATE_SAVED", "state_FAKE")
+        .env("GITHUB_SHA", "0123abc")
+        .env("PENV_URL", mock.url())
+        .args(["run", "--"])
+        .args(SHELL)
+        .arg(list)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let seen = stdout(&output);
+    for gone in [
+        "ACTIONS_ID_TOKEN_REQUEST_URL=",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN=",
+        "ACTIONS_RUNTIME_TOKEN=",
+        "ACTIONS_RESULTS_URL=",
+        "ACTIONS_CACHE_URL=",
+        "GITHUB_ENV=",
+        "GITHUB_OUTPUT=",
+        "GITHUB_PATH=",
+        "GITHUB_STATE=",
+        "INPUT_TOKEN=",
+        "STATE_SAVED=",
+    ] {
+        assert!(
+            !seen.lines().any(|line| line.starts_with(gone)),
+            "{gone} reached the command"
+        );
+    }
+    assert!(
+        seen.lines().any(|line| line == "GITHUB_SHA=0123abc"),
+        "{seen}"
+    );
+}
+
 // --- state ------------------------------------------------------------------
 
 #[test]
@@ -1588,7 +1720,7 @@ fn a_computed_default_fetches_its_address_once_for_every_key_that_names_it() {
 // --- AWS credentials for containers -------------------------------------------
 
 fn aws_ready(mock: &Mock) {
-    mock.on("GET", ENVS, 200, &values_body());
+    mock.on("GET", MACHINE_ENVS, 200, &values_body());
     mock.on(
         "POST",
         "/api/v1/auth/aws",
@@ -1630,7 +1762,7 @@ fn an_ecs_or_eks_pod_identity_container_proves_itself_with_its_endpoint_credenti
         &json!({ "AccessKeyId": "ASIACONTAINER", "SecretAccessKey": "s3cr3t", "Token": "t0k" })
             .to_string(),
     );
-    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
     std::fs::write(workspace.path().join("pod-token"), "pod-auth\n").unwrap();
     let output = without_token(&workspace, &mock)
         .env(
@@ -1660,10 +1792,144 @@ fn an_ecs_or_eks_pod_identity_container_proves_itself_with_its_endpoint_credenti
 }
 
 #[test]
+fn a_slug_in_the_header_stops_a_ci_or_aws_login_before_any_request() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "GET",
+        "/token",
+        200,
+        &json!({ "value": "jwt_FAKE" }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let token_url = format!("{}/token", mock.url());
+    let kinds: [&[(&str, &str)]; 2] = [
+        &[
+            ("ACTIONS_ID_TOKEN_REQUEST_URL", &token_url),
+            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE"),
+        ],
+        &[
+            ("AWS_ACCESS_KEY_ID", "AKIAFAKE"),
+            ("AWS_SECRET_ACCESS_KEY", "FAKEsecret"),
+        ],
+    ];
+    for vars in kinds {
+        let mut command = without_token(&workspace, &mock);
+        for (k, v) in vars {
+            command.env(k, v);
+        }
+        let out = command
+            .args(["--json", "run", "--", "true"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{vars:?}: {}", stderr(&out));
+        let refused = json_of(&stderr(&out));
+        assert_eq!(refused["error"], "audience_not_workspace_id");
+        let fix = refused["fix"].as_str().unwrap();
+        assert!(fix.contains("Replace acme in @penv="), "{fix}");
+        assert!(fix.contains("Organization ID"), "{fix}");
+    }
+    assert!(mock.requests().is_empty(), "no lookup, no exchange");
+}
+
+#[test]
+fn github_actions_asks_for_a_token_whose_audience_is_the_workspace_id() {
+    let mock = Mock::new();
+    aws_ready(&mock);
+    mock.on(
+        "GET",
+        "/token",
+        200,
+        &json!({ "value": "jwt_FAKE" }).to_string(),
+    );
+    mock.on(
+        "POST",
+        "/api/v1/auth/oidc",
+        201,
+        &json!({ "credential": "pck_FAKE_EXCHANGED", "expiresIn": 900 }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
+    let output = without_token(&workspace, &mock)
+        .env(
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            format!("{}/token", mock.url()),
+        )
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE")
+        .args(["run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let asked = mock.last("GET", "/token").target;
+    assert!(
+        asked.contains(&format!("audience={WORKSPACE_ID}")),
+        "{asked}"
+    );
+}
+
+#[test]
+fn the_server_s_audience_refusal_is_printed_as_it_wrote_it() {
+    let mock = Mock::new();
+    let said = "The audience is a slug. Use the workspace id instead: the Organization ID under Settings, Organization.";
+    mock.on(
+        "POST",
+        "/api/v1/auth/oidc",
+        400,
+        &json!({ "error": "audience_not_workspace_id", "message": said }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
+    let output = without_token(&workspace, &mock)
+        .env("PENV_OIDC_TOKEN", "eyJ.FAKE.jwt")
+        .args(["--json", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "audience_not_workspace_id");
+    assert_eq!(refused["message"], said);
+}
+
+#[test]
+fn a_refused_ci_trigger_is_named_with_the_triggers_that_work() {
+    let mock = Mock::new();
+    mock.on(
+        "POST",
+        "/api/v1/auth/oidc",
+        403,
+        &json!({ "error": "refused" }).to_string(),
+    );
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
+    let output = without_token(&workspace, &mock)
+        .env("PENV_OIDC_TOKEN", "eyJ.FAKE.jwt")
+        .env("GITHUB_EVENT_NAME", "pull_request_target")
+        .args(["--json", "run", "--", "true"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "refused");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("pull_request_target"),
+        "{refused}"
+    );
+    assert!(
+        !stderr(&output).contains("eyJ.FAKE.jwt"),
+        "the token is never shown"
+    );
+    assert_eq!(
+        mock.hits("POST", "/api/v1/auth/oidc").len(),
+        1,
+        "never retried"
+    );
+}
+
+#[test]
 fn a_container_uri_to_an_arbitrary_host_is_never_called() {
     let mock = Mock::new();
     aws_ready(&mock);
-    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
     let output = without_token(&workspace, &mock)
         .env(
             "AWS_CONTAINER_CREDENTIALS_FULL_URI",
@@ -1692,7 +1958,7 @@ fn an_eks_irsa_pod_trades_its_token_file_for_keys_then_proves_itself() {
         200,
         "<AssumeRoleWithWebIdentityResponse><AssumeRoleWithWebIdentityResult><Credentials><AccessKeyId>ASIAWEBID</AccessKeyId><SecretAccessKey>w3bs3cr3t</SecretAccessKey><SessionToken>st</SessionToken></Credentials></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>",
     );
-    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
     std::fs::write(workspace.path().join("sa-token"), "eyJ.pod.jwt\n").unwrap();
     let output = without_token(&workspace, &mock)
         .env(
@@ -1729,7 +1995,7 @@ fn a_refused_web_identity_says_why_without_echoing_the_token() {
         403,
         "<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>",
     );
-    let workspace = Workspace::new(&[(".env.schema", &cloud_schema())]);
+    let workspace = Workspace::new(&[(".env.schema", &machine_schema())]);
     std::fs::write(workspace.path().join("sa-token"), "eyJ.secret.jwt").unwrap();
     let output = without_token(&workspace, &mock)
         .env(
@@ -2351,4 +2617,89 @@ fn bundle_refuses_a_write_only_key_rather_than_leaving_it_out() {
     assert_eq!(output.status.code(), Some(6), "{}", stderr(&output));
     assert_eq!(json_of(&stderr(&output))["error"], "redacted");
     assert!(!workspace.path().join(".penv/production.bundle").exists());
+}
+
+// --- write limits -------------------------------------------------------------
+
+#[test]
+fn a_value_over_the_limit_is_refused_before_anything_is_sent() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on("PUT", ENVS, 200, PUT_OK);
+    let big = "x".repeat(256 * 1024 + 1);
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\nCERT={big}\n")),
+    ]);
+    let output = workspace.run(&mock, &["--json", "push"]);
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "value_too_large");
+    let message = refused["message"].as_str().unwrap();
+    assert!(
+        message.contains("the value of CERT is 262145 bytes"),
+        "{message}"
+    );
+    assert!(!message.contains("xxxx"), "never the value");
+    assert!(mock.hits("PUT", ENVS).is_empty(), "nothing half-written");
+    assert!(workspace.path().join(".env").exists(), "the file stays");
+}
+
+#[test]
+fn a_push_of_more_than_a_thousand_keys_goes_in_batches() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on("PUT", ENVS, 200, PUT_OK);
+    let values: String = (0..1001).map(|i| format!("KEY_{i:04}=v{i}\n")).collect();
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema()), (".env", &values)]);
+    let output = workspace.run(&mock, &["--json", "push"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let sizes: Vec<usize> = mock
+        .hits("PUT", ENVS)
+        .iter()
+        .map(|put| put.json()["keys"].as_array().unwrap().len())
+        .collect();
+    assert_eq!(
+        sizes.iter().sum::<usize>(),
+        1003,
+        "two schema keys and 1001 values"
+    );
+    assert!(sizes.iter().all(|n| *n <= 1000), "{sizes:?}");
+    assert_eq!(sizes.len(), 2);
+    assert_eq!(
+        json_of(&stdout(&output))["written"],
+        2,
+        "the batches add up"
+    );
+}
+
+#[test]
+fn a_machine_credential_on_an_environment_that_needs_approval_is_sent_to_the_console() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on(
+        "PUT",
+        ENVS,
+        409,
+        &json!({ "error": "machine_change_requires_approval", "detail": "development requires a second approver" })
+            .to_string(),
+    );
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let output = workspace.run(&mock, &["--json", "push"]);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "machine_change_requires_approval");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("development requires a second approver"),
+        "{refused}"
+    );
+    assert!(refused["fix"].as_str().unwrap().contains("change request"));
 }

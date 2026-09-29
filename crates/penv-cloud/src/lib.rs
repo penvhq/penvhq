@@ -11,6 +11,8 @@ pub mod keychain;
 pub mod provider;
 pub mod signature;
 pub mod tls;
+pub mod workspace;
+pub mod write;
 
 pub use api::{
     AGENT_HEADER, Address, Api, Approval, Bearer, Challenge, CloudKey, DEFAULT_BASE_URL,
@@ -23,9 +25,10 @@ pub use clock::{Clock, Fixed, SystemClock, epoch_from_rfc3339};
 pub use credential::{
     AwsIam, BoundKeypair, Enrolled, Obtain, Oidc, TOKEN_VAR, Token, present, resolve,
 };
-pub use error::{ApiError, CloudError, Result};
+pub use error::{ApiError, CloudError, Exchange, Result};
 pub use fetch::sha256_hex;
 pub use keychain::{Keychain, Keyring, MemoryKeychain, NoKeychain};
+pub use workspace::WorkspaceId;
 
 /// Bytes from the operating system's generator, for values penv generates
 /// (`random()` in a schema). The same source the credential and cache use.

@@ -272,6 +272,27 @@ pub fn key_schema(key: &Key) -> Value {
     json
 }
 
+/// Refuse, before anything is sent, every key Penv Cloud would refuse: a name
+/// or path outside its grammar, a value over 256 KiB. Never shows a value.
+pub fn writable(keys: &[penv_cloud::api::CloudKey]) -> Result<(), CliError> {
+    let refused = penv_cloud::write::check_all(keys);
+    let Some(first) = refused.first() else {
+        return Ok(());
+    };
+    let too_large = matches!(first, penv_cloud::write::Refusal::TooLarge { .. });
+    let listed: Vec<String> = refused.iter().map(ToString::to_string).collect();
+    Err(CliError::new(
+        if too_large { "value_too_large" } else { "name_invalid" },
+        format!("{}. Nothing was sent.", listed.join("; ")),
+        if too_large {
+            "Store a large file elsewhere and keep its location in the key, then run this again."
+        } else {
+            "Rename the key in .env.schema and your code: letters, digits, _, . and -, starting with a letter, a digit or _. Then run this again."
+        },
+    )
+    .with_exit(Exit::Validation))
+}
+
 /// Write with every key's schema as written, and when penv.cloud refuses a
 /// schema field it does not store yet (`hosts`, docs/Cloud-API.md), write once
 /// more without it. The committed .env.schema keeps @hosts either way; the
@@ -301,6 +322,15 @@ pub fn with_hosts_fallback<T>(
         other => other,
     }
 }
+
+/// Why a `penv login` ends, so the fix says it plainly.
+const LOGIN_LIFETIME: &str = "A penv login lasts 30 days from its last use and 90 days at most, and ends when you reset your password, sign out everywhere or recover the account.";
+
+/// A login is approved for one workspace or for all of them.
+const OTHER_WORKSPACE: &str = "If you signed in with penv login, this login was approved for a different workspace; run penv login again and choose it.";
+
+/// Where a person finds the id a machine login needs.
+const WORKSPACE_ID_FIX: &str = "The id is the Organization ID under Settings → Organization in the Penv Cloud console; the Connect a Platform snippet already carries it.";
 
 /// One refusal shape for every cloud failure, with the exit code the design
 /// publishes for it.
@@ -350,10 +380,12 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 "Pick another name, or point @penv= at the existing project.",
             )
             .with_exit(Exit::Validation),
-            (_, "org_ambiguous") => CliError::new(
-                "org_ambiguous",
-                "more than one workspace answers to the org in @penv=, and both trust this identity.",
-                "Rename one of the two workspaces in the console so their slugs differ, then run this again.",
+            (_, "audience_not_workspace_id") => CliError::new(
+                "audience_not_workspace_id",
+                api.message.clone().unwrap_or_else(|| {
+                    "Penv Cloud accepts a CI or AWS login only for a workspace named by its id.".to_string()
+                }),
+                WORKSPACE_ID_FIX,
             )
             .with_exit(Exit::Auth),
             (_, "undecryptable") => CliError::new(
@@ -372,10 +404,37 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             .with_exit(Exit::EnvironmentRefused),
             (_, "name_invalid") => CliError::new(
                 "name_invalid",
-                "the cloud stores upper-case key names only: A-Z, 0-9 and _, not starting with a digit.",
-                "Rename the key in .env.schema and your code, then run this again.",
+                match &api.detail {
+                    Some(detail) => format!("Penv Cloud refused a name: {detail}"),
+                    None => "Penv Cloud refused a key's name or path.".to_string(),
+                },
+                format!("A name is letters, digits, _, . and -, starting with a letter, a digit or _, at most {} characters. Rename the key in .env.schema and your code, then run this again.", penv_cloud::write::MAX_NAME),
             )
             .with_exit(Exit::Validation),
+            (413, "value_too_large") => CliError::new(
+                "value_too_large",
+                match &api.detail {
+                    Some(detail) => format!("Penv Cloud refused a value as too large: {detail}"),
+                    None => "Penv Cloud refused a value as too large.".to_string(),
+                },
+                "A value may be at most 256 KiB (262144 bytes of UTF-8). Store a large file elsewhere and keep its location in the key.",
+            )
+            .with_exit(Exit::Validation),
+            (413, code @ ("too_many_keys" | "body_too_large")) => CliError::new(
+                if code == "too_many_keys" { "too_many_keys" } else { "body_too_large" },
+                format!("Penv Cloud refused the request as too large ({code}). penv splits a push into requests of {} keys, so this is a bug in penv.", penv_cloud::write::MAX_BATCH),
+                "Report it at https://github.com/penvhq/penvhq/issues with the output of penv --version. Pushing fewer keys at a time works around it.",
+            ),
+            (409, "machine_change_requires_approval") => CliError::new(
+                "machine_change_requires_approval",
+                format!(
+                    "{} requires a second approver, so a machine credential cannot write, delete or change its schema.{}",
+                    if where_.is_empty() { "this environment" } else { &where_ },
+                    api.detail.as_ref().map(|d| format!(" Penv Cloud says: {d}")).unwrap_or_default()
+                ),
+                "Make the change as a person in the Penv Cloud console, where it becomes a change request.",
+            )
+            .with_exit(Exit::Auth),
             (_, "exists") => CliError::new(
                 "exists",
                 "that name is already taken in this project.",
@@ -393,16 +452,32 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 "Use a name such as billing or staging.",
             )
             .with_exit(Exit::Validation),
+            (403, "refused") if api.exchange.is_some() => refused_trigger(),
+            (401, code) if api.exchange.is_some() => refused_proof(api.exchange, code),
+            (503, _) if api.exchange.is_some() => CliError::new(
+                "unavailable",
+                "Penv Cloud could not verify this machine's token right now; penv tried four times.",
+                "Wait a minute, then run the job again.",
+            )
+            .with_exit(Exit::NoCredential),
             (401, "expired") => CliError::new(
                 "expired",
-                "your login expired.",
-                "Run penv login. On a server or in CI, set a fresh PENV_TOKEN.",
+                "your login has ended.",
+                format!("Run penv login again. {LOGIN_LIFETIME} On a server or in CI, set a fresh PENV_TOKEN."),
             )
             .with_exit(Exit::Auth),
             (401, _) => CliError::new(
                 "unauthorized",
-                "the server rejected your login or token.",
-                "Run penv login again. If PENV_TOKEN is set, check it is current.",
+                "the server no longer accepts your login or token.",
+                format!("Run penv login again. {LOGIN_LIFETIME} If PENV_TOKEN is set, check it is current."),
+            )
+            .with_exit(Exit::Auth),
+            // A workspace's sign-in policy (single sign-on, two-factor) wrote
+            // what the person has to do.
+            (403, "forbidden") if api.message.is_some() => CliError::new(
+                "forbidden",
+                api.message.clone().unwrap_or_default(),
+                "Do what the message says, then run penv login again.",
             )
             .with_exit(Exit::Auth),
             (403, _) if at.is_none() => CliError::new(
@@ -419,13 +494,13 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             .with_exit(Exit::EnvironmentRefused),
             (404, _) if at.is_none() => CliError::new(
                 "not_found",
-                "that project or environment does not exist on the server.",
-                "Run penv project ls to see the names, then run this again.",
+                "that project or environment does not exist on the server, or is in a workspace this login was not approved for.",
+                format!("Run penv project ls to see the names you can reach. {OTHER_WORKSPACE}"),
             ),
             (404, _) => CliError::new(
                 "not_found",
-                format!("{where_} does not exist on the server."),
-                "Compare the # @penv=org/project line in .env.schema and the --env name with the console.",
+                format!("{where_} does not exist on the server, or is in a workspace this login was not approved for."),
+                format!("Compare the # @penv=org/project line in .env.schema and the --env name with the console. {OTHER_WORKSPACE}"),
             ),
             (429, _) => CliError::new(
                 "rate_limited",
@@ -447,6 +522,13 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
                 "Run penv check to find problems in .env.schema, fix them, then run this again.",
             ),
         },
+
+        CloudError::NotWorkspaceId(slug) => CliError::new(
+            "audience_not_workspace_id",
+            format!("@penv= names the workspace {slug}, a slug, and a CI or AWS login to Penv Cloud needs the workspace id."),
+            format!("Replace {slug} in @penv= with the workspace id. {WORKSPACE_ID_FIX}"),
+        )
+        .with_exit(Exit::Auth),
 
         CloudError::Keychain(_) => CliError::new(
             "keychain",
@@ -473,6 +555,55 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             "Run this again. If it keeps failing, run penv check to test your setup.",
         ),
     }
+}
+
+/// Penv Cloud refuses a login from some CI triggers: a `pull_request_target`
+/// job, always. GitHub names the trigger in `GITHUB_EVENT_NAME`.
+fn refused_trigger() -> CliError {
+    let trigger = std::env::var("GITHUB_EVENT_NAME")
+        .ok()
+        .map(|name| penv_cloud::error::printable(&name))
+        .filter(|name| !name.is_empty() && name.len() <= 64);
+    CliError::new(
+        "refused",
+        match trigger {
+            Some(name) => format!("Penv Cloud refuses a login from a job triggered by {name}."),
+            None => "Penv Cloud refuses a login from the trigger that started this job.".to_string(),
+        },
+        "Run the job on push, pull_request or workflow_dispatch; pull_request_target is refused on every login.",
+    )
+    .with_exit(Exit::Auth)
+}
+
+/// A 401 from a machine login: the token or signed request it sent.
+fn refused_proof(exchange: Option<penv_cloud::Exchange>, code: &str) -> CliError {
+    use penv_cloud::Exchange;
+    let what = match exchange {
+        Some(Exchange::Aws) => "the signed AWS request",
+        Some(Exchange::Keypair) => "this machine's keypair proof",
+        _ => "the CI platform's OIDC token",
+    };
+    if code == "expired" {
+        return CliError::new(
+            "expired",
+            format!("{what} has expired, so Penv Cloud would not exchange it."),
+            match exchange {
+                Some(Exchange::Aws) => "Check this machine's clock and that its AWS credentials are current, then run this again.",
+                _ => "Run the job again so the platform mints a fresh token. A token held in PENV_OIDC_TOKEN or ID_TOKEN must be current.",
+            },
+        )
+        .with_exit(Exit::Auth);
+    }
+    CliError::new(
+        "unauthorized",
+        format!("Penv Cloud does not trust {what}: no trust configured for this workspace matches it."),
+        match exchange {
+            Some(Exchange::Aws) => "Check the AWS trust for this identity's account and role in the Penv Cloud console, under Connect a Platform.",
+            Some(Exchange::Keypair) => "Enroll this machine again with penv machine enroll <secret>, using a fresh enrolment secret from the console.",
+            _ => "Check the OIDC trust in the Penv Cloud console, under Connect a Platform: issuer, subject and claims must match this job. A GitHub token must carry event_name, which Actions tokens do.",
+        },
+    )
+    .with_exit(Exit::Auth)
 }
 
 /// Everything penv says while a command is still working goes to stderr, so
@@ -623,6 +754,14 @@ impl<'a> Fetcher<'a> {
         Ok(resolved.body.keys)
     }
 
+    /// The keys already read at the address `label` names, without asking again.
+    pub fn read_at(&self, label: &str) -> &[penv_cloud::api::CloudKey] {
+        self.read
+            .iter()
+            .find(|(l, _)| l == label)
+            .map_or(&[], |(_, keys)| keys.as_slice())
+    }
+
     pub fn values(&mut self, at: &Address) -> Result<penv_schema::Values, CliError> {
         Ok(self
             .keys(at)?
@@ -697,9 +836,8 @@ mod tests {
                 "project_taken",
                 "a project with that name already exists",
             ),
-            (409, "org_ambiguous", "more than one workspace answers"),
             (409, "undecryptable", "cannot decrypt it"),
-            (400, "name_invalid", "upper-case key names only"),
+            (400, "name_invalid", "refused a key's name or path"),
             (409, "redacted", "is write-only in penv-cloud"),
         ] {
             let error = refuse(ApiError::new(status, code).into(), Some(&at));
@@ -730,6 +868,217 @@ mod tests {
             unnamed.message.starts_with("that environment"),
             "{}",
             unnamed.message
+        );
+    }
+
+    #[test]
+    fn a_slug_where_a_workspace_id_belongs_says_where_the_id_is() {
+        let refused = refuse(CloudError::NotWorkspaceId("acme".into()), None);
+        assert_eq!(refused.code, "audience_not_workspace_id");
+        assert_eq!(refused.exit, Exit::Auth);
+        assert!(refused.message.contains("acme"), "{}", refused.message);
+        assert!(
+            refused.fix.contains("Replace acme in @penv="),
+            "{}",
+            refused.fix
+        );
+        assert!(
+            refused.fix.contains("Settings → Organization"),
+            "{}",
+            refused.fix
+        );
+    }
+
+    #[test]
+    fn the_server_s_own_audience_message_is_shown_as_written() {
+        let said =
+            "Use the workspace id instead: the Organization ID under Settings, Organization.";
+        let refused = refuse(
+            ApiError::new(400, "audience_not_workspace_id")
+                .saying(Some(said))
+                .into(),
+            None,
+        );
+        assert_eq!(refused.code, "audience_not_workspace_id");
+        assert_eq!(refused.message, said);
+        let bare = refuse(ApiError::new(400, "audience_not_workspace_id").into(), None);
+        assert!(bare.message.contains("by its id"), "{}", bare.message);
+    }
+
+    #[test]
+    fn each_machine_login_refusal_says_what_to_change() {
+        use penv_cloud::Exchange;
+        let during =
+            |status, code, kind| refuse(ApiError::new(status, code).during(kind).into(), None);
+
+        let trigger = during(403, "refused", Exchange::Oidc);
+        assert_eq!((trigger.code, trigger.exit), ("refused", Exit::Auth));
+        assert!(
+            trigger
+                .fix
+                .contains("push, pull_request or workflow_dispatch"),
+            "{}",
+            trigger.fix
+        );
+
+        let expired = during(401, "expired", Exchange::Oidc);
+        assert_eq!(expired.code, "expired");
+        assert!(
+            expired.message.contains("token has expired"),
+            "{}",
+            expired.message
+        );
+        assert!(
+            !expired.fix.contains("penv login"),
+            "a CI job cannot sign in: {}",
+            expired.fix
+        );
+
+        let untrusted = during(401, "unauthorized", Exchange::Oidc);
+        assert_eq!(untrusted.code, "unauthorized");
+        assert!(
+            untrusted.fix.contains("Connect a Platform"),
+            "{}",
+            untrusted.fix
+        );
+        assert!(untrusted.fix.contains("event_name"), "{}", untrusted.fix);
+        let aws = during(401, "unauthorized", Exchange::Aws);
+        assert!(
+            aws.message.contains("signed AWS request"),
+            "{}",
+            aws.message
+        );
+
+        let unavailable = during(503, "unavailable", Exchange::Aws);
+        assert_eq!(unavailable.code, "unavailable");
+        assert!(
+            unavailable.message.contains("could not verify"),
+            "{}",
+            unavailable.message
+        );
+    }
+
+    #[test]
+    fn an_ended_login_says_to_sign_in_again_and_why_logins_end() {
+        for code in ["expired", "unauthorized"] {
+            let ended = refuse(ApiError::new(401, code).into(), None);
+            assert_eq!(ended.exit, Exit::Auth);
+            assert!(
+                ended.fix.starts_with("Run penv login again."),
+                "{}",
+                ended.fix
+            );
+            assert!(ended.fix.contains("90 days at most"), "{}", ended.fix);
+        }
+    }
+
+    #[test]
+    fn a_sign_in_policy_refusal_is_shown_as_the_workspace_wrote_it() {
+        let said = "Acme requires single sign-on. Sign in to Penv Cloud with your Acme SSO, then run penv login again.";
+        let policy = refuse(
+            ApiError::new(403, "forbidden").saying(Some(said)).into(),
+            Some(&Address::new("acme", "api", "production")),
+        );
+        assert_eq!((policy.code, policy.exit), ("forbidden", Exit::Auth));
+        assert_eq!(policy.message, said);
+
+        let plain = refuse(ApiError::new(403, "forbidden").into(), None);
+        assert!(
+            plain.message.starts_with("your account is not allowed"),
+            "{}",
+            plain.message
+        );
+    }
+
+    #[test]
+    fn a_missing_address_may_be_a_workspace_the_login_was_not_approved_for() {
+        let at = Address::new("globex", "api", "production");
+        let missing = refuse(ApiError::new(404, "not_found").into(), Some(&at));
+        assert!(
+            missing.fix.contains("this login was approved for a different workspace; run penv login again and choose it"),
+            "{}",
+            missing.fix
+        );
+    }
+
+    #[test]
+    fn each_write_refusal_names_what_the_server_named() {
+        let at = Address::new("acme", "api", "production");
+        let with = |status, code, detail: &str| {
+            refuse(
+                ApiError::new(status, code).detailing(Some(detail)).into(),
+                Some(&at),
+            )
+        };
+        let name = with(400, "name_invalid", "db/a b is not a valid name");
+        assert_eq!((name.code, name.exit), ("name_invalid", Exit::Validation));
+        assert!(
+            name.message.contains("db/a b is not a valid name"),
+            "{}",
+            name.message
+        );
+
+        let large = with(413, "value_too_large", "CERT exceeds 262144 bytes");
+        assert_eq!(large.code, "value_too_large");
+        assert!(large.message.contains("CERT"), "{}", large.message);
+        assert!(large.fix.contains("256 KiB"), "{}", large.fix);
+
+        for code in ["too_many_keys", "body_too_large"] {
+            let bug = refuse(ApiError::new(413, code).into(), Some(&at));
+            assert_eq!(bug.code, code);
+            assert!(bug.message.contains("a bug in penv"), "{}", bug.message);
+        }
+
+        let approval = with(
+            409,
+            "machine_change_requires_approval",
+            "production requires two approvers",
+        );
+        assert_eq!(approval.code, "machine_change_requires_approval");
+        assert!(
+            approval.message.contains("acme/api/production"),
+            "{}",
+            approval.message
+        );
+        assert!(
+            approval
+                .message
+                .contains("production requires two approvers"),
+            "{}",
+            approval.message
+        );
+        assert!(approval.fix.contains("change request"), "{}", approval.fix);
+    }
+
+    #[test]
+    fn a_key_the_server_would_refuse_is_refused_before_sending_and_never_shown() {
+        use penv_cloud::api::CloudKey;
+        let big = CloudKey {
+            name: "CERT".into(),
+            value: Some("FAKE".repeat(70_000)),
+            ..CloudKey::default()
+        };
+        let refused = writable(&[big]).unwrap_err();
+        assert_eq!(refused.code, "value_too_large");
+        assert!(refused.message.contains("CERT"), "{}", refused.message);
+        assert!(
+            refused.message.contains("Nothing was sent"),
+            "{}",
+            refused.message
+        );
+        assert!(!refused.message.contains("FAKE"));
+
+        let named = CloudKey {
+            name: "a/b".into(),
+            ..CloudKey::default()
+        };
+        assert_eq!(writable(&[named]).unwrap_err().code, "name_invalid");
+        assert!(
+            writable(&[CloudKey {
+                name: "OK".into(),
+                ..CloudKey::default()
+            }])
+            .is_ok()
         );
     }
 

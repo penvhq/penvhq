@@ -23,6 +23,7 @@ pub use token::{TOKEN_VAR, Token};
 use crate::api::{Api, Bearer};
 use crate::error::{CloudError, Result};
 use crate::keychain::Keychain;
+use crate::workspace::WorkspaceId;
 
 /// How one kind proves who this host is.
 pub trait Obtain {
@@ -50,7 +51,9 @@ impl Obtain for Bearer {
 
 /// The order the design fixes: the variable, the person's login, the enrolled
 /// keypair, the platform's OIDC token, then AWS (keys, web identity, container).
-/// `org` is the OIDC audience and the workspace an AWS login signs. A keychain that will not answer is passed over,
+/// `org` is the workspace from `@penv=`: a login that names its workspace (a
+/// GitHub OIDC audience, the signed AWS header) needs its id, and a slug stops
+/// here, before any request. A keychain that will not answer is passed over,
 /// and named only when nothing else applies.
 pub fn resolve<'a>(
     env: &BTreeMap<String, String>,
@@ -64,19 +67,23 @@ pub fn resolve<'a>(
     if let Some(held) = held {
         return Ok(held);
     }
-    if let Some(oidc) = Oidc::from_env(env, org) {
-        return Ok(Box::new(oidc));
+    let workspace = || org.map(WorkspaceId::parse).transpose();
+    if let Some(oidc) = Oidc::from_env(env) {
+        if !oidc.requests_audience() {
+            return Ok(Box::new(oidc));
+        }
+        return Ok(Box::new(oidc.for_workspace(workspace()?)));
     }
     // The AWS SDKs' own order: keys in the environment, web identity (EKS
     // IRSA), then the container endpoint (ECS task roles, EKS Pod Identity).
     if let Some(aws) = AwsIam::from_env(env) {
-        return Ok(Box::new(aws.for_org(org)));
+        return Ok(Box::new(aws.for_workspace(workspace()?)));
     }
     if let Some(aws) = AwsWebIdentity::from_env(env) {
-        return Ok(Box::new(aws.for_org(org)));
+        return Ok(Box::new(aws.for_workspace(workspace()?)));
     }
     if let Some(aws) = AwsContainer::from_env(env) {
-        return Ok(Box::new(aws.for_org(org)));
+        return Ok(Box::new(aws.for_workspace(workspace()?)));
     }
     Err(unreadable.unwrap_or(CloudError::NoCredential))
 }
@@ -180,6 +187,36 @@ mod tests {
     }
 
     #[test]
+    fn a_login_that_names_its_workspace_refuses_a_slug_before_any_request() {
+        let github = env(&[
+            ("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.example/"),
+            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE"),
+        ]);
+        let aws = env(&[
+            ("AWS_ACCESS_KEY_ID", "AKIAFAKE"),
+            ("AWS_SECRET_ACCESS_KEY", "secretFAKE"),
+        ]);
+        let store = MemoryKeychain::new();
+        for host in [&github, &aws] {
+            assert!(matches!(
+                resolve(host, &store, Some("acme")),
+                Err(CloudError::NotWorkspaceId(ref slug)) if slug == "acme"
+            ));
+            assert!(resolve(host, &store, Some("3f2504e0-4f89-11d3-9a0c-0305e82c3301")).is_ok());
+            assert!(
+                resolve(host, &store, None).is_ok(),
+                "the server says what is missing"
+            );
+        }
+        // A held token's audience was fixed where it was minted; penv sends no org.
+        let held = env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")]);
+        assert!(resolve(&held, &store, Some("acme")).is_ok());
+        // A token or a login never names a workspace, so a slug in @penv= is fine.
+        let token = env(&[("PENV_TOKEN", "pck_FAKE")]);
+        assert!(resolve(&token, &store, Some("acme")).is_ok());
+    }
+
+    #[test]
     fn an_identity_is_stable_where_the_host_holds_the_proof_and_absent_otherwise() {
         let token = Token::new("pck_FAKE");
         assert_eq!(token.identity(), Token::new("pck_FAKE").identity());
@@ -195,15 +232,12 @@ mod tests {
         );
         assert_ne!(aws("secretFAKE"), token.identity());
 
-        let held = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")]), None).unwrap();
+        let held = Oidc::from_env(&env(&[("PENV_OIDC_TOKEN", "jwt_FAKE")])).unwrap();
         assert!(held.identity().is_some());
-        let github = Oidc::from_env(
-            &env(&[
-                ("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.example/"),
-                ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE"),
-            ]),
-            None,
-        )
+        let github = Oidc::from_env(&env(&[
+            ("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.example/"),
+            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request_FAKE"),
+        ]))
         .unwrap();
         assert_eq!(github.identity(), None, "its token is only a request away");
     }

@@ -49,16 +49,17 @@ pub fn set(
 
     let declared = schema.get(name).cloned();
     let key = declared.clone().unwrap_or_else(|| drafted(name, &value));
-    let detection = detect_here(env, std::io::stdout().is_terminal());
-    let cloud = Cloud::open(env, &detection)?;
-    let bearer = cloud.bearer(env, schema.org.as_deref())?;
-
     let mut sent = [CloudKey {
         name: name.to_string(),
         schema: Some(key_schema(&key)),
         value: Some(value),
         ..CloudKey::default()
     }];
+    super::cloud::writable(&sent)?;
+    let detection = detect_here(env, std::io::stdout().is_terminal());
+    let cloud = Cloud::open(env, &detection)?;
+    let bearer = cloud.bearer(env, schema.org.as_deref())?;
+
     let result = super::cloud::with_hosts_fallback(&mut sent, |keys| {
         cloud.api.key_set(&bearer, &at, &keys[0])
     })

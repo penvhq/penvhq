@@ -11,6 +11,7 @@ use std::time::Duration;
 use crate::api::{Api, Bearer};
 use crate::credential::{AwsIam, Obtain};
 use crate::error::{CloudError, Result};
+use crate::workspace::WorkspaceId;
 
 pub const RELATIVE_URI_VAR: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
 pub const FULL_URI_VAR: &str = "AWS_CONTAINER_CREDENTIALS_FULL_URI";
@@ -26,7 +27,7 @@ pub struct AwsContainer {
     token: Option<String>,
     token_file: Option<String>,
     region: String,
-    org: Option<String>,
+    workspace: Option<WorkspaceId>,
 }
 
 /// The host only: a full URI's path and query are the platform's, and may
@@ -40,9 +41,9 @@ impl fmt::Debug for AwsContainer {
 }
 
 impl AwsContainer {
-    /// The workspace the signed login names; see [`AwsIam::for_org`].
-    pub fn for_org(mut self, org: Option<&str>) -> AwsContainer {
-        self.org = org.map(str::to_string);
+    /// The workspace the signed login names; see [`AwsIam::for_workspace`].
+    pub fn for_workspace(mut self, workspace: Option<WorkspaceId>) -> AwsContainer {
+        self.workspace = workspace;
         self
     }
 
@@ -62,7 +63,7 @@ impl AwsContainer {
             token: at(AUTH_TOKEN_VAR),
             token_file: at(AUTH_TOKEN_FILE_VAR),
             region: super::aws::region(env),
-            org: None,
+            workspace: None,
         })
     }
 
@@ -95,7 +96,7 @@ impl AwsContainer {
             (Some(key), Some(secret)) => {
                 Ok(
                     AwsIam::new(key, secret, field("Token"), self.region.clone())
-                        .for_org(self.org.as_deref()),
+                        .for_workspace(self.workspace.clone()),
                 )
             }
             _ => Err(failed("answered without an access key")),

@@ -9,7 +9,7 @@ use ureq::http::{Response, StatusCode};
 use ureq::{Body, RequestBuilder};
 
 use crate::clock::epoch_from_rfc3339;
-use crate::error::{ApiError, CloudError, Result};
+use crate::error::{ApiError, CloudError, Exchange, Result};
 
 /// Where the CLI talks to when nothing says otherwise.
 pub const DEFAULT_BASE_URL: &str = "https://penv.cloud";
@@ -23,6 +23,9 @@ pub const SESSION_HEADER: &str = "X-Penv-Session";
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// A server error is tried once more, this long after the first one.
 const RETRY_PAUSE: Duration = Duration::from_secs(1);
+/// How many more times a machine login is tried while the server answers 503,
+/// the pause doubling each time.
+const UNAVAILABLE_RETRIES: u32 = 3;
 
 /// One path segment, percent-encoded to RFC 3986's unreserved set. Slugs and
 /// environment names are free-form, so nothing in one may reach the router.
@@ -66,18 +69,38 @@ pub fn without_nulls(value: Value) -> Value {
 /// The machine's name, for the approval page. No crate reads a hostname, so the
 /// platform's own variable answers, and an unnamed host is just the CLI.
 pub fn host_name() -> String {
-    for var in ["COMPUTERNAME", "HOSTNAME", "HOST"] {
-        if let Some(name) = std::env::var_os(var)
-            && !name.is_empty()
-        {
-            return name.to_string_lossy().into_owned();
-        }
+    let named = ["COMPUTERNAME", "HOSTNAME", "HOST"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(|name| name.to_string_lossy().into_owned())
+        .find(|name| !name.is_empty())
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok());
+    device_label(named.as_deref().unwrap_or_default())
+}
+
+/// The longest device label Penv Cloud keeps.
+pub const MAX_DEVICE_LABEL: usize = 48;
+
+/// A label already within what the approval page keeps: letters, digits,
+/// spaces and `._-()'@`, at most [`MAX_DEVICE_LABEL`] characters.
+pub fn device_label(raw: &str) -> String {
+    let kept: String = raw
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric() || " ._-()'@".contains(*c))
+        .collect();
+    let label: String = kept
+        .split(' ')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_DEVICE_LABEL)
+        .collect();
+    match label.trim() {
+        "" => "penv CLI".to_string(),
+        trimmed => trimmed.to_string(),
     }
-    std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "penv CLI".to_string())
 }
 
 /// A bearer credential. Never printed: `Debug` says only that it exists.
@@ -362,7 +385,7 @@ pub enum Freshness {
     Changed(Option<String>),
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PutResult {
     #[serde(default)]
@@ -471,6 +494,7 @@ pub struct Api {
     base_url: String,
     agent_name: Option<String>,
     session_id: Option<String>,
+    pause: Duration,
 }
 
 impl Api {
@@ -488,7 +512,14 @@ impl Api {
             base_url: checked_base_url(base_url)?,
             agent_name: None,
             session_id: None,
+            pause: RETRY_PAUSE,
         })
+    }
+
+    /// The first pause before a retry; the tests shorten it.
+    pub fn pausing(mut self, pause: Duration) -> Api {
+        self.pause = pause;
+        self
     }
 
     /// `PENV_URL`, else penv.cloud.
@@ -550,8 +581,44 @@ impl Api {
         if response.status().as_u16() < 500 {
             return Ok(response);
         }
-        std::thread::sleep(RETRY_PAUSE);
+        std::thread::sleep(self.pause);
         send(url, send_once())
+    }
+
+    /// A machine login. A 503 is tried again up to [`UNAVAILABLE_RETRIES`]
+    /// times with the pause doubling, any other server error once, and every
+    /// try sends the body `body` makes for it: a signed AWS request is
+    /// accepted once only, so none is ever sent twice.
+    fn exchange<B: Serialize>(
+        &self,
+        path: &str,
+        during: Exchange,
+        body: impl Fn(u32) -> B,
+    ) -> Result<Response<Body>> {
+        let url = self.url(path);
+        let mut tries = 0;
+        loop {
+            let mut response = send(
+                &url,
+                self.stamp(self.http.post(&url)).send_json(body(tries)),
+            )?;
+            let status = response.status();
+            if [StatusCode::OK, StatusCode::CREATED].contains(&status) {
+                return Ok(response);
+            }
+            let again = match status.as_u16() {
+                503 => tries < UNAVAILABLE_RETRIES,
+                500.. => tries < 1,
+                _ => false,
+            };
+            if !again {
+                return Err(refusal(status.as_u16(), &mut response)
+                    .during(during)
+                    .into());
+            }
+            std::thread::sleep(self.pause.saturating_mul(1 << tries));
+            tries += 1;
+        }
     }
 
     // --- device-code login ---------------------------------------------------
@@ -899,23 +966,23 @@ impl Api {
     // --- credential exchanges ------------------------------------------------
 
     pub fn exchange_oidc(&self, token: &str, now: u64) -> Result<Bearer> {
-        let url = self.url("/auth/oidc");
-        let mut response = self.attempt(&url, || {
-            self.stamp(self.http.post(&url))
-                .send_json(json!({ "token": token }))
-        })?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])
-            .map_err(|e| recoded(e, "ambiguous", "org_ambiguous"))?;
-        bearer_from(&url, &mut response, now)
+        let mut response =
+            self.exchange("/auth/oidc", Exchange::Oidc, |_| json!({ "token": token }))?;
+        bearer_from(&self.url("/auth/oidc"), &mut response, now)
     }
 
-    pub fn exchange_aws(&self, signed: &SignedRequest, now: u64) -> Result<Bearer> {
-        let url = self.url("/auth/aws");
-        let mut response =
-            self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(signed))?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])
-            .map_err(|e| recoded(e, "ambiguous", "org_ambiguous"))?;
-        bearer_from(&url, &mut response, now)
+    /// `sign` makes the request for the instant it is given. Each try is signed
+    /// afresh, a second or more after the one before, so no two are the same.
+    pub fn exchange_aws(&self, sign: impl Fn(u64) -> SignedRequest, now: u64) -> Result<Bearer> {
+        let started = std::time::Instant::now();
+        let last = std::cell::Cell::new(None::<u64>);
+        let mut response = self.exchange("/auth/aws", Exchange::Aws, |_| {
+            let elapsed = now.saturating_add(started.elapsed().as_secs());
+            let at = last.get().map_or(elapsed, |before| elapsed.max(before + 1));
+            last.set(Some(at));
+            sign(at)
+        })?;
+        bearer_from(&self.url("/auth/aws"), &mut response, now)
     }
 
     pub fn keypair_challenge(&self, credential_id: &str) -> Result<Challenge> {
@@ -945,7 +1012,10 @@ impl Api {
         });
         let mut response =
             self.attempt(&url, || self.stamp(self.http.post(&url)).send_json(&body))?;
-        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED])?;
+        expect(&mut response, &[StatusCode::OK, StatusCode::CREATED]).map_err(|e| match e {
+            CloudError::Api(api) => api.during(Exchange::Keypair).into(),
+            other => other,
+        })?;
         let body: Value = read_json(&url, &mut response)?;
         Ok(KeypairGrant {
             generation: body
@@ -1088,8 +1158,8 @@ fn redirected(status: u16) -> bool {
     (300..400).contains(&status) && status != 304
 }
 
-/// The server answers `ambiguous` for a taken project name and for an org slug
-/// two workspaces share; the call that got it says which.
+/// The server answers `ambiguous` for a taken project name; the call that got it
+/// says so.
 fn recoded(error: CloudError, from: &str, to: &str) -> CloudError {
     match error {
         CloudError::Api(mut api) if api.code == from => {
@@ -1108,7 +1178,8 @@ fn expect(response: &mut Response<Body>, ok: &[StatusCode]) -> Result<()> {
     Err(refusal(status.as_u16(), response).into())
 }
 
-/// The body's `error` code, the status, and how long the server asked us to wait.
+/// The body's `error` code and `message`, the status, and how long the server
+/// asked us to wait.
 fn refusal(status: u16, response: &mut Response<Body>) -> ApiError {
     let retry_after = response
         .headers()
@@ -1134,7 +1205,19 @@ fn refusal(status: u16, response: &mut Response<Body>) -> ApiError {
             .and_then(|b| b.get("retryAfter"))
             .and_then(Value::as_u64)
     });
-    ApiError::new(status, code).after(retry_after)
+    let message = body
+        .as_ref()
+        .and_then(|b| b.get("message"))
+        .and_then(Value::as_str);
+    // A detail is text, or an object carrying its text as `message`.
+    let detail = body.as_ref().and_then(|b| b.get("detail")).and_then(|d| {
+        d.as_str()
+            .or_else(|| d.get("message").and_then(Value::as_str))
+    });
+    ApiError::new(status, code)
+        .after(retry_after)
+        .saying(message)
+        .detailing(detail)
 }
 
 fn read_json<T: DeserializeOwned>(url: &str, response: &mut Response<Body>) -> Result<T> {
@@ -1288,6 +1371,17 @@ mod tests {
                 .expires_at,
             Some(1_900)
         );
+    }
+
+    #[test]
+    fn a_device_label_is_what_the_approval_page_keeps() {
+        assert_eq!(device_label("dev-laptop.local\n"), "dev-laptop.local");
+        assert_eq!(device_label("Ana's Mac (2)"), "Ana's Mac (2)");
+        assert_eq!(device_label("build\u{202E}box;rm -rf /"), "buildboxrm -rf");
+        assert_eq!(device_label("  "), "penv CLI");
+        assert_eq!(device_label("ünïcode"), "ncode");
+        let long = device_label(&"a".repeat(80));
+        assert_eq!(long.len(), MAX_DEVICE_LABEL);
     }
 
     #[test]

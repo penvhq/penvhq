@@ -6,7 +6,7 @@ The surface `penv` speaks to penv.cloud. It is new in v1 and lives beside the ex
 
 | Prefix | Who | How obtained | Lifetime |
 |---|---|---|---|
-| `pcu_` | a person | device-code login | 30 days from last use (every authenticated request extends `expiresAt`), revoked by `logout` |
+| `pcu_` | a person | device-code login | 30 days from last use (every authenticated request extends `expiresAt`) and never past 90 days from issue; revoked by `logout`, a password reset, "Sign out everywhere" and account recovery |
 | `pck_` | a machine identity | console-issued token, or exchanged from OIDC, AWS SigV4 or a bound keypair | as today; exchanges mint 15 minutes for the CLI |
 
 Both resolve through one verifier to the same claims shape and one RBAC evaluator. A user credential carries the user's own role assignments and no fixed scope. A machine credential is bound to one project and environment; a request whose address is another environment is `403 forbidden`.
@@ -30,19 +30,32 @@ console page /device                signed-in person enters userCode, sees the d
 POST /api/v1/auth/revoke            Bearer pcu_ or pck_, revokes itself; idempotent
 ```
 
-`POST /auth/device` accepts `{ "device": "<host name>" }`, shown on the approval page. The user code is eight characters in two groups, `XXXX-XXXX`, case-insensitive, normalised server-side. Approval marks the row; the credential is minted by the first successful poll after approval, once. While polling, any 429 (the IP ceiling's `rate_limited` as well as `slow_down`) means back off, honouring `retry-after`. `user.email` may be null.
+`POST /auth/device` accepts `{ "device": "<host name>" }`, shown on the approval page; the server keeps 48 plain characters (letters, digits, space and `._-()'@`), and the CLI sends the host name already reduced to them. The approval page does not fill the code in from the URL: the CLI opens `verificationUri` and tells the person to type the code it shows (`Enter this code in the browser: ABCD-EFGH. Only approve it if you started this login.`). The approver picks one workspace, the default, or all of them, so a login may reach fewer workspaces than the person belongs to: `orgs` in the token answer lists the ones it reaches, and the CLI prints them. A `404 not_found` for another workspace says the login was approved for a different workspace and to run `penv login` again and choose it.
+
+A workspace's sign-in policy may refuse a login with `403 { "error": "forbidden", "message": "…" }` (single sign-on or two-factor required); the CLI prints `message` as written. A `403 forbidden` without `message` keeps its own copy. A `401 expired` or `401 unauthorized` from a stored login means it has ended: the CLI says to run `penv login` again, and neither retries nor loops. The user code is eight characters in two groups, `XXXX-XXXX`, case-insensitive, normalised server-side. Approval marks the row; the credential is minted by the first successful poll after approval, once. While polling, any 429 (the IP ceiling's `rate_limited` as well as `slow_down`) means back off, honouring `retry-after`. `user.email` may be null.
 
 ## Machine exchanges
 
-Unauthenticated, IP limited. Each returns `201 { credential: "pck_...", expiresAt }` with a 15 minute lifetime capped by the trust's own expiry, or `401 { error: "expired" | "unauthorized" }`, or `503 { error: "unavailable" }` which means retry once.
+Unauthenticated, IP limited. Each returns `201 { credential: "pck_...", expiresAt }` with a 15 minute lifetime capped by the trust's own expiry, or one of:
+
+| Status | Body | Meaning | The CLI |
+|---|---|---|---|
+| 403 | `{ "error": "refused" }` | the CI trigger is refused; `pull_request_target` is refused on every exchange | names the trigger (`GITHUB_EVENT_NAME`) and says to run the job on `push`, `pull_request` or `workflow_dispatch` |
+| 401 | `{ "error": "expired" }` | the token or signed request has expired | says so; a CI job is not told to `penv login` |
+| 401 | `{ "error": "unauthorized" }` | the token is invalid or untrusted, including a GitHub token without `event_name` | points at the trust under Connect a Platform |
+| 503 | `{ "error": "unavailable" }` | retryable | tries three more times, 1, 2 and 4 seconds apart, then says the service could not verify the token right now |
+
+A signed AWS login request is accepted once. The CLI never sends one twice: every try, retries included, is signed afresh with a later `x-amz-date`.
 
 ```
-POST /api/v1/auth/oidc               { token }                       audience is the org's slug or id
-POST /api/v1/auth/aws                { method, url, body, headers }  a SigV4-signed STS GetCallerIdentity request; x-penv-cloud-org (slug or id) must be among the signed headers
+POST /api/v1/auth/oidc               { token }                       the token's audience is the workspace id
+POST /api/v1/auth/aws                { method, url, body, headers }  a SigV4-signed STS GetCallerIdentity request; x-penv-cloud-org, the workspace id, must be among the signed headers
 POST /api/v1/auth/keypair/enroll     { secret: "pce_...", publicKey }  SPKI DER base64, Ed25519 -> 201 { credentialId, generation: 1 }
 POST /api/v1/auth/keypair/challenge  { credentialId } -> 200 { nonce }   valid 120 s
 POST /api/v1/auth/keypair            { credentialId, nonce, generation, signature } -> 201 { credential, expiresAt, generation }
 ```
+
+The workspace a machine login names is its id, a UUID: the Organization ID under Settings → Organization in the console. A slug is refused before any lookup with `400 { "error": "audience_not_workspace_id", "message": "…" }`, whose `message` is safe to show and the CLI prints as written. The CLI takes the workspace from `@penv=<org>/<project>`: where a login asks for an audience (GitHub Actions) or signs the header (AWS), it validates the org as a UUID first and refuses a slug locally, saying where the id is. There is no public slug-to-id lookup. A held OIDC token (`ID_TOKEN`, `PENV_OIDC_TOKEN`) carries whatever audience it was minted with. Routes a person's `penv login` reaches by slug (`/envs/{org}/…`) are unchanged.
 
 The keypair signs the UTF-8 bytes of `penv-cloud:keypair:v1\n{credentialId}\n{nonce}\n{generation}` (four lines joined by newline); the signature is base64. The client persists the returned `generation` before using the credential. A generation mismatch that is not a replay answers `409 { error: "cloned" }` and revokes the keypair and everything it minted.
 
@@ -84,6 +97,10 @@ PATCH  /api/v1/envs/{org}/{project}/{environment}/keys/{path...}/{name}   set
 DELETE /api/v1/envs/{org}/{project}/{environment}/keys/{path...}/{name}   unset
   -> 200 { "etag": "..." }
 ```
+
+A write names a key by `^[A-Za-z0-9_][A-Za-z0-9_.-]*$`, at most 255 characters and no `/`; its path is empty or `/`-joined segments, none empty, `.` or `..`, each at most 255 characters and the whole at most 1024, with no control, whitespace, bidi or zero-width character and none of ``\ $ ` " ' = # ; & | < > ( ) { } * ? !``. A value is at most 256 KiB in UTF-8 bytes, and a `PUT` carries at most 1000 keys. The CLI checks all of it before sending and splits a larger push into batches; the server answers `400 name_invalid`, `413 value_too_large`, `413 too_many_keys` or `413 body_too_large`, each with a `detail` naming the address. An environment that requires a second approver refuses a machine credential's write, delete or schema change with `409 machine_change_requires_approval` and a `detail`; a person makes that change in the console, where it becomes a change request.
+
+A `.env` the console exports quotes each value in single quotes, or in double quotes with `$` and the backtick escaped; the CLI reads both.
 
 Every address and key segment is percent-encoded by the client; environment names are free-form. The per-key schema is stored in `parameters.meta` as the same JSON object the CLI emits for that key in `penv schema --json`, minus `name`: `type {name, raw, members, constraints}`, `required`, `sensitive`, `default`, `description`, `example`, `docs`, `since`, `deprecated` (a string note), `rotate`, `dynamic` (boolean), `dynamicFrom`, `hosts` (below). The client omits absent fields; the server treats `null` as absent. Anything else is `400 schema_invalid`. Writes to a dynamic key answer `409 dynamic`. The console renders and edits it. `must_encrypt` follows `sensitive`.
 
@@ -166,17 +183,18 @@ GET  /api/v1/orgs/{org}/projects                    -> { projects: [{ slug, name
 POST /api/v1/orgs/{org}/projects                    body { name, environments: ["development"] } -> 201 ; requires project:create
 ```
 
-Slugs are derived from names server-side; an ambiguous address is refused, never guessed. `penv push` on a schema with no `@penv=` header creates the project from the directory name after printing what it will do, and writes the `slug` the 201 body returns into the header. Project creation over the plan limit answers `409 quota_exceeded`, and a name another project in the workspace already answers to `409 ambiguous`. An OIDC or AWS exchange also answers `409 ambiguous` when two workspaces share the slug and both trust the identity. The CLI names the two by the call that got them: `project_taken` and `org_ambiguous`.
+Slugs are derived from names server-side; an ambiguous address is refused, never guessed. `penv push` on a schema with no `@penv=` header creates the project from the directory name after printing what it will do, and writes the `slug` the 201 body returns into the header. Project creation over the plan limit answers `409 quota_exceeded`, and a name another project in the workspace already answers to `409 ambiguous`. The CLI names it `project_taken`.
 
 ## Errors
 
 | Status | Codes |
 |---|---|
-| 400 | `schema_invalid`, `name_required`, `keys_required`, `value_must_be_a_string`, `token_required` |
+| 400 | `name_invalid`, `schema_invalid`, `name_required`, `keys_required`, `value_must_be_a_string`, `token_required`, `audience_not_workspace_id` (the `message` is shown as written) |
 | 401 | `expired` (say so: run `penv login` again), `unauthorized` |
 | 403 | `forbidden`, `denied` |
 | 404 | `not_found` |
-| 409 | `dynamic`, `cloned`, `quota_exceeded`, `ambiguous`, `approval_pending`, `approval_denied`, `approval_expired`, `approval_redeemed`, `redacted` (the CLI exits 6) |
+| 413 | `value_too_large`, `too_many_keys`, `body_too_large` |
+| 409 | `dynamic`, `cloned`, `quota_exceeded`, `ambiguous`, `machine_change_requires_approval`, `approval_pending`, `approval_denied`, `approval_expired`, `approval_redeemed`, `redacted` (the CLI exits 6) |
 | 429 | `rate_limited`, `slow_down`, both with `retry-after` seconds |
 | 503 | `unavailable`, retry once |
 | other 5xx | one retry after one second, then exit 1 naming the status |
