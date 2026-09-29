@@ -272,6 +272,27 @@ pub fn key_schema(key: &Key) -> Value {
     json
 }
 
+/// Refuse, before anything is sent, every key Penv Cloud would refuse: a name
+/// or path outside its grammar, a value over 256 KiB. Never shows a value.
+pub fn writable(keys: &[penv_cloud::api::CloudKey]) -> Result<(), CliError> {
+    let refused = penv_cloud::write::check_all(keys);
+    let Some(first) = refused.first() else {
+        return Ok(());
+    };
+    let too_large = matches!(first, penv_cloud::write::Refusal::TooLarge { .. });
+    let listed: Vec<String> = refused.iter().map(ToString::to_string).collect();
+    Err(CliError::new(
+        if too_large { "value_too_large" } else { "name_invalid" },
+        format!("{}. Nothing was sent.", listed.join("; ")),
+        if too_large {
+            "Store a large file elsewhere and keep its location in the key, then run this again."
+        } else {
+            "Rename the key in .env.schema and your code: letters, digits, _, . and -, starting with a letter, a digit or _. Then run this again."
+        },
+    )
+    .with_exit(Exit::Validation))
+}
+
 /// Write with every key's schema as written, and when penv.cloud refuses a
 /// schema field it does not store yet (`hosts`, docs/Cloud-API.md), write once
 /// more without it. The committed .env.schema keeps @hosts either way; the
@@ -377,10 +398,37 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             .with_exit(Exit::EnvironmentRefused),
             (_, "name_invalid") => CliError::new(
                 "name_invalid",
-                "the cloud stores upper-case key names only: A-Z, 0-9 and _, not starting with a digit.",
-                "Rename the key in .env.schema and your code, then run this again.",
+                match &api.detail {
+                    Some(detail) => format!("Penv Cloud refused a name: {detail}"),
+                    None => "Penv Cloud refused a key's name or path.".to_string(),
+                },
+                format!("A name is letters, digits, _, . and -, starting with a letter, a digit or _, at most {} characters. Rename the key in .env.schema and your code, then run this again.", penv_cloud::write::MAX_NAME),
             )
             .with_exit(Exit::Validation),
+            (413, "value_too_large") => CliError::new(
+                "value_too_large",
+                match &api.detail {
+                    Some(detail) => format!("Penv Cloud refused a value as too large: {detail}"),
+                    None => "Penv Cloud refused a value as too large.".to_string(),
+                },
+                "A value may be at most 256 KiB (262144 bytes of UTF-8). Store a large file elsewhere and keep its location in the key.",
+            )
+            .with_exit(Exit::Validation),
+            (413, code @ ("too_many_keys" | "body_too_large")) => CliError::new(
+                if code == "too_many_keys" { "too_many_keys" } else { "body_too_large" },
+                format!("Penv Cloud refused the request as too large ({code}). penv splits a push into requests of {} keys, so this is a bug in penv.", penv_cloud::write::MAX_BATCH),
+                "Report it at https://github.com/penvhq/penvhq/issues with the output of penv --version. Pushing fewer keys at a time works around it.",
+            ),
+            (409, "machine_change_requires_approval") => CliError::new(
+                "machine_change_requires_approval",
+                format!(
+                    "{} requires a second approver, so a machine credential cannot write, delete or change its schema.{}",
+                    if where_.is_empty() { "this environment" } else { &where_ },
+                    api.detail.as_ref().map(|d| format!(" Penv Cloud says: {d}")).unwrap_or_default()
+                ),
+                "Make the change as a person in the Penv Cloud console, where it becomes a change request.",
+            )
+            .with_exit(Exit::Auth),
             (_, "exists") => CliError::new(
                 "exists",
                 "that name is already taken in this project.",
@@ -775,7 +823,7 @@ mod tests {
                 "a project with that name already exists",
             ),
             (409, "undecryptable", "cannot decrypt it"),
-            (400, "name_invalid", "upper-case key names only"),
+            (400, "name_invalid", "refused a key's name or path"),
             (409, "redacted", "is write-only in penv-cloud"),
         ] {
             let error = refuse(ApiError::new(status, code).into(), Some(&at));
@@ -900,6 +948,87 @@ mod tests {
     fn a_person_s_expired_login_still_says_to_sign_in_again() {
         let expired = refuse(ApiError::new(401, "expired").into(), None);
         assert!(expired.fix.contains("penv login"), "{}", expired.fix);
+    }
+
+    #[test]
+    fn each_write_refusal_names_what_the_server_named() {
+        let at = Address::new("acme", "api", "production");
+        let with = |status, code, detail: &str| {
+            refuse(
+                ApiError::new(status, code).detailing(Some(detail)).into(),
+                Some(&at),
+            )
+        };
+        let name = with(400, "name_invalid", "db/a b is not a valid name");
+        assert_eq!((name.code, name.exit), ("name_invalid", Exit::Validation));
+        assert!(
+            name.message.contains("db/a b is not a valid name"),
+            "{}",
+            name.message
+        );
+
+        let large = with(413, "value_too_large", "CERT exceeds 262144 bytes");
+        assert_eq!(large.code, "value_too_large");
+        assert!(large.message.contains("CERT"), "{}", large.message);
+        assert!(large.fix.contains("256 KiB"), "{}", large.fix);
+
+        for code in ["too_many_keys", "body_too_large"] {
+            let bug = refuse(ApiError::new(413, code).into(), Some(&at));
+            assert_eq!(bug.code, code);
+            assert!(bug.message.contains("a bug in penv"), "{}", bug.message);
+        }
+
+        let approval = with(
+            409,
+            "machine_change_requires_approval",
+            "production requires two approvers",
+        );
+        assert_eq!(approval.code, "machine_change_requires_approval");
+        assert!(
+            approval.message.contains("acme/api/production"),
+            "{}",
+            approval.message
+        );
+        assert!(
+            approval
+                .message
+                .contains("production requires two approvers"),
+            "{}",
+            approval.message
+        );
+        assert!(approval.fix.contains("change request"), "{}", approval.fix);
+    }
+
+    #[test]
+    fn a_key_the_server_would_refuse_is_refused_before_sending_and_never_shown() {
+        use penv_cloud::api::CloudKey;
+        let big = CloudKey {
+            name: "CERT".into(),
+            value: Some("FAKE".repeat(70_000)),
+            ..CloudKey::default()
+        };
+        let refused = writable(&[big]).unwrap_err();
+        assert_eq!(refused.code, "value_too_large");
+        assert!(refused.message.contains("CERT"), "{}", refused.message);
+        assert!(
+            refused.message.contains("Nothing was sent"),
+            "{}",
+            refused.message
+        );
+        assert!(!refused.message.contains("FAKE"));
+
+        let named = CloudKey {
+            name: "a/b".into(),
+            ..CloudKey::default()
+        };
+        assert_eq!(writable(&[named]).unwrap_err().code, "name_invalid");
+        assert!(
+            writable(&[CloudKey {
+                name: "OK".into(),
+                ..CloudKey::default()
+            }])
+            .is_ok()
+        );
     }
 
     #[test]

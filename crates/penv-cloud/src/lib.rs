@@ -12,6 +12,7 @@ pub mod provider;
 pub mod signature;
 pub mod tls;
 pub mod workspace;
+pub mod write;
 
 pub use api::{
     AGENT_HEADER, Address, Api, Approval, Bearer, Challenge, CloudKey, DEFAULT_BASE_URL,

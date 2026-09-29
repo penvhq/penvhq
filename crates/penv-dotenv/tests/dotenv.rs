@@ -143,6 +143,25 @@ fn a_value_that_looks_like_a_call_is_written_so_it_reads_back_as_written() {
     }
 }
 
+/// Penv Cloud's console exports a value single-quoted, or double-quoted with
+/// `$` and the backtick escaped. Both read back as the value, with no warning.
+#[test]
+fn a_console_export_reads_back_as_the_values_it_holds() {
+    let export = "SINGLE='p@$$w\"rd`x'\nDOUBLE=\"p@\\$\\$w'rd\\`x\"\nPLAIN_DOLLAR=\"cost \\$5\"\n";
+    let env = read(export);
+    assert!(env.warnings.is_empty(), "{:?}", env.warnings);
+    let (values, errors) = penv_schema::resolve::resolve(
+        &env.raw(),
+        &Default::default(),
+        "development",
+        &Default::default(),
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(values["SINGLE"], "p@$$w\"rd`x");
+    assert_eq!(values["DOUBLE"], "p@$$w'rd`x");
+    assert_eq!(values["PLAIN_DOLLAR"], "cost $5");
+}
+
 #[test]
 fn every_shape_a_real_value_takes_round_trips() {
     let pairs = [

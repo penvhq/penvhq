@@ -96,6 +96,10 @@ DELETE /api/v1/envs/{org}/{project}/{environment}/keys/{path...}/{name}   unset
   -> 200 { "etag": "..." }
 ```
 
+A write names a key by `^[A-Za-z0-9_][A-Za-z0-9_.-]*$`, at most 255 characters and no `/`; its path is empty or `/`-joined segments, none empty, `.` or `..`, each at most 255 characters and the whole at most 1024, with no control, whitespace, bidi or zero-width character and none of ``\ $ ` " ' = # ; & | < > ( ) { } * ? !``. A value is at most 256 KiB in UTF-8 bytes, and a `PUT` carries at most 1000 keys. The CLI checks all of it before sending and splits a larger push into batches; the server answers `400 name_invalid`, `413 value_too_large`, `413 too_many_keys` or `413 body_too_large`, each with a `detail` naming the address. An environment that requires a second approver refuses a machine credential's write, delete or schema change with `409 machine_change_requires_approval` and a `detail`; a person makes that change in the console, where it becomes a change request.
+
+A `.env` the console exports quotes each value in single quotes, or in double quotes with `$` and the backtick escaped; the CLI reads both.
+
 Every address and key segment is percent-encoded by the client; environment names are free-form. The per-key schema is stored in `parameters.meta` as the same JSON object the CLI emits for that key in `penv schema --json`, minus `name`: `type {name, raw, members, constraints}`, `required`, `sensitive`, `default`, `description`, `example`, `docs`, `since`, `deprecated` (a string note), `rotate`, `dynamic` (boolean), `dynamicFrom`, `hosts` (below). The client omits absent fields; the server treats `null` as absent. Anything else is `400 schema_invalid`. Writes to a dynamic key answer `409 dynamic`. The console renders and edits it. `must_encrypt` follows `sensitive`.
 
 ### Write-only environments
@@ -183,11 +187,12 @@ Slugs are derived from names server-side; an ambiguous address is refused, never
 
 | Status | Codes |
 |---|---|
-| 400 | `schema_invalid`, `name_required`, `keys_required`, `value_must_be_a_string`, `token_required`, `audience_not_workspace_id` (the `message` is shown as written) |
+| 400 | `name_invalid`, `schema_invalid`, `name_required`, `keys_required`, `value_must_be_a_string`, `token_required`, `audience_not_workspace_id` (the `message` is shown as written) |
 | 401 | `expired` (say so: run `penv login` again), `unauthorized` |
 | 403 | `forbidden`, `denied` |
 | 404 | `not_found` |
-| 409 | `dynamic`, `cloned`, `quota_exceeded`, `ambiguous`, `approval_pending`, `approval_denied`, `approval_expired`, `approval_redeemed`, `redacted` (the CLI exits 6) |
+| 413 | `value_too_large`, `too_many_keys`, `body_too_large` |
+| 409 | `dynamic`, `cloned`, `quota_exceeded`, `ambiguous`, `machine_change_requires_approval`, `approval_pending`, `approval_denied`, `approval_expired`, `approval_redeemed`, `redacted` (the CLI exits 6) |
 | 429 | `rate_limited`, `slow_down`, both with `retry-after` seconds |
 | 503 | `unavailable`, retry once |
 | other 5xx | one retry after one second, then exit 1 naming the status |

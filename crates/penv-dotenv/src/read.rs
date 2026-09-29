@@ -387,6 +387,8 @@ fn unescape(value: &str, line_no: u32, at: usize, out: &mut Dotenv) -> String {
                 result.push('\t');
             } // Kept escaped: `\$` is how a computed value says a literal dollar.
             Some((_, '$')) => result.push_str("\\$"),
+            // Penv Cloud's export escapes a backtick along with `$`.
+            Some((_, '`')) => result.push('`'),
             Some((_, quoted @ ('"' | '\\'))) => {
                 warn(out, index);
                 result.push(quoted);

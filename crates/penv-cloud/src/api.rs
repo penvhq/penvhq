@@ -365,7 +365,7 @@ pub enum Freshness {
     Changed(Option<String>),
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PutResult {
     #[serde(default)]
@@ -1189,9 +1189,15 @@ fn refusal(status: u16, response: &mut Response<Body>) -> ApiError {
         .as_ref()
         .and_then(|b| b.get("message"))
         .and_then(Value::as_str);
+    // A detail is text, or an object carrying its text as `message`.
+    let detail = body.as_ref().and_then(|b| b.get("detail")).and_then(|d| {
+        d.as_str()
+            .or_else(|| d.get("message").and_then(Value::as_str))
+    });
     ApiError::new(status, code)
         .after(retry_after)
         .saying(message)
+        .detailing(detail)
 }
 
 fn read_json<T: DeserializeOwned>(url: &str, response: &mut Response<Body>) -> Result<T> {

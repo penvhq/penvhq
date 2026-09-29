@@ -2618,3 +2618,88 @@ fn bundle_refuses_a_write_only_key_rather_than_leaving_it_out() {
     assert_eq!(json_of(&stderr(&output))["error"], "redacted");
     assert!(!workspace.path().join(".penv/production.bundle").exists());
 }
+
+// --- write limits -------------------------------------------------------------
+
+#[test]
+fn a_value_over_the_limit_is_refused_before_anything_is_sent() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on("PUT", ENVS, 200, PUT_OK);
+    let big = "x".repeat(256 * 1024 + 1);
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\nCERT={big}\n")),
+    ]);
+    let output = workspace.run(&mock, &["--json", "push"]);
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "value_too_large");
+    let message = refused["message"].as_str().unwrap();
+    assert!(
+        message.contains("the value of CERT is 262145 bytes"),
+        "{message}"
+    );
+    assert!(!message.contains("xxxx"), "never the value");
+    assert!(mock.hits("PUT", ENVS).is_empty(), "nothing half-written");
+    assert!(workspace.path().join(".env").exists(), "the file stays");
+}
+
+#[test]
+fn a_push_of_more_than_a_thousand_keys_goes_in_batches() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on("PUT", ENVS, 200, PUT_OK);
+    let values: String = (0..1001).map(|i| format!("KEY_{i:04}=v{i}\n")).collect();
+    let workspace = Workspace::new(&[(".env.schema", &cloud_schema()), (".env", &values)]);
+    let output = workspace.run(&mock, &["--json", "push"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let sizes: Vec<usize> = mock
+        .hits("PUT", ENVS)
+        .iter()
+        .map(|put| put.json()["keys"].as_array().unwrap().len())
+        .collect();
+    assert_eq!(
+        sizes.iter().sum::<usize>(),
+        1003,
+        "two schema keys and 1001 values"
+    );
+    assert!(sizes.iter().all(|n| *n <= 1000), "{sizes:?}");
+    assert_eq!(sizes.len(), 2);
+    assert_eq!(
+        json_of(&stdout(&output))["written"],
+        2,
+        "the batches add up"
+    );
+}
+
+#[test]
+fn a_machine_credential_on_an_environment_that_needs_approval_is_sent_to_the_console() {
+    let mock = Mock::new();
+    projects(&mock);
+    mock.on(
+        "PUT",
+        ENVS,
+        409,
+        &json!({ "error": "machine_change_requires_approval", "detail": "development requires a second approver" })
+            .to_string(),
+    );
+    let workspace = Workspace::new(&[
+        (".env.schema", &cloud_schema()),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let output = workspace.run(&mock, &["--json", "push"]);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let refused = json_of(&stderr(&output));
+    assert_eq!(refused["error"], "machine_change_requires_approval");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("development requires a second approver"),
+        "{refused}"
+    );
+    assert!(refused["fix"].as_str().unwrap().contains("change request"));
+}

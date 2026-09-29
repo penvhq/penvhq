@@ -1,7 +1,8 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
-use penv_cloud::api::{Address, Bearer, CloudKey};
+use penv_cloud::api::{Address, Bearer, CloudKey, PutResult};
+use penv_cloud::write::MAX_BATCH;
 use penv_schema::Schema;
 use serde_json::json;
 
@@ -104,6 +105,11 @@ pub fn run(
         .with_exit(Exit::Validation));
     }
 
+    // Everything Penv Cloud would refuse is refused here, before any batch goes.
+    let mut keys = payload(&schema, &values);
+    super::cloud::writable(&keys)?;
+    prunable(prune, keys.len())?;
+
     let (cloud, bearer) = match opened {
         Some(pair) => pair,
         None => {
@@ -145,13 +151,19 @@ pub fn run(
 
     let at = address(&schema, &wanted)?;
 
-    let mut keys = payload(&schema, &values);
     let written = keys.iter().filter(|k| k.value.is_some()).count();
     let spinner = crate::ui::spinner(&format!("Sending {} key(s) to {at}", keys.len()));
-    let result = super::cloud::with_hosts_fallback(&mut keys, |keys| {
-        cloud.api.env_put(&bearer, &at, keys, prune)
-    })
-    .map_err(|e| refuse(e, Some(&at)))?;
+    let mut result = PutResult::default();
+    for batch in keys.chunks_mut(MAX_BATCH) {
+        let sent = super::cloud::with_hosts_fallback(batch, |keys| {
+            cloud.api.env_put(&bearer, &at, keys, prune)
+        })
+        .map_err(|e| refuse(e, Some(&at)))?;
+        result.written += sent.written;
+        result.unchanged += sent.unchanged;
+        result.pruned += sent.pruned;
+        result.etag = sent.etag;
+    }
     spinner.stop(&format!("Sent to {at}"));
 
     let removed: Vec<String> = read
@@ -284,6 +296,22 @@ pub(crate) fn pick_org(
     }
 }
 
+/// `--prune` deletes whatever its request leaves out, so it works only on a push
+/// that fits in one.
+fn prunable(prune: bool, keys: usize) -> Result<(), CliError> {
+    if !prune || keys <= MAX_BATCH {
+        return Ok(());
+    }
+    Err(CliError::new(
+        "prune_too_many",
+        format!(
+            "--prune deletes every key one request leaves out, and {keys} keys take more than one request of {MAX_BATCH}."
+        ),
+        "Push without --prune, then delete the keys you no longer want in the console or with penv unset <KEY>.",
+    )
+    .with_exit(Exit::Validation))
+}
+
 /// Every schema key with the value the file holds, then every value the schema
 /// never declared. A key with no value updates the schema only.
 fn payload(schema: &Schema, values: &penv_schema::Values) -> Vec<CloudKey> {
@@ -334,6 +362,15 @@ mod tests {
             ],
             ..Schema::default()
         }
+    }
+
+    #[test]
+    fn prune_is_refused_only_for_a_push_that_takes_more_than_one_request() {
+        assert!(prunable(true, MAX_BATCH).is_ok());
+        assert!(prunable(false, MAX_BATCH + 1).is_ok());
+        let refused = prunable(true, MAX_BATCH + 1).unwrap_err();
+        assert_eq!(refused.code, "prune_too_many");
+        assert!(refused.message.contains("1001 keys"), "{}", refused.message);
     }
 
     #[test]

@@ -4,14 +4,15 @@ pub type Result<T> = std::result::Result<T, CloudError>;
 
 /// The server's refusal as one shape: the status, the `error` code its body
 /// carried, the seconds it asked us to wait, the `message` it wrote for a
-/// person, where the route promises one that is safe to show, and the machine
-/// login it answered, if it answered one.
+/// person and the `detail` naming what it refused, where the route promises
+/// text that is safe to show, and the machine login it answered, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiError {
     pub status: u16,
     pub code: String,
     pub retry_after: Option<u64>,
     pub message: Option<String>,
+    pub detail: Option<String>,
     pub exchange: Option<Exchange>,
 }
 
@@ -30,6 +31,7 @@ impl ApiError {
             code: code.into(),
             retry_after: None,
             message: None,
+            detail: None,
             exchange: None,
         }
     }
@@ -46,6 +48,11 @@ impl ApiError {
 
     pub fn saying(mut self, message: Option<&str>) -> ApiError {
         self.message = message.map(printable).filter(|m| !m.is_empty());
+        self
+    }
+
+    pub fn detailing(mut self, detail: Option<&str>) -> ApiError {
+        self.detail = detail.map(printable).filter(|d| !d.is_empty());
         self
     }
 

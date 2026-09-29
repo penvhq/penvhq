@@ -13,13 +13,15 @@
 - **Write-only keys.** A key penv-cloud withholds from a person's login or a static token is `redacted`: present, never missing. `run` and `bundle` refuse it (`redacted`, exit 6) naming every key and the environment, unless a local layer such as `.env.<env>.local` supplies it. `pull` writes `# penv:redacted KEY` in place of the value, and a local-mode `run` refuses on that marker too. `check` notes it, `ls` shows `redacted`, `why` says it is withheld, and `reveal` refuses it.
 
 ### Changed
+- **Writes are checked before they are sent.** `push` and `set` refuse a name, path or value Penv Cloud would refuse (names `^[A-Za-z0-9_][A-Za-z0-9_.-]*$` up to 255 characters, values up to 256 KiB), naming the key and never the value, before any upload. A push of more than 1000 keys goes in batches of 1000, after every value's size is checked, so nothing is half-written; `--prune` is refused when a push takes more than one batch. `name_invalid` and `value_too_large` show the server's detail, `too_many_keys` and `body_too_large` are named as a bug, and `machine_change_requires_approval` says to make the change as a person in the console, where it becomes a change request.
+- A `.env` reads a backtick escaped inside double quotes without a warning, as Penv Cloud's console exports it.
 - Each machine-login refusal says what to change: a refused CI trigger (`pull_request_target`) names the trigger and the ones that work, an expired token says it expired, and an untrusted one points at the trust under Connect a Platform. `unavailable` is tried three more times with a growing pause, then named.
 - An AWS login is signed afresh for every try, retries included, since Penv Cloud accepts a signed request once.
 - A prerelease no longer becomes the release `/install` and `penv upgrade` give, once a plain release exists.
 
 ### Fixed
 - An AWS login (keys, web identity or a container role) signs the workspace in `x-penv-cloud-org`, which penv.cloud requires; without it every AWS exchange was refused.
-- A taken project name gets its own message (`project_taken`) instead of "matches more than one project or environment"; a value the cloud cannot decrypt (`undecryptable`) and a lowercase key name on push (`name_invalid`) are named too.
+- A taken project name gets its own message (`project_taken`) instead of "matches more than one project or environment"; a value the cloud cannot decrypt (`undecryptable`) and a refused key name on push (`name_invalid`) are named too.
 - `gen ts` declared `inlined` when no public key used it (`noUnusedLocals`), and `Response.json` lacked `override` (`noImplicitOverride`). The targets job now type-checks the output with both on.
 
 ## 1.0.0-beta.2
