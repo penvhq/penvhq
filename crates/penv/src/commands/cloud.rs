@@ -323,6 +323,12 @@ pub fn with_hosts_fallback<T>(
     }
 }
 
+/// Why a `penv login` ends, so the fix says it plainly.
+const LOGIN_LIFETIME: &str = "A penv login lasts 30 days from its last use and 90 days at most, and ends when you reset your password, sign out everywhere or recover the account.";
+
+/// A login is approved for one workspace or for all of them.
+const OTHER_WORKSPACE: &str = "If you signed in with penv login, this login was approved for a different workspace; run penv login again and choose it.";
+
 /// Where a person finds the id a machine login needs.
 const WORKSPACE_ID_FIX: &str = "The id is the Organization ID under Settings → Organization in the Penv Cloud console; the Connect a Platform snippet already carries it.";
 
@@ -456,14 +462,22 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             .with_exit(Exit::NoCredential),
             (401, "expired") => CliError::new(
                 "expired",
-                "your login expired.",
-                "Run penv login. On a server or in CI, set a fresh PENV_TOKEN.",
+                "your login has ended.",
+                format!("Run penv login again. {LOGIN_LIFETIME} On a server or in CI, set a fresh PENV_TOKEN."),
             )
             .with_exit(Exit::Auth),
             (401, _) => CliError::new(
                 "unauthorized",
-                "the server rejected your login or token.",
-                "Run penv login again. If PENV_TOKEN is set, check it is current.",
+                "the server no longer accepts your login or token.",
+                format!("Run penv login again. {LOGIN_LIFETIME} If PENV_TOKEN is set, check it is current."),
+            )
+            .with_exit(Exit::Auth),
+            // A workspace's sign-in policy (single sign-on, two-factor) wrote
+            // what the person has to do.
+            (403, "forbidden") if api.message.is_some() => CliError::new(
+                "forbidden",
+                api.message.clone().unwrap_or_default(),
+                "Do what the message says, then run penv login again.",
             )
             .with_exit(Exit::Auth),
             (403, _) if at.is_none() => CliError::new(
@@ -480,13 +494,13 @@ pub fn refuse(error: CloudError, at: Option<&Address>) -> CliError {
             .with_exit(Exit::EnvironmentRefused),
             (404, _) if at.is_none() => CliError::new(
                 "not_found",
-                "that project or environment does not exist on the server.",
-                "Run penv project ls to see the names, then run this again.",
+                "that project or environment does not exist on the server, or is in a workspace this login was not approved for.",
+                format!("Run penv project ls to see the names you can reach. {OTHER_WORKSPACE}"),
             ),
             (404, _) => CliError::new(
                 "not_found",
-                format!("{where_} does not exist on the server."),
-                "Compare the # @penv=org/project line in .env.schema and the --env name with the console.",
+                format!("{where_} does not exist on the server, or is in a workspace this login was not approved for."),
+                format!("Compare the # @penv=org/project line in .env.schema and the --env name with the console. {OTHER_WORKSPACE}"),
             ),
             (429, _) => CliError::new(
                 "rate_limited",
@@ -945,9 +959,46 @@ mod tests {
     }
 
     #[test]
-    fn a_person_s_expired_login_still_says_to_sign_in_again() {
-        let expired = refuse(ApiError::new(401, "expired").into(), None);
-        assert!(expired.fix.contains("penv login"), "{}", expired.fix);
+    fn an_ended_login_says_to_sign_in_again_and_why_logins_end() {
+        for code in ["expired", "unauthorized"] {
+            let ended = refuse(ApiError::new(401, code).into(), None);
+            assert_eq!(ended.exit, Exit::Auth);
+            assert!(
+                ended.fix.starts_with("Run penv login again."),
+                "{}",
+                ended.fix
+            );
+            assert!(ended.fix.contains("90 days at most"), "{}", ended.fix);
+        }
+    }
+
+    #[test]
+    fn a_sign_in_policy_refusal_is_shown_as_the_workspace_wrote_it() {
+        let said = "Acme requires single sign-on. Sign in to Penv Cloud with your Acme SSO, then run penv login again.";
+        let policy = refuse(
+            ApiError::new(403, "forbidden").saying(Some(said)).into(),
+            Some(&Address::new("acme", "api", "production")),
+        );
+        assert_eq!((policy.code, policy.exit), ("forbidden", Exit::Auth));
+        assert_eq!(policy.message, said);
+
+        let plain = refuse(ApiError::new(403, "forbidden").into(), None);
+        assert!(
+            plain.message.starts_with("your account is not allowed"),
+            "{}",
+            plain.message
+        );
+    }
+
+    #[test]
+    fn a_missing_address_may_be_a_workspace_the_login_was_not_approved_for() {
+        let at = Address::new("globex", "api", "production");
+        let missing = refuse(ApiError::new(404, "not_found").into(), Some(&at));
+        assert!(
+            missing.fix.contains("this login was approved for a different workspace; run penv login again and choose it"),
+            "{}",
+            missing.fix
+        );
     }
 
     #[test]

@@ -69,18 +69,38 @@ pub fn without_nulls(value: Value) -> Value {
 /// The machine's name, for the approval page. No crate reads a hostname, so the
 /// platform's own variable answers, and an unnamed host is just the CLI.
 pub fn host_name() -> String {
-    for var in ["COMPUTERNAME", "HOSTNAME", "HOST"] {
-        if let Some(name) = std::env::var_os(var)
-            && !name.is_empty()
-        {
-            return name.to_string_lossy().into_owned();
-        }
+    let named = ["COMPUTERNAME", "HOSTNAME", "HOST"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(|name| name.to_string_lossy().into_owned())
+        .find(|name| !name.is_empty())
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok());
+    device_label(named.as_deref().unwrap_or_default())
+}
+
+/// The longest device label Penv Cloud keeps.
+pub const MAX_DEVICE_LABEL: usize = 48;
+
+/// A label already within what the approval page keeps: letters, digits,
+/// spaces and `._-()'@`, at most [`MAX_DEVICE_LABEL`] characters.
+pub fn device_label(raw: &str) -> String {
+    let kept: String = raw
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric() || " ._-()'@".contains(*c))
+        .collect();
+    let label: String = kept
+        .split(' ')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_DEVICE_LABEL)
+        .collect();
+    match label.trim() {
+        "" => "penv CLI".to_string(),
+        trimmed => trimmed.to_string(),
     }
-    std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "penv CLI".to_string())
 }
 
 /// A bearer credential. Never printed: `Debug` says only that it exists.
@@ -1351,6 +1371,17 @@ mod tests {
                 .expires_at,
             Some(1_900)
         );
+    }
+
+    #[test]
+    fn a_device_label_is_what_the_approval_page_keeps() {
+        assert_eq!(device_label("dev-laptop.local\n"), "dev-laptop.local");
+        assert_eq!(device_label("Ana's Mac (2)"), "Ana's Mac (2)");
+        assert_eq!(device_label("build\u{202E}box;rm -rf /"), "buildboxrm -rf");
+        assert_eq!(device_label("  "), "penv CLI");
+        assert_eq!(device_label("ünïcode"), "ncode");
+        let long = device_label(&"a".repeat(80));
+        assert_eq!(long.len(), MAX_DEVICE_LABEL);
     }
 
     #[test]

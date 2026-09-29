@@ -6,7 +6,7 @@ The surface `penv` speaks to penv.cloud. It is new in v1 and lives beside the ex
 
 | Prefix | Who | How obtained | Lifetime |
 |---|---|---|---|
-| `pcu_` | a person | device-code login | 30 days from last use (every authenticated request extends `expiresAt`), revoked by `logout` |
+| `pcu_` | a person | device-code login | 30 days from last use (every authenticated request extends `expiresAt`) and never past 90 days from issue; revoked by `logout`, a password reset, "Sign out everywhere" and account recovery |
 | `pck_` | a machine identity | console-issued token, or exchanged from OIDC, AWS SigV4 or a bound keypair | as today; exchanges mint 15 minutes for the CLI |
 
 Both resolve through one verifier to the same claims shape and one RBAC evaluator. A user credential carries the user's own role assignments and no fixed scope. A machine credential is bound to one project and environment; a request whose address is another environment is `403 forbidden`.
@@ -30,7 +30,9 @@ console page /device                signed-in person enters userCode, sees the d
 POST /api/v1/auth/revoke            Bearer pcu_ or pck_, revokes itself; idempotent
 ```
 
-`POST /auth/device` accepts `{ "device": "<host name>" }`, shown on the approval page. The user code is eight characters in two groups, `XXXX-XXXX`, case-insensitive, normalised server-side. Approval marks the row; the credential is minted by the first successful poll after approval, once. While polling, any 429 (the IP ceiling's `rate_limited` as well as `slow_down`) means back off, honouring `retry-after`. `user.email` may be null.
+`POST /auth/device` accepts `{ "device": "<host name>" }`, shown on the approval page; the server keeps 48 plain characters (letters, digits, space and `._-()'@`), and the CLI sends the host name already reduced to them. The approval page does not fill the code in from the URL: the CLI opens `verificationUri` and tells the person to type the code it shows (`Enter this code in the browser: ABCD-EFGH. Only approve it if you started this login.`). The approver picks one workspace, the default, or all of them, so a login may reach fewer workspaces than the person belongs to: `orgs` in the token answer lists the ones it reaches, and the CLI prints them. A `404 not_found` for another workspace says the login was approved for a different workspace and to run `penv login` again and choose it.
+
+A workspace's sign-in policy may refuse a login with `403 { "error": "forbidden", "message": "…" }` (single sign-on or two-factor required); the CLI prints `message` as written. A `403 forbidden` without `message` keeps its own copy. A `401 expired` or `401 unauthorized` from a stored login means it has ended: the CLI says to run `penv login` again, and neither retries nor loops. The user code is eight characters in two groups, `XXXX-XXXX`, case-insensitive, normalised server-side. Approval marks the row; the credential is minted by the first successful poll after approval, once. While polling, any 429 (the IP ceiling's `rate_limited` as well as `slow_down`) means back off, honouring `retry-after`. `user.email` may be null.
 
 ## Machine exchanges
 
