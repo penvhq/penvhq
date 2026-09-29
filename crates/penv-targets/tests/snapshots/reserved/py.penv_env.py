@@ -54,8 +54,7 @@ def _one_of(*members: str) -> Callable[[str], str]:
 
 
 class Env:
-    """Every variable .env.schema declares, read and checked once. The error
-    names each problem, never a value."""
+    """Every variable .env.schema declares, read and checked once; errors never show a value."""
 
     def __init__(self) -> None:
         problems: list[str] = []
