@@ -14,14 +14,14 @@
 
 ---
 
-penv validates your `.env` files against a committed `.env.schema`, starts your command with the resolved values, and masks secrets in its output. penv runs offline from your `.env` files; [penv.cloud](https://penv.cloud), our hosted service, is optional.
+penv validates your `.env` files against a committed `.env.schema`, starts your command with the resolved values, and masks secrets in its output. penv runs offline from your `.env` files; [penv.cloud](https://penv.cloud/?ref=gh), our hosted service, is optional.
 
 ## Install
 
 ```bash
-curl -fsSL https://penv.cloud/install | sh      # macOS, Linux
-irm https://penv.cloud/install.ps1 | iex        # Windows (PowerShell)
-npm i -g @penvhq/cli@next                       # npm; `next` while 1.0 is in prerelease
+curl -fsSL 'https://penv.cloud/install?ref=gh' | sh     # macOS, Linux
+irm 'https://penv.cloud/install.ps1?ref=gh' | iex       # Windows (PowerShell)
+npm i -g @penvhq/cli@next                               # npm; `next` while 1.0 is in prerelease
 ```
 
 ```dockerfile
@@ -149,7 +149,7 @@ penv push                           # sends values, deletes the files it sent; *
 penv pull --env staging             # writes .env.staging
 ```
 
-We store your team's values on [penv.cloud](https://penv.cloud) after [`penv login`](https://penv.cloud/docs/cli/login) and [`penv push`](https://penv.cloud/docs/cli/push); [`penv pull`](https://penv.cloud/docs/cli/pull) writes them back to a file. `@penv=<provider>:org/project` names another provider: [docs/PROVIDERS.md](./docs/PROVIDERS.md).
+We store your team's values on [penv.cloud](https://penv.cloud/?ref=gh) after [`penv login`](https://penv.cloud/docs/cli/login) and [`penv push`](https://penv.cloud/docs/cli/push); [`penv pull`](https://penv.cloud/docs/cli/pull) writes them back to a file. `@penv=<provider>:org/project` names another provider: [docs/PROVIDERS.md](./docs/PROVIDERS.md).
 
 ## Deploy, bundle and CI
 
