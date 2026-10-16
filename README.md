@@ -16,38 +16,14 @@
 
 ---
 
-penv checks your `.env` against a small committed schema **before your process starts**, keeps secret values out of logs and out of your coding agent's reach, and generates typed access for your language. When a team needs to share values, one command moves them to [penv.cloud](https://penv.cloud). Until then, everything works offline and locally.
-
-```text
-   .env  ──►  penv init  ──►  .env.schema   (committed, holds no secrets)
-                                   │
-        ┌──────────────┬───────────┼────────────────┬──────────────────┐
-        ▼              ▼           ▼                ▼                  ▼
-    penv check     penv run     penv gen        penv guard        penv push
-    validate       inject +     typed code      deny rules for    values to
-    every value    mask output  for 7 langs    8 agent harnesses penv.cloud
-```
-
-## What penv covers
-
-| You want to… | penv gives you |
-|---|---|
-| **Stop shipping broken config** | A schema with types, required/optional and sensitive flags. `penv check` and `penv run` fail before your app starts, with line and column. |
-| **Keep secrets out of logs** | `penv run` masks every sensitive value in output (raw, hex, base64 and URL-encoded) and inside Node, Bun, Deno and Python processes. |
-| **Keep secrets away from AI agents** | `penv guard` writes deny rules and fail-closed hooks for Claude Code, Codex, Cursor, Copilot CLI, Gemini CLI, Cline, Windsurf and Amp. Sealed runs hand the command a placeholder instead of the real value. |
-| **Stop `process.env.FOO!`** | `penv gen` writes a typed accessor for TypeScript, Python, Go, Rust, PHP, Java or C#. |
-| **Compute values** | `${KEY}` expansion, filters, `if`/`match`, `random(N)`, cross-environment references, `@assert`. |
-| **Share with a team** | `penv push` / `penv pull`, CI login without long-lived tokens (OIDC), machine enrolment for servers. |
-| **Deploy without a cloud** | `penv bundle` encrypts one environment into a file that `penv run` reads with a key. |
-| **Edit schemas comfortably** | `penv lsp` and a VS Code extension: diagnostics, completion, hover, go-to-definition. |
+penv validates your `.env` files against a committed `.env.schema`, starts your command with the resolved values, and masks secrets in its output. penv runs offline from your `.env` files; [penv.cloud](https://penv.cloud/?ref=gh), our hosted service, is optional.
 
 ## Install
 
-```sh
-curl -fsSL https://penv.cloud/install | sh      # macOS, Linux
-irm https://penv.cloud/install.ps1 | iex        # Windows (PowerShell)
-npm i -g @penvhq/cli@next                       # anywhere npm should own it
-docker pull ghcr.io/penvhq/penv:next            # signed, minimal image
+```bash
+curl -fsSL 'https://penv.cloud/install?ref=gh' | sh     # macOS, Linux
+irm 'https://penv.cloud/install.ps1?ref=gh' | iex       # Windows (PowerShell)
+npm i -g @penvhq/cli@next                               # npm; `next` while 1.0 is in prerelease
 ```
 
 <details>
@@ -268,7 +244,7 @@ penv scan                     # find secret values committed to other files
 penv ls                       # names and types, values masked
 ```
 
-`penv check` reads your code: it names each variable the code reads that `.env.schema` doesn't declare, and each declared key nothing mentions.
+We store your team's values on [penv.cloud](https://penv.cloud/?ref=gh) after [`penv login`](https://penv.cloud/docs/cli/login) and [`penv push`](https://penv.cloud/docs/cli/push); [`penv pull`](https://penv.cloud/docs/cli/pull) writes them back to a file. `@penv=<provider>:org/project` names another provider: [docs/PROVIDERS.md](./docs/PROVIDERS.md).
 
 ## Typed access
 
