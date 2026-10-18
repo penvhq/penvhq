@@ -1,15 +1,17 @@
-<p align="center"><img src=".github/banner.svg" alt="penv" width="1200"></p>
+<p align="center">
+  <img src=".github/banner.svg" alt="penv" width="640">
+</p>
 
-<p align="center">Typed <code>.env</code> validation, masked process output, coding-agent guards. One binary.</p>
+<h3 align="center">Typed, validated, agent-safe environment variables.<br>One static binary. No account needed.</h3>
 
 <p align="center">
   <a href="#install">Install</a> ·
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#schema-and-checks">Schema</a> ·
-  <a href="#coding-agents-and-sealed-runs">Agents</a> ·
-  <a href="#deploy-bundle-and-ci">Deploy</a> ·
-  <a href="#compatibility">Compatibility</a> ·
-  <a href="#commands">Commands</a>
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#what-penv-covers">What it covers</a> ·
+  <a href="#the-envschema-file">Schema</a> ·
+  <a href="#coding-agents">Coding agents</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="https://penv.cloud/docs">Docs</a>
 </p>
 
 ---
@@ -24,209 +26,334 @@ irm 'https://penv.cloud/install.ps1?ref=gh' | iex       # Windows (PowerShell)
 npm i -g @penvhq/cli@next                               # npm; `next` while 1.0 is in prerelease
 ```
 
-```dockerfile
-COPY --from=ghcr.io/penvhq/penv:next /penv /usr/local/bin/penv
+<details>
+<summary><b>Install details</b></summary>
+
+- The shell and PowerShell installers put one binary in `~/.penv/bin` (`%USERPROFILE%\.penv\bin` on Windows) and print the PATH line to add. No rc file is edited. `PENV_INSTALL_DIR` moves it; `PENV_VERSION` pins a tag.
+- Builds: Linux and macOS on x86_64 and arm64; Windows on x86_64 and arm64.
+- Every download is checked against the release's published digest. Each release also signs its checksum file with an Ed25519 key; the shell installer verifies it wherever OpenSSL 1.1.1 or newer is on `PATH`, and the PowerShell installer verifies the digest.
+- `penv upgrade [--check]` replaces a binary placed by the installers. It refuses on npm, Homebrew, Nix, winget and Scoop installs, where the package manager owns the upgrade.
+- Deploy targets: ECS task roles, EKS IRSA and Pod Identity, an AWS Lambda layer, and a signed `scratch` Docker image.
+- Shell completions: `penv completions bash|zsh|fish|powershell|elvish`.
+
+</details>
+
+## Quickstart
+
+No account. No sign-in.
+
+```sh
+penv init                 # reads .env, writes .env.schema, gitignores .env and .env.*
+penv run -- pnpm dev      # validates, injects, masks
 ```
 
-The installers put `penv` in `~/.penv/bin` (`%USERPROFILE%\.penv\bin` on Windows) and edit no rc file. Pinning, verification and install directories: [install the CLI](https://penv.cloud/docs/start/install-the-cli). Channels for [`penv upgrade`](https://penv.cloud/docs/cli/upgrade): [upgrade the CLI](https://penv.cloud/docs/cli/upgrade-the-cli).
+`penv init` also detects the coding agents installed on your machine and offers to write their deny rules (`--guards NAMES` or `--no-guards` to decide up front), and can generate typed files for your language.
 
-## Quick start
+Run bare `penv` at any time: it shows the state of the project and the **one next command** to run.
 
-```console
-$ penv init
-$ penv run -- sh -c 'echo "key=$STRIPE_SECRET_KEY port=$PORT"'
-key=sk▒▒▒▒▒▒ port=3000
-$ penv
-version    1.0.0-rc.3
-location   local
-env        development
-next       penv check
-Values for development come from /path/to/app/.env, later files winning.
-```
+## The `.env.schema` file
 
-[`penv init`](https://penv.cloud/docs/cli/init) writes `.env.schema` from your `.env` with a guessed type per key, adds `.env` and `.env.*` to `.gitignore`, and writes `.penv/config.toml`. Commit `.env.schema`. [`penv run`](https://penv.cloud/docs/cli/run) validates, then starts the command.
+`init` writes this, and only this, into your repo. **No value that could be a secret is ever copied into the schema.**
 
-## Schema and checks
+```sh
+# @currentEnv=$APP_ENV
 
-```dotenv
-# @type=string(startsWith=sk_) @rotate=90d @docs(https://dashboard.stripe.com/apikeys)
+# @type=enum(development,staging,production)
+APP_ENV=development
+
+# @type=url
+DATABASE_URL=
+
+# @type=string(startsWith=sk_) @rotate=90d @hosts(api.stripe.com)
 STRIPE_SECRET_KEY=
 
-# @type=enum(development, staging, production) @sensitive=false
-APP_ENV=development
-```
-
-```console
-$ penv check
-ok 6 key(s) in /path/to/app/.env.schema for development
-rotate STRIPE_SECRET_KEY has @rotate=90d and no recorded write; penv set STRIPE_SECRET_KEY records one
-note REDIS_URL is read in src/cache.ts:1 and not declared in .env.schema
-```
-
-The grammar is [@env-spec](https://varlock.dev/env-spec/overview/). penv adds `@assert`, `@rotate`, `@hosts` and `@penv`: [schema format](https://penv.cloud/docs/cli/schema-format). [`penv check`](https://penv.cloud/docs/cli/check) also reads your source for undeclared variables; `--strict` fails on them. [`penv why KEY`](https://penv.cloud/docs/cli/why) names where a value comes from, never the value. [`penv lsp`](https://penv.cloud/docs/cli/lsp) serves the schema to editors: [packages/vscode](./packages/vscode/README.md).
-
-## Environments
-
-```text
-.env  →  .env.local  →  .env.<env>  →  .env.<env>.local        later file wins
---env  →  PENV_ENV  →  the key @currentEnv names  →  development
-```
-
-The `test` environment skips `.env.local`. A variable set in your shell overrides every file: [environments and precedence](https://penv.cloud/docs/concepts/environments-and-precedence).
-
-## Computed values
-
-```dotenv
-# @type=url @sensitive=false
-DATABASE_URL=postgres://app:${DB_PASSWORD | urlencode}@${DB_HOST:-localhost}:5432/app
-
-# @type=url @sensitive=false
-API_URL=match($APP_ENV, production: https://api.example.com, _: http://localhost:4000)
-
-# @type=string(minLength=32)
-SESSION_SECRET=random(48)
-```
-
-penv computes these before the command starts. A value built from a sensitive key stays masked even when marked `@sensitive=false`; `random(N)` is generated once and kept in `.env.local` (`.env.test.local` for `test`). Functions and filters: [dynamic values](https://penv.cloud/docs/concepts/dynamic-values).
-
-## Masking and client-bundle checks
-
-```console
-$ penv run -- npm run build
-penv: dist/app.js:1 holds the value of STRIPE_SECRET_KEY, and that file ships to the browser or the app.
-```
-
-`penv run` masks each sensitive value of 4 or more characters in the command's output; only a person at a terminal can turn that off with `--no-mask`. A preload masks inside Node, Bun, Deno and Python processes too.
-
-After a command under `penv run` exits 0, penv reads the client output folders it wrote (`.next/static`, `dist`, `build`, React Native bundles) and exits 3 on a secret. `penv check` fails a public key (`NEXT_PUBLIC_`, `VITE_`, ...) built from a secret: [check](https://penv.cloud/docs/cli/check).
-
-## Scanning
-
-```bash
-penv scan                   # files git would commit
-penv scan --install-hook    # pre-commit hook running penv scan --staged
-```
-
-[`penv scan`](https://penv.cloud/docs/cli/scan) reports file, line and key, never the value, and exits 3 on a leak.
-
-## Encryption at rest
-
-```console
-$ penv encrypt
-$ cat .env
-STRIPE_SECRET_KEY=enc:v1:…
+# @type=port @sensitive=false
 PORT=3000
+
+# @type=url @sensitive=false
+NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
-[`penv encrypt`](https://penv.cloud/docs/cli/encrypt) encrypts the sensitive values in your `.env` files with a per-user key kept in your OS keychain, or in a key file where there is none; every penv command decrypts where it reads. [`penv decrypt`](https://penv.cloud/docs/cli/decrypt) reverses it.
+The format is [`@env-spec`](https://varlock.dev/env-spec/overview/), the same one [varlock](https://varlock.dev) reads, so schemas move between the tools. penv ignores what it doesn't know with a warning, so a varlock schema still parses.
 
-## Typed access
+**Defaults you don't have to write**
 
-```bash
-penv gen ts        # also py, go, rust, php, java, csharp
+- `KEY=` (empty) is **required**. `KEY=value` makes `value` the default and the key optional.
+- Every key is **sensitive** unless it carries `@sensitive=false`, the header sets `@defaultSensitive=false`, or the name starts with a bundler-public prefix: `NEXT_PUBLIC_`, `VITE_`, `PUBLIC_`, `EXPO_PUBLIC_`, `NUXT_PUBLIC_`, `REACT_APP_`, `GATSBY_`, `VUE_APP_`, `STORYBOOK_`, or any you add under `[public] prefixes` in `.penv/config.toml`.
+- A key named like a secret (`STRIPE_SECRET_KEY`, `…_ANON_KEY`) stays sensitive whatever it holds.
+- A bundler-prefixed key marked `@sensitive` is an error (`sensitive_public_key`): the prefix ships the value to the browser, so penv cannot keep it secret.
+
+<details>
+<summary><b>Decorators</b></summary>
+
+| Decorator | Where | Takes |
+|---|---|---|
+| `@penv` | header | `org/project` or `<provider>:org/project`. Present means cloud mode; absent means local mode. |
+| `@currentEnv` | header | A key, e.g. `$APP_ENV`. Chooses the environment. |
+| `@defaultRequired` | header | nothing, `true`, `false`, `infer` |
+| `@defaultSensitive` | header | nothing, `true`, `false` |
+| `@import` | header | `(path, KEY, …)` or `(path, pick=[KEY, …])`. Schema files only, never value files. |
+| `@assert` | header or key | `(expression, "message")`. A false expression fails `check` and `run`. |
+| `@required` / `@optional` | key | nothing, `true`, `false`, or `forEnv(env, …)` |
+| `@sensitive` | key | nothing, `true`, `false` |
+| `@type` | key | one of the types below |
+| `@example`, `@docs`, `@deprecated` | key | a value / a note |
+| `@hosts` | key | one host, or `(a.com, "*.b.com")`: at most 32, no scheme, port, path or bare `*`. Enables [sealed runs](#sealed-runs). |
+| `@rotate` | key | A duration (`90d`, `1y6m`, `12h`, `30min`), largest unit first. `penv check` prints a reminder counted from the last write; it never changes the exit code. |
+
+`@dynamic` and `@static` are parsed and kept; penv acts on neither. Anything else is ignored with a warning (`unknown_decorator`, or `varlock_only` for varlock's `@plugin` and similar).
+
+**Types**
+
+| Type | Constraints |
+|---|---|
+| `string` | `startsWith`, `endsWith`, `minLength`, `maxLength`, `matches` |
+| `number` | `min`, `max`, `isInt`, `precision` |
+| `port` | `min`, `max` |
+| `boolean`, `url`, `email` | none |
+| `enum(a,b,c)` | none; bare arguments are the members |
+
+A key with no `@type` is a `string`. There is no `integer`; write `number(isInt=true)`.
+
+> **Heads up:** `matches` and `precision` are carried into generated types and sent to penv.cloud, but penv does not enforce them locally. A failing `matches` will not fail `penv check`.
+
+</details>
+
+<details>
+<summary><b>Computed values, filters and functions</b></summary>
+
+A value that contains `${KEY}`, or is a single function call, is computed. Single-quoted and backticked values are always literal.
+
+```sh
+DATABASE_URL=postgres://app:${DB_PASSWORD | urlencode}@db:5432/app
+LOG_LEVEL=${LEVEL:-info}
+SESSION_SECRET=random(32)
+SHARED_KEY=penv(production/SHARED_KEY)
+LITERAL='${NOT_EXPANDED}'
 ```
 
-[`penv gen`](https://penv.cloud/docs/cli/gen) writes a typed loader (`src/env.ts`, `penv_env.py`, `env/env.go`, ...) that fails on a missing or malformed value: [typed env for your language](https://penv.cloud/docs/guides/typed-env-for-your-language).
+| Form | What it does |
+|---|---|
+| `${KEY}` · `${KEY:-or}` · `${KEY-or}` | Reference; default when empty-or-unset; default when unset only. |
+| `${KEY \| urlencode}` · `base64` · `lower` · `upper` · `trim` | **Filters**, applied left to right. |
+| `ref` `concat` `fallback` `if` `eq` `not` `isEmpty` `forEnv` | `@env-spec` functions. |
+| `match(subject, label: value, _: value)` · `and` · `or` · `startsWith` · `endsWith` | penv additions. `_` is the default branch. |
+| `random(N)` | Generated once by `penv run` (N from 8 to 512), kept in `.env.local`, never sent by `penv push`. |
+| `penv(KEY)` · `penv(env/KEY)` · `penv(project/env/KEY)` · `penv(org/project/env/KEY)` | Read a value from another environment, project or org. `penv()` alone reads the key it sits on. |
+| `exec()` and plugin functions | **Refused.** A schema never starts a process. |
 
-## Coding agents and sealed runs
+**Taint:** a value computed from a sensitive key is itself sensitive, through templates, filters, defaults, `concat`, `fallback`, the chosen `if`/`match` branch, reference chains and `penv()`. A computed value that lands on a bundler-public key fails `check` and `run`.
 
-```dotenv
+</details>
+
+## Running safely
+
+```sh
+penv run -- node server.js
+```
+
+`penv run` validates every value, injects them into the **child process only**, and masks sensitive values in the child's output. Masking is on for everyone, in every run.
+
+- **In-process masking.** A preload covers `console` and `Response` bodies in Node, Bun, Deno and Python, not just the terminal. The file `penv gen ts` writes does the same in deployed code (Node, Bun, Deno, edge, Workers) with no wrapper process.
+- **Browser safety.** A public key built from a secret fails `check` and `run`. After a build, client output (`.next/static`, `dist`, `build`, `out`, React Native bundles) is scanned for secret values.
+- **Git exposure.** `penv check` fails when a value file that holds a secret is tracked or not ignored.
+- **Process hygiene.** Signals are forwarded to the child group, and variables that would change how the command runs (for example `NODE_OPTIONS`) are checked in cloud mode.
+
+### Sealed runs
+
+Under an AI agent, or with `penv run --sealed`, a key marked `@hosts` is not handed to the command at all.
+
+```sh
 # @type=string(startsWith=sk_live_, minLength=32) @hosts=api.stripe.com
 STRIPE_SECRET_KEY=
 ```
 
-[`penv guard`](https://penv.cloud/docs/cli/guard) writes config for Claude Code, Codex, Cursor, Copilot CLI, Gemini CLI, Cline, Windsurf and Amp. Its hooks (Claude Code, Cursor, Gemini CLI, Cline, Windsurf) call [`penv hook`](https://penv.cloud/docs/cli/hook), which refuses reads of `.env` files, environment dumps and `penv pull`.
+```sh
+penv run --sealed -- npm run dev      # always sealed under an AI agent
+```
 
-Under an agent, `penv run` hands a key with `@hosts` to the command as a placeholder, and its proxy puts the real value only into requests to those hosts.
+The command sees a **placeholder shaped like the real value** (it honors `startsWith`, `endsWith` and length constraints). A proxy inside `penv run` puts the real value into requests to the listed hosts only.
 
-Under a detected agent, penv refuses `penv decrypt` and `penv bundle`, refuses `penv pull` unless a person passes `--i-am-human` at a terminal, and asks you to approve [`penv reveal`](https://penv.cloud/docs/cli/reveal): [coding agents](https://penv.cloud/docs/concepts/coding-agents). Agent Skill: [skills/penv](./skills/penv/SKILL.md).
+| Target | What happens |
+|---|---|
+| HTTPS to an allowed host | The value goes into the request line and headers (Basic auth included). Bodies keep the placeholder. Echoed values come back as the placeholder. |
+| WebSocket through an allowed host | The handshake gets the value; server messages come back with it swapped for the placeholder. |
+| `postgres://` URL | Connects through a local proxy; penv logs in to the real server (SCRAM-SHA-256, MD5 or cleartext). |
+| `redis://` URL | Same idea, using `AUTH` and `HELLO … AUTH`. |
+| `AWS_SECRET_ACCESS_KEY` | The SDK signs with a placeholder; the proxy re-signs each request (SigV4) with the real key, which never goes on the wire. |
 
-## penv.cloud sync
+A type with no room for a placeholder is `cannot_seal`.
 
-```bash
-penv login
-penv push                           # sends values, deletes the files it sent; *.local stays
-penv pull --env staging             # writes .env.staging
+## Coding agents
+
+An agent runs as you, so it can read whatever you can read. penv narrows that, and is explicit about where it stops.
+
+**How penv knows it's an agent session.** It reads harness environment variables first, then walks the process ancestry. `--agent` declares one. `--i-am-human` overrides a false detection, and only counts when stdin and stdout are both real terminals.
+
+**What changes under an agent**
+
+| Behavior | Detail |
+|---|---|
+| Output | JSON, as with `--agent`. |
+| Masking and sealing | Always on. |
+| `penv reveal KEY` | Asks a **person** to approve in the console. The agent can ask; a human clicks. |
+| `penv pull`, `penv decrypt` | Refused. |
+| Cloud credentials | 5-minute lifetime instead of 15. |
+| Custom CA bundles | Refused if the user can write the file. |
+
+**`penv guard`** reads your schema and writes what each harness actually enforces:
+
+| Harness | What gets written |
+|---|---|
+| Claude Code | `.claude/settings.json`: deny rules, a sandbox block, a `PreToolUse` hook |
+| Codex | `.codex/config.toml`: a permission profile |
+| Cursor | `.cursor/cli.json` and `.cursor/hooks.json`: deny rules and fail-closed hooks |
+| Copilot CLI · Gemini CLI · Cline · Windsurf · Amp | The equivalent for each |
+
+```sh
+penv guard             # detect installed harnesses and write their rules
+penv guard cursor      # target one
+penv guard --all       # every harness penv knows (handy for a template repo)
+penv guard --check     # show status without writing; exits non-zero if anything is stale (CI-friendly)
+```
+
+The hook **is the penv binary** (`penv hook <harness>`), never a script that fails open. Guards also deny penv's own local key file, and re-running `penv guard` never weakens an existing rule.
+
+**What penv does and does not claim.** It keeps secrets out of the files, the repo, the shell history and the captured output an agent reads, and it blocks reads of the value files where a harness allows it. It is **not a sandbox**: a process running as you can still look. That is why cloud-issued values are short-lived, scoped and attributable to the session that used them. `penv guard --check` prints the exact claim for your setup.
+
+Known harness limits: Claude Code's sandbox is not available on native Windows (deny rules and the hook still apply), and GitHub has not published a schema for Copilot CLI's permissions file.
+
+## Local-first values
+
+penv works fully offline.
+
+- **Layering.** Value files cascade in this order: `.env` → `.env.local` → `.env.<env>` → `.env.<env>.local`. (`test` skips `.env.local`.) `.env.vault`, `.env.keys` and `.env.me` are never read as values.
+- **Choosing the environment.** `--env` > `PENV_ENV` > `@currentEnv` > `development`.
+- **Process wins.** A key already set in the process overrides files, as in dotenv and varlock.
+- **Encryption at rest (opt-in).** `penv encrypt` converts sensitive values in value files to `enc:v1:…` and turns on `[local] encrypt`; later `penv set`, `penv pull` and `random()` write ciphertext. The key lives in your OS keychain (override with `PENV_LOCAL_KEY`). `penv decrypt` reverses it, and is refused for agents. A value this machine can't decrypt stops the command and names the key, never the value.
+- **Deploys without a cloud.** `penv bundle --env production` writes `.penv/production.bundle` and prints a `PENV_BUNDLE_KEY`. At deploy, `penv run`, `check`, `ls` and `why` read the bundle where they would otherwise read penv.cloud. The platform's own variables and value files still win.
+
+### Find out why
+
+```sh
+penv why STRIPE_SECRET_KEY    # where the value comes from, what it's built on,
+                              # and whether it's masked, public or sealed (never prints it)
+penv check                    # schema, values, drift, guard coverage, git exposure
+penv check --strict           # also fail on variables your code reads but the schema doesn't declare
+penv scan                     # find secret values committed to other files
+penv ls                       # names and types, values masked
 ```
 
 We store your team's values on [penv.cloud](https://penv.cloud/?ref=gh) after [`penv login`](https://penv.cloud/docs/cli/login) and [`penv push`](https://penv.cloud/docs/cli/push); [`penv pull`](https://penv.cloud/docs/cli/pull) writes them back to a file. `@penv=<provider>:org/project` names another provider: [docs/PROVIDERS.md](./docs/PROVIDERS.md).
 
-## Deploy, bundle and CI
+## Typed access
 
-```bash
-penv bundle --env production                      # .penv/production.bundle; prints PENV_BUNDLE_KEY once
-penv run --env production -- node server.js       # on the host, with PENV_BUNDLE_KEY set
+```sh
+penv gen ts       # one typed `env` for server and client; secrets read by computed name so no bundler inlines them
+penv gen py       # standard library, or pydantic when your project uses it
+penv gen go | rust | php | java | csharp
 ```
 
-[`penv bundle`](https://penv.cloud/docs/cli/bundle) ships one environment's values encrypted with the deploy, for hosts without penv.cloud. Docker, serverless, Kubernetes and CI: [deploy](https://penv.cloud/docs/deploy), [packaging/docker](./packaging/docker/README.md), [packaging/lambda](./packaging/lambda/README.md).
+- Secret fields print `[redacted]` in every language, and CI compiles and runs each generated target.
+- penv asks where the file goes once, and remembers it in `.penv/config.toml` under `[targets.<name>]`. `--out <PATH>` answers it up front; non-interactive runs without a remembered answer write nothing and say which flag to pass.
+- `penv gen <target> --options` prints a target's options and their current values. `penv gen <target> --check` verifies the file is up to date.
+- `penv gen ts` never edits your `tsconfig.json`: it prints the import line to paste.
+- A target is a template plus settings, so adding a language is adding a template.
 
-## Compatibility
+## With a team
 
-```bash
-penv check                  # in a varlock project, unchanged
+```sh
+penv login      # device code in the browser; type the code your terminal shows
+penv push       # values go to penv.cloud, .env is deleted
+penv pull       # regenerate a .env view whenever you need one
 ```
 
-penv reads a [varlock](https://varlock.dev) schema and its `.env.*` files. It ignores varlock-only decorators such as `@plugin` with a note, and refuses `exec()` and plugin functions by name. `penv check` names the penv-only features a schema uses: `@rotate`, `@assert`, `match()`, `random()`, `penv()`, filters.
+A teammate clones the repo and runs `penv run -- pnpm dev`. That's the whole onboarding.
 
-With penv 1.0.0-rc.1, `penv run -- true` takes 9.4 ms and 10 MB where varlock 1.21.0 from npm takes 296 ms and 83 MB, and dotenvx 2.31.1 from npm 425 ms and 106 MB: [docs/BENCHMARKS.md](./docs/BENCHMARKS.md). To read penv.cloud from [varlock](https://varlock.dev): [packages/varlock-plugin](./packages/varlock-plugin/README.md).
+- **CI** presents its OIDC token and gets a short-lived credential. **Servers** with nothing to present enrol a keypair once (`penv machine enroll`); AWS roles work too.
+- Cloud mode is chosen by the `@penv=org/project` header. It's a *provider*: `@penv=<provider>:org/project`, `--provider`, and `[providers.<slug>] url` in `.penv/config.toml`. A root named only in the settings file never receives a token, OIDC or AWS credential.
+- Offline outside development, penv fails closed.
+- `penv set KEY` reads the value without echoing it. Write-only values come back from `pull` as a `# penv:redacted KEY` comment, never as "missing".
+- Manage structure with `penv project …` and `penv env …` (`ls`, `new`, `rename`, `copy`, `rm`).
+- **Using varlock already?** `@penvhq/varlock-plugin` reads penv.cloud from varlock.
 
-## Stability
+## Editor support
 
-| From 1.0.0, a minor or patch release keeps | It may change |
-|---|---|
-| Command names, flags and exit codes | Text meant for a person: scripts read the JSON |
-| JSON output and the `penv help --json` manifest | The [Copilot CLI guard](https://penv.cloud/docs/guides/keep-agents-out-of-env), marked experimental |
-| The `.env.schema` grammar and `.penv/config.toml` keys | `hook` and `lsp`, whose other side is a harness or an editor |
+`penv lsp` serves `.env.schema` over the Language Server Protocol: diagnostics (what `penv check` reports for the schema), completion, hover on every decorator, function and filter (marked *penv*, *@env-spec* or *varlock*), go-to-definition for key references, and an outline. It only ever reads files named `.env.schema`, never value files, and makes no network requests.
 
-`1.0.0-rc.3` is the third release candidate for 1.0.0: only fixes, and the changes penv.cloud's own contract requires, land before 1.0.0. Full list: [docs/Design.md §13](./docs/Design.md#13-stability).
+- **VS Code:** install *penv* from the Marketplace or Open VSX (needs penv 1.0.0-beta.3 or newer).
+- **Neovim 0.11:**
+  ```lua
+  vim.filetype.add({ filename = { [".env.schema"] = "envschema" } })
+  vim.lsp.config("penv", { cmd = { "penv", "lsp" }, filetypes = { "envschema" }, root_markers = { ".env.schema" } })
+  vim.lsp.enable("penv")
+  ```
+- **Helix 25.07:** run `penv lsp` as the language server for the `.env.schema` glob.
 
 ## Commands
 
-| Command | Does |
+Run `penv help --json` for the machine-readable manifest (completions are generated from it).
+
+| Command | What it does |
 |---|---|
-| [`penv`](https://penv.cloud/docs/cli) | status and the next command |
-| [`init`](https://penv.cloud/docs/cli/init) | create `.env.schema` from your `.env` and keep `.env` out of git |
-| [`run`](https://penv.cloud/docs/cli/run) | run a command with your secrets loaded into it |
-| [`check`](https://penv.cloud/docs/cli/check) | find problems in `.env.schema` and missing values |
-| [`scan`](https://penv.cloud/docs/cli/scan) | find secret values committed to files |
-| [`ls`](https://penv.cloud/docs/cli/ls) | list your keys and which ones have a value |
-| [`why`](https://penv.cloud/docs/cli/why) | where a key's value comes from, never the value |
-| [`set`](https://penv.cloud/docs/cli/set) / [`unset`](https://penv.cloud/docs/cli/unset) | save or delete one value |
-| [`reveal`](https://penv.cloud/docs/cli/reveal) | show one value; an AI agent needs your approval first |
-| [`encrypt`](https://penv.cloud/docs/cli/encrypt) / [`decrypt`](https://penv.cloud/docs/cli/decrypt) | encrypt the secrets in your `.env` files, or write them back in plain text |
-| [`bundle`](https://penv.cloud/docs/cli/bundle) | write an encrypted file of one environment's values for a deploy |
-| [`gen`](https://penv.cloud/docs/cli/gen) | write the typed file for your language |
-| [`guard`](https://penv.cloud/docs/cli/guard) | write the rules that keep AI tools out of `.env` |
-| [`hook`](https://penv.cloud/docs/cli/hook) | run as a harness hook |
-| [`push`](https://penv.cloud/docs/cli/push) / [`pull`](https://penv.cloud/docs/cli/pull) | send your local `.env` to the cloud, then delete the file / write a `.env` file from the cloud |
-| [`login`](https://penv.cloud/docs/cli/login) / [`logout`](https://penv.cloud/docs/cli/logout) | sign in, sign out on this machine |
-| [`project`](https://penv.cloud/docs/cli/project), [`env`](https://penv.cloud/docs/cli/env), [`machine`](https://penv.cloud/docs/cli/machine) | projects, environments, identities for servers and CI |
-| [`schema`](https://penv.cloud/docs/cli/schema) | print the schema as JSON |
-| [`lsp`](https://penv.cloud/docs/cli/lsp) | serve `.env.schema` to an editor over the Language Server Protocol |
-| [`upgrade`](https://penv.cloud/docs/cli/upgrade) | replace penv with a newer release |
-| [`completions`](https://penv.cloud/docs/cli/completions) | print the completion script for bash, zsh, fish, powershell or elvish |
-| [`help`](https://penv.cloud/docs/cli/help) | show help for a command; `penv help --json` prints the manifest |
+| `penv` | Project state and the one next command |
+| `init` | `.env` → `.env.schema`; picks harnesses to guard; generates typed files |
+| `run -- cmd` | Validate, inject, mask. `--sealed` for sealed runs |
+| `check [KEY]` | Schema, values, drift, guard coverage, git exposure, unused/undeclared keys |
+| `why KEY` | Where a value comes from and how it's treated, never the value |
+| `ls` | Names and types, values masked |
+| `scan` | Find secret values committed to other files |
+| `gen <target>` | Typed file for a language |
+| `schema` | Print the parsed schema as JSON |
+| `lsp` | Language server for `.env.schema` |
+| `guard` | Write or check agent-harness rules from the schema |
+| `hook <harness>` | The fail-closed hook harnesses call; you rarely run it by hand |
+| `reveal KEY` | Print one value, after console approval |
+| `set` / `unset` | Write or remove a value, never echoed |
+| `encrypt` / `decrypt` | Turn local encryption at rest on or off |
+| `bundle` | Encrypt one environment for a deploy without penv.cloud |
+| `login` / `logout` | Device-code sign-in; credential in the OS keychain |
+| `push` / `pull` | Values to and from penv.cloud |
+| `machine enroll` | Bind a server keypair |
+| `project …` / `env …` | Manage projects and environments |
+| `upgrade [--check]` | Replace this binary from the latest release |
+| `completions <shell>` | bash, zsh, fish, powershell, elvish |
+| `help --json` | The command manifest |
 
-Output is JSON when stdout is not a terminal: [global options](https://penv.cloud/docs/cli/global-options).
+**Output and exit codes.** Output is JSON when stdout isn't a terminal, and under agents. Exit codes: `0` ok · `1` error · `2` auth · `3` validation · `4` confirmation required · `5` no credential · `6` environment refused.
 
-## Exit codes
+**Configuration** lives in `.penv/config.toml`, written by `penv init` with every setting at its default and a comment saying what each value does: `[schema] version`, `[run] preload`, `[local] encrypt`, `[public] prefixes`, `[targets.<name>]`, `[providers.<slug>]`.
 
-| Code | Name | Meaning |
+<details>
+<summary><b>Environment variables penv reads</b></summary>
+
+`PENV_ENV` (environment) · `PENV_URL` (API root) · `PENV_TOKEN` (credential) · `PENV_BUNDLE_KEY` (read a bundle) · `PENV_LOCAL_KEY` (local encryption key) · `PENV_INSTALL_DIR`, `PENV_VERSION` (installer) · `SSL_CERT_FILE` (CA bundle). `penv run` strips penv's own credentials and keys from the child.
+
+</details>
+
+## How penv compares with varlock
+
+penv reads varlock's schema format and exists alongside it. The honest differences:
+
+| | **penv** | **varlock** |
 |---|---|---|
-| 0 | `ok` | the command did what it says |
-| 1 | `error` | any other failure |
-| 2 | `auth` | not signed in, or the credential was rejected |
-| 3 | `validation` | the schema or the values did not pass |
-| 4 | `confirmation` | a person has to confirm; the JSON carries the replay command |
-| 5 | `no_credential` | no credential is available and none can be obtained |
-| 6 | `environment_refused` | this identity may not read that environment, or its values are write-only |
+| Schema format | `@env-spec`, plus penv extensions (`@hosts`, `@rotate`, `@assert`, filters, `match`, `random`, `penv()`) | `@env-spec` |
+| Reads the other's schema | A varlock schema parses; unknown parts warn | penv-specific parts are outside its vocabulary |
+| `exec()` and plugin functions | Refused by design | Supported, with a large plugin ecosystem |
+| Secrets backends | penv.cloud, local encrypted files, bundles | Plugins for 1Password, AWS, Vault, Infisical and more |
+| Agent protection | Harness guards, agent detection, sealed runs with proxies | Log redaction and leak prevention |
+| Packaging | One static Rust binary | Node-based |
 
-Every error code: [errors](https://penv.cloud/docs/reference/errors).
+Maintainer benchmark (Linux x86_64, varlock 1.20.0 from npm): `run -- true` 5.7 ms vs 374 ms, validate 5.0 ms vs 329 ms, scan 3.8 ms vs 349 ms, peak memory 11 MB vs 95 MB. Method and results are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); run it yourself with `bench/run.sh`.
 
-## Contributing
+## Status
 
-[CONTRIBUTING.md](./CONTRIBUTING.md) · [SECURITY.md](./SECURITY.md) · [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+`1.0.0-rc.3`. Behavior has been frozen since `rc.1`; only fixes land before `1.0.0`. penv.cloud is the hosted service; the CLI is the open-source part and works without it.
+
+- Docs: [penv.cloud/docs](https://penv.cloud/docs)
+- Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Security: [`SECURITY.md`](SECURITY.md) · [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+- The repo ships a penv **Agent Skill** so coding agents know how to use the CLI.
 
 ## License
 
-MIT: [LICENSE](./LICENSE).
+[MIT](LICENSE)
