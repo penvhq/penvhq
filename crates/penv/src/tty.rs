@@ -188,7 +188,7 @@ mod platform {
         #[cfg(not(target_os = "macos"))]
         fn poll(fds: *mut PollFd, nfds: Nfds, timeout: i32) -> i32;
         #[link_name = "read"]
-        fn read_fd(fd: i32, buf: *mut u8, count: usize) -> isize;
+        fn read_fd(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
     }
 
     pub struct Saved(Termios);
@@ -296,7 +296,7 @@ mod platform {
 
     pub fn read(buffer: &mut [u8]) -> io::Result<usize> {
         loop {
-            let read = unsafe { read_fd(STDIN, buffer.as_mut_ptr(), buffer.len()) };
+            let read = unsafe { read_fd(STDIN, buffer.as_mut_ptr().cast(), buffer.len()) };
             if read >= 0 {
                 return Ok(read as usize);
             }
