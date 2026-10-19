@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Completions for the `url`, `json` and `hash` functions need `penv` 1.0.0 or newer, since completions come from `penv lsp`.
+
 ## 0.1.0
 
 - Diagnostics, completion, hover, go-to-definition and outline for `.env.schema` through [`penv lsp`](https://penv.cloud/docs/cli/lsp).
