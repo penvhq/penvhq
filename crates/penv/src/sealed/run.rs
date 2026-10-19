@@ -4,12 +4,17 @@
 
 use std::path::{Path, PathBuf};
 
-use penv_schema::{BaseType, Schema, Values};
+use std::collections::BTreeMap;
+
+use penv_schema::resolve::{Raw, resolve_full, tainted};
+use penv_schema::{BaseType, Schema};
 use rustls::pki_types::CertificateDer;
 
 use super::proxy::{Proxy, Sealed};
+use crate::config::Config;
 use crate::env::Env;
 use crate::error::{CliError, Exit};
+use crate::source::Resolved;
 
 pub struct Seal {
     /// Key → placeholder, for the child's environment.
@@ -27,12 +32,161 @@ const SYSTEM_BUNDLES: [&str; 4] = [
     "/etc/ssl/ca-bundle.pem",
 ];
 
+/// Each key whose `@hosts` is computed, with the hosts it computes to, or why
+/// it cannot be used. A result read from a sensitive value is refused, never
+/// shown: hosts are printed, and a secret must not be.
+pub fn computed_hosts(
+    schema: &Schema,
+    resolved: &Resolved,
+    env: &Env,
+) -> Vec<(String, Result<Vec<String>, String>)> {
+    let computed: Vec<(&str, &str)> = schema
+        .keys
+        .iter()
+        .filter_map(|k| Some((k.name.as_str(), k.hosts_expr.as_deref()?)))
+        // An unset key sends nothing, so its hosts need not compute.
+        .filter(|(name, _)| resolved.values.get(*name).is_some_and(|v| !v.is_empty()))
+        .collect();
+    if computed.is_empty() {
+        return Vec::new();
+    }
+    let slot = |name: &str| format!("\0hosts:{name}");
+    let mut raw: BTreeMap<String, Raw> = resolved
+        .values
+        .iter()
+        // A computed key stays computed: a public read of it declassifies nothing.
+        .map(|(k, v)| {
+            let raw = if resolved.raw.get(k).is_none_or(Raw::is_stored) {
+                Raw::literal(v.clone())
+            } else {
+                Raw::derived(v.clone())
+            };
+            (k.clone(), raw)
+        })
+        .collect();
+    for (name, expr) in &computed {
+        raw.insert(slot(name), Raw::computed(*expr));
+    }
+    let out = resolve_full(
+        &raw,
+        env.as_map(),
+        &resolved.environment,
+        &resolved.fetched,
+        &resolved.policy,
+    );
+    let hot = tainted(&out.deps, |name| {
+        crate::source::is_sensitive(schema, &resolved.tainted, name)
+    });
+    computed
+        .into_iter()
+        .map(|(name, _)| {
+            let at = slot(name);
+            let hosts = match out.errors.iter().find(|e| e.key == at && !e.soft) {
+                Some(error) => Err(format!(
+                    "{name}: @hosts could not be computed: {}",
+                    error.message.trim_start_matches(&format!("{at}: "))
+                )),
+                None if hot.contains(&at) => Err(format!(
+                    "{name}: @hosts is computed from a sensitive value, so its hosts cannot be shown or pinned. Compute it with a public part, such as url($DATABASE_URL, host)."
+                )),
+                None => host_list(name, out.values.get(&at).map_or("", String::as_str)),
+            };
+            (name.to_string(), hosts)
+        })
+        .collect()
+}
+
+/// A computed `@hosts` value as hosts: comma-separated, each one `@hosts` would
+/// accept written by hand.
+fn host_list(name: &str, value: &str) -> Result<Vec<String>, String> {
+    let mut hosts: Vec<String> = value
+        .split(',')
+        .map(|h| h.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect();
+    hosts.sort();
+    hosts.dedup();
+    if hosts.is_empty() {
+        return Err(format!(
+            "{name}: @hosts computes no host. Set the value it reads, or write the host after @hosts="
+        ));
+    }
+    if hosts.len() > 32
+        || !hosts
+            .iter()
+            .all(|h| penv_schema::placeholder::is_host_pattern(h))
+    {
+        return Err(format!(
+            "{name}: @hosts computes something that is not a list of at most 32 hosts such as api.example.com or *.example.com. Fix the value it reads."
+        ));
+    }
+    Ok(hosts)
+}
+
+/// The hosts each computed `@hosts` key may reach: its computed hosts when the
+/// `[hosts]` pin names exactly those, and otherwise the problem, naming the key
+/// and both lists. `check` fails on a problem and a sealed run refuses it.
+pub fn host_pins(
+    schema: &Schema,
+    resolved: &Resolved,
+    env: &Env,
+    config: &Config,
+) -> Vec<(String, Result<Vec<String>, String>)> {
+    computed_hosts(schema, resolved, env)
+        .into_iter()
+        .map(|(name, computed)| {
+            let checked = computed.and_then(|hosts| {
+                let mut pinned = config.pinned_hosts(&name);
+                if let Some(pinned) = pinned.as_mut() {
+                    pinned.sort();
+                    pinned.dedup();
+                }
+                match pinned {
+                    Some(pinned) if pinned == hosts => Ok(hosts),
+                    Some(pinned) => Err(format!(
+                        "{name}: @hosts computes {} and [hosts] pins {}. Run penv check --pin-hosts if {name} should now go to {}.",
+                        hosts.join(", "),
+                        if pinned.is_empty() { "nothing".to_string() } else { pinned.join(", ") },
+                        hosts.join(", ")
+                    )),
+                    None => Err(format!(
+                        "{name}: @hosts computes {} and [hosts] pins nothing for it. Run penv check --pin-hosts to pin it.",
+                        hosts.join(", ")
+                    )),
+                }
+            });
+            (name, checked)
+        })
+        .collect()
+}
+
 pub fn prepare(
     schema: &Schema,
-    values: &Values,
+    resolved: &Resolved,
+    dir: &Path,
     env: &Env,
     agent: bool,
 ) -> Result<Option<Seal>, CliError> {
+    let values = &resolved.values;
+    // A computed `@hosts` seals only to the hosts its pin agrees on.
+    let mut schema = schema.clone();
+    let pins = host_pins(&schema, resolved, env, &Config::load(dir)?);
+    for (name, pinned) in pins {
+        if values.get(&name).is_none_or(|v| v.is_empty()) {
+            continue;
+        }
+        let hosts = pinned.map_err(|problem| {
+            refuse(
+                "hosts_unpinned",
+                problem,
+                "Run penv check, and penv check --pin-hosts yourself once the hosts are right.",
+            )
+        })?;
+        if let Some(key) = schema.keys.iter_mut().find(|k| k.name == name) {
+            key.hosts = hosts;
+        }
+    }
+    let schema = &schema;
     let mut sealed = Vec::new();
     let mut databases = Vec::new();
     for key in schema.keys.iter().filter(|k| !k.hosts.is_empty()) {

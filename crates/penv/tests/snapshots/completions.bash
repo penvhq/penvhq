@@ -47,7 +47,7 @@ _penv() {
         encrypt) words="--json --format --agent --provider" ;;
         decrypt) words="--json --format --agent --provider" ;;
         why) words="--env --json --format --agent --provider" ;;
-        check) words="--env --strict --json --format --agent --provider" ;;
+        check) words="--env --strict --pin-hosts --json --format --agent --provider" ;;
         gen) words="--out --check --options --json --format --agent --provider" ;;
         scan) words="--staged --install-hook --env --json --format --agent --provider" ;;
         guard) words="--all --check --json --format --agent --provider" ;;

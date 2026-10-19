@@ -73,7 +73,8 @@ pub fn run(
     };
 
     let target = with_options(target, &settled.options);
-    let rendered = penv_targets::render(&target, &view(&schema), version()).map_err(refused)?;
+    let rendered =
+        penv_targets::render(&target, &view(&dir, &schema)?, version()).map_err(refused)?;
     if check {
         return verify(out, &dir, &target, &settled.path, &packages, &rendered);
     }
@@ -119,9 +120,16 @@ impl Repo {
     }
 }
 
-/// The schema as templates see it, in the environment `gen` renders for.
-fn view(schema: &Schema) -> Value {
-    penv_targets::view(schema, crate::source::DEFAULT_ENVIRONMENT)
+/// The schema as templates see it, in the environment `gen` renders for and under
+/// the `public` lists `penv run` reads.
+fn view(dir: &Path, schema: &Schema) -> Result<Value, CliError> {
+    let raw = crate::source::with_defaults(schema, Default::default());
+    let policy = crate::source::policy(&crate::config::Config::load(dir)?, &raw);
+    Ok(penv_targets::view(
+        schema,
+        crate::source::DEFAULT_ENVIRONMENT,
+        &policy,
+    ))
 }
 
 /// What one target left behind.
@@ -212,7 +220,7 @@ pub fn auto(
     schema: &Schema,
     interactive: bool,
 ) -> Result<Generated, CliError> {
-    let json = view(schema);
+    let json = view(&plan.repo.dir, schema)?;
     let style = out.style();
     let Plan {
         repo,

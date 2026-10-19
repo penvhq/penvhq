@@ -23,6 +23,7 @@ pub fn run(
     only: Option<&str>,
     env_flag: Option<&str>,
     strict: bool,
+    pin_hosts: bool,
     env: &Env,
 ) -> Result<Report, CliError> {
     let style = out.style();
@@ -60,7 +61,7 @@ pub fn run(
     let mut notes: Vec<String> = Vec::new();
     let resolved = match source::values(&schema, dir, &environment, env, &mut fetcher) {
         Ok(resolved) => resolved,
-        Err(error) if schema.is_cloud() => {
+        Err(error) if schema.is_cloud() && !is_validation(&error) => {
             notes.push(format!(
                 "the cloud was not read ({}), so this checked the local files",
                 error.message.trim_end_matches('.')
@@ -88,6 +89,9 @@ pub fn run(
     };
     let values = &resolved.values;
     let schema = schema.for_environment(&environment);
+    if pin_hosts {
+        return pin(&schema, &resolved, dir, env, &detection);
+    }
     let file_warnings: Vec<penv_dotenv::Warning> = resolved
         .layers
         .warnings
@@ -197,7 +201,19 @@ pub fn run(
             ));
         }
     }
-    for key in schema.keys.iter().filter(|k| !k.hosts.is_empty()) {
+    let config = crate::config::Config::load(dir)?;
+    for (name, pinned) in crate::sealed::run::host_pins(&schema, &resolved, env, &config) {
+        if let Err(problem) = pinned
+            && only.is_none_or(|n| n == name)
+        {
+            violations.push(Violation::new(&name, "hosts", problem));
+        }
+    }
+    for key in schema
+        .keys
+        .iter()
+        .filter(|k| !k.hosts.is_empty() || k.hosts_expr.is_some())
+    {
         if let Some(why) = crate::sealed::signing_secret(&key.name) {
             violations.push(Violation::new(
                 &key.name,
@@ -234,6 +250,11 @@ pub fn run(
         violations.extend(config_violations);
     }
     notes.extend(config_notes);
+    let (policy_violations, policy_notes) = public_lists(&config, &schema, &resolved.raw);
+    if only.is_none() {
+        violations.extend(policy_violations);
+    }
+    notes.extend(policy_notes);
     if let Some(features) = penv_only(&schema_path) {
         notes.push(format!(
             "{} uses penv-only features ({features}); varlock will not load it",
@@ -349,6 +370,75 @@ pub fn run(
     } else {
         report.with_exit(Exit::Validation)
     })
+}
+
+/// An agent, detected or declared with `--agent`, may not pin hosts.
+fn pin_refusal(detection: &penv_agent::Detection, agent_flag: bool) -> Option<CliError> {
+    if penv_agent::Policy::for_(detection, agent_flag).pull_allowed {
+        return None;
+    }
+    Some(
+        CliError::new(
+            "agent_session",
+            format!(
+                "--pin-hosts approves where secrets may be sent, and this session is {}.",
+                detection.name().unwrap_or("an agent")
+            ),
+            "Run penv check --pin-hosts yourself.",
+        )
+        .with_exit(Exit::Auth),
+    )
+}
+
+/// `check --pin-hosts`: write each computed `@hosts` into `[hosts]` and print
+/// only the hosts that changed. Pinning says where a secret may be sent, so a
+/// person does it.
+fn pin(
+    schema: &penv_schema::Schema,
+    resolved: &source::Resolved,
+    dir: &Path,
+    env: &Env,
+    detection: &penv_agent::Detection,
+) -> Result<Report, CliError> {
+    if let Some(refusal) = pin_refusal(detection, crate::agent::flagged()) {
+        return Err(refusal);
+    }
+    let mut config = crate::config::Config::load(dir)?;
+    let mut changed: Vec<Value> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut problems: Vec<String> = Vec::new();
+    for (name, computed) in crate::sealed::run::computed_hosts(schema, resolved, env) {
+        let hosts = match computed {
+            Ok(hosts) => hosts,
+            Err(problem) => {
+                problems.push(problem);
+                continue;
+            }
+        };
+        let pinned = config.pinned_hosts(&name).unwrap_or_default();
+        let added: Vec<&String> = hosts.iter().filter(|h| !pinned.contains(h)).collect();
+        let removed: Vec<&String> = pinned.iter().filter(|h| !hosts.contains(h)).collect();
+        if added.is_empty() && removed.is_empty() && config.pinned_hosts(&name).is_some() {
+            continue;
+        }
+        config.set_pinned_hosts(&name, &hosts);
+        let mut parts: Vec<String> = added.iter().map(|h| format!("+{h}")).collect();
+        parts.extend(removed.iter().map(|h| format!("-{h}")));
+        lines.push(format!("pinned {name} {}", parts.join(" ")));
+        changed.push(json!({ "key": name, "added": added, "removed": removed, "hosts": hosts }));
+    }
+    if !problems.is_empty() {
+        return Err(CliError::new(
+            "hosts_uncomputed",
+            problems.join("\n"),
+            "Fix the @hosts it names, then run penv check --pin-hosts again; nothing was pinned.",
+        )
+        .with_exit(Exit::Validation));
+    }
+    if !changed.is_empty() {
+        config.save(dir)?;
+    }
+    Ok(Report::new(json!({ "pinned": changed }), lines.join("\n")))
 }
 
 pub(super) fn body(
@@ -499,6 +589,9 @@ fn penv_only(schema_path: &Path) -> Option<String> {
         ("random(", "random()"),
         ("match(", "match()"),
         ("penv(", "penv()"),
+        ("url(", "url()"),
+        ("json(", "json()"),
+        ("hash(", "hash()"),
         ("| urlencode", "filters"),
         ("| base64", "filters"),
         ("| lower", "filters"),
@@ -515,6 +608,48 @@ fn penv_only(schema_path: &Path) -> Option<String> {
         acc
     });
     (!found.is_empty()).then(|| found.join(", "))
+}
+
+/// The `public` lists of `.penv/config.toml`: each refused entry is a violation
+/// naming its section, and each `[hash] public` key is a note.
+fn public_lists(
+    config: &crate::config::Config,
+    schema: &penv_schema::Schema,
+    raw: &std::collections::BTreeMap<String, penv_schema::resolve::Raw>,
+) -> (Vec<Violation>, Vec<String>) {
+    let mut problems = config.policy_problems(schema);
+    let mut notes = Vec::new();
+    let listed = config.policy();
+    for (i, key) in listed.json_public.keys().enumerate() {
+        if schema.get(key).is_none() {
+            problems.push(format!(
+                "[json.{}] names no key in .env.schema; rename the section to a declared key or remove it",
+                crate::config::label(key, i, schema)
+            ));
+        }
+    }
+    let raw = source::with_defaults(schema, raw.clone());
+    let kept = source::policy(config, &raw);
+    for (i, key) in listed.hash_public.iter().enumerate() {
+        match schema.get(key) {
+            Some(declared) if kept.hash_public.contains(key) => notes.push(if declared.sensitive {
+                format!(
+                    "{key} is in [hash] public but stays sensitive because of its decorator; mark it @sensitive=false to show its hash() result"
+                )
+            } else {
+                format!("{key} is in [hash] public, so its hash() result is shown unmasked")
+            }),
+            _ => problems.push(format!(
+                "[hash] public lists {}, which is not a key whose value is a hash() call; remove it or compute it with hash()",
+                crate::config::label(key, i, schema)
+            )),
+        }
+    }
+    let violations = problems
+        .into_iter()
+        .map(|message| Violation::new(crate::config::CONFIG_FILE, "public", message))
+        .collect();
+    (violations, notes)
 }
 
 /// Config files that can send any variable to the client, whatever its prefix:
@@ -789,5 +924,42 @@ mod reminder_tests {
             ),
             "rotate K by 2026-03-31T12:00:00Z"
         );
+    }
+}
+
+/// A schema or value mistake is not a cloud failure; the local fallback must not hide it.
+fn is_validation(error: &CliError) -> bool {
+    matches!(
+        error.code,
+        "invalid_value"
+            | "invalid_schema"
+            | "invalid_reference"
+            | "invalid_environment"
+            | "unresolved_value"
+    )
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+
+    #[test]
+    fn value_errors_are_not_cloud_errors() {
+        let bad = CliError::new("invalid_value", "K: bad.", "fix");
+        assert!(is_validation(&bad));
+        assert!(!is_validation(&CliError::new("offline", "x", "y")));
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::pin_refusal;
+
+    #[test]
+    fn the_agent_flag_refuses_pinning_without_detection() {
+        let human = penv_agent::Detection::default();
+        assert!(pin_refusal(&human, false).is_none());
+        let refused = pin_refusal(&human, true).expect("--agent refuses --pin-hosts");
+        assert_eq!(refused.code, "agent_session");
     }
 }
