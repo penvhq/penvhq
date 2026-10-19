@@ -49,3 +49,4 @@ T10 b69ee48 pass after 1 fix round (fallback only defaults missing/null json fie
 T6 4a9af34 pass after 1 fix round (gen uses run-time policy; is_whole_call replaces text scanner; entries echoed only if key/part name)
 T7 d0b29ac pass after 1 fix round; schema JSON has no hostsExpr (cloud refuses unknown fields) - cloud follow-up
 T9 2b162bc pass; full workspace suite green under guard
+F1 99281df pass after 2 review rounds (public reads only of stored keys; penv() reads not stored; url path sensitive; ambiguous URLs refuse host reads)
