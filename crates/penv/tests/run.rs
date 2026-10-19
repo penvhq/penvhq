@@ -696,8 +696,9 @@ fn match_and_filters_compute_before_the_child_starts() {
 
 #[test]
 fn random_is_generated_once_kept_locally_and_never_pushed() {
-    let schema =
-        format!("# @schema=1\n\n# @type=string(minLength=32)\nSESSION_SECRET=random(32)\n\n{KEYS}");
+    let schema = format!(
+        "# @schema=1\n\n# @type=string(minLength=32)\nSESSION_SECRET=random(length=32)\n\n{KEYS}"
+    );
     let workspace = Workspace::new(&[
         (".env.schema", &schema),
         (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
@@ -727,6 +728,38 @@ fn random_is_generated_once_kept_locally_and_never_pushed() {
     workspace.run(&[], "exit 0");
     let again = std::fs::read_to_string(workspace.path().join(".env.local")).unwrap();
     assert_eq!(again, kept, "a second run reuses the value");
+}
+
+#[test]
+fn random_kinds_hex_and_uuid_keep_their_shape_and_reuse_the_value() {
+    let schema = format!(
+        "# @schema=1\n\n# @type=string\nCOOKIE_KEY=random(kind=hex, length=40)\n\n# @type=string\nINSTANCE_UUID=random(kind=uuid)\n\n{KEYS}"
+    );
+    let workspace = Workspace::new(&[
+        (".env.schema", &schema),
+        (".env", &format!("STRIPE_SECRET_KEY={SECRET}\n")),
+    ]);
+    let first = workspace.run(&[], "exit 0");
+    assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
+    let kept = std::fs::read_to_string(workspace.path().join(".env.local")).unwrap();
+    let get = |k: &str| {
+        kept.lines()
+            .find_map(|l| l.strip_prefix(&format!("{k}=")))
+            .unwrap()
+            .to_string()
+    };
+    let hex = get("COOKIE_KEY");
+    assert_eq!(hex.len(), 40);
+    assert!(hex.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
+    let uuid = get("INSTANCE_UUID");
+    let parts: Vec<&str> = uuid.split('-').collect();
+    let sizes: Vec<usize> = parts.iter().map(|p| p.len()).collect();
+    assert_eq!(sizes, [8, 4, 4, 4, 12], "{uuid}");
+    assert!(parts[2].starts_with('4'));
+    assert!(matches!(parts[3].as_bytes()[0], b'8' | b'9' | b'a' | b'b'));
+    workspace.run(&[], "exit 0");
+    let again = std::fs::read_to_string(workspace.path().join(".env.local")).unwrap();
+    assert_eq!(again, kept);
 }
 
 #[test]
@@ -878,7 +911,7 @@ fn a_secret_written_into_browser_output_fails_the_run_that_built_it() {
 
 #[test]
 fn gen_never_writes_a_computed_default_as_a_literal_and_never_writes_a_secret_as_a_literal() {
-    let schema = "# @type=string\nDB_PASS=\n\n# @type=url @sensitive=false\nDATABASE_URL=postgres://app:${DB_PASS}@db/app\n\n# @type=number(isInt=true) @sensitive=false\nWORKERS=if(forEnv(production), 16, 2)\n\n# @type=string\nSESSION=random(32)\n\n# @type=url\nNEXT_PUBLIC_API=https://api.test\n";
+    let schema = "# @type=string\nDB_PASS=\n\n# @type=url @sensitive=false\nDATABASE_URL=postgres://app:${DB_PASS}@db/app\n\n# @type=number(isInt=true) @sensitive=false\nWORKERS=if(forEnv(production), 16, 2)\n\n# @type=string\nSESSION=random(length=32)\n\n# @type=url\nNEXT_PUBLIC_API=https://api.test\n";
     let workspace = Workspace::new(&[
         (".env.schema", schema),
         ("package.json", "{}"),
@@ -887,7 +920,7 @@ fn gen_never_writes_a_computed_default_as_a_literal_and_never_writes_a_secret_as
     let output = workspace.penv(&["gen", "ts", "--out", "env.ts"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let ts = std::fs::read_to_string(workspace.path().join("env.ts")).unwrap();
-    for literal in ["if(forEnv", "random(32)", "${DB_PASS}"] {
+    for literal in ["if(forEnv", "random(length=32)", "${DB_PASS}"] {
         assert!(
             !ts.contains(literal),
             "{literal} leaked into generated code:\n{ts}"
