@@ -133,6 +133,7 @@ pub fn resolve_full(
         stack: Vec::new(),
         errors: Vec::new(),
         quiet: 0,
+        defaulting: 0,
         deps: BTreeMap::new(),
         control: 0,
         nesting: 0,
@@ -270,6 +271,8 @@ struct Run<'a> {
     /// Inside `fallback`, `isEmpty`, an `if` condition or `${KEY-or}`, where an
     /// unset key is the point rather than a mistake.
     quiet: usize,
+    /// Inside `fallback`: a missing or null `json()` field reads as empty.
+    defaulting: usize,
     deps: BTreeMap<String, BTreeSet<String>>,
     /// Inside a condition: a key read here decides which value is chosen but is
     /// not copied into it, so it does not taint the result.
@@ -314,12 +317,12 @@ impl Run<'_> {
         };
         // Another key is computed on its own terms: a condition or fallback
         // around the reference to it does not reach inside it.
-        let (quiet, control) = (self.quiet, self.control);
-        (self.quiet, self.control) = (0, 0);
+        let saved = (self.quiet, self.control, self.defaulting);
+        (self.quiet, self.control, self.defaulting) = (0, 0, 0);
         self.stack.push(name.to_string());
         let result = self.eval(&expr);
         self.stack.pop();
-        (self.quiet, self.control) = (quiet, control);
+        (self.quiet, self.control, self.defaulting) = saved;
         match result {
             Ok(v) => {
                 self.done.insert(name.to_string(), v.clone());
@@ -590,7 +593,36 @@ impl Run<'_> {
                 Arg::Address(_) => {}
             }
         }
+        if name == "json" {
+            self.warn_duplicate_keys(call.subject.as_deref());
+            if self.defaulting > 0 {
+                return functions::json::lookup(&call).map(Option::unwrap_or_default);
+            }
+        }
         functions::eval(&call)
+    }
+
+    fn warn_duplicate_keys(&mut self, subject: Option<&str>) {
+        let key = self.stack.last().cloned().unwrap_or_default();
+        for dup in subject
+            .map(functions::json::duplicate_keys)
+            .unwrap_or_default()
+        {
+            let message = format!(
+                "json() reads a document that repeats the key \"{dup}\"; the last value is used"
+            );
+            if !self
+                .errors
+                .iter()
+                .any(|e| e.key == key && e.message == message)
+            {
+                self.errors.push(ResolveError {
+                    key: key.clone(),
+                    message,
+                    soft: true,
+                });
+            }
+        }
     }
 
     fn ref_key(&mut self, args: &[&Expr]) -> Result<String, String> {
@@ -611,13 +643,19 @@ impl Run<'_> {
 
     fn fallback(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("fallback", args, 1, usize::MAX)?;
+        self.defaulting += 1;
+        let mut out = Ok(String::new());
         for arg in args {
-            let v = self.quietly(arg)?;
-            if !v.is_empty() {
-                return Ok(v);
+            match self.quietly(arg) {
+                Ok(v) if v.is_empty() => {}
+                found => {
+                    out = found;
+                    break;
+                }
             }
         }
-        Ok(String::new())
+        self.defaulting -= 1;
+        out
     }
 
     fn branch(&mut self, args: &[&Expr]) -> Result<String, String> {
