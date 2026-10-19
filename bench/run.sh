@@ -139,6 +139,41 @@ rm .gitignore
 row ".env with a secret, not gitignored" "$([ $p -ne 0 ] && echo "check fails (exit $p)" || echo "passes")" \
   "$([ $v -ne 0 ] && echo "load fails (exit $v)" || echo "passes")"
 
+# --- url(), json(), hash(): penv-only, varlock has no equivalent ---------------------------
+# Each key is derived from a fake value in .env; penv resolves it, varlock is asked to load the same schema.
+project functions; common_schema
+cat >> .env.schema <<'EOF'
+
+# @type=url @sensitive
+DATABASE_URL=
+
+# @type=string @sensitive
+DB_SECRET=
+
+# @type=string @sensitive=false
+DB_HOST=url($DATABASE_URL, host)
+
+# @type=string @sensitive=false
+DB_NAME=json($DB_SECRET, database)
+
+# @type=string @sensitive=false
+KEY_FP=hash($STRIPE_SECRET_KEY, algo=sha256, length=8)
+EOF
+printf 'DATABASE_URL=postgres://app:fakepass@db.internal.test:5432/orders\nDB_SECRET=%s\n' \
+  '{"database":"orders"}' >> .env
+resolved() { # key, expected
+  local got; got=$("$PENV" run -- node -e 'process.stdout.write(process.env[process.argv[1]]||"")' "$1" 2>/dev/null)
+  [ "$got" = "$2" ] && echo "resolved: $got" || echo "failed"
+}
+want_fp=$(printf '%s' "$SECRET" | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])')
+"$VARLOCK" load >/dev/null 2>&1; v=$?
+vfn="$([ $v -ne 0 ] && echo "unsupported (exit $v)" || echo "accepted")"
+"$PENV" check >/dev/null 2>&1; p=$?
+row "url(), json(), hash() in one schema: validate" "$([ $p -eq 0 ] && echo "valid" || echo "invalid (exit $p)")" "$vfn"
+row 'url($DATABASE_URL, host)' "$(resolved DB_HOST db.internal.test)" "$vfn"
+row 'json($DB_SECRET, database)' "$(resolved DB_NAME orders)" "$vfn"
+row 'hash($KEY, algo=sha256, length=8)' "$(resolved KEY_FP "$want_fp")" "$vfn"
+
 printf '{"penv":%s,"varlock":%s,"runs":%s,"machine":%s,"results":[%s]}\n' \
   "$(json "$("$PENV" --version)")" "$(json "$("$VARLOCK" --version)")" "$RUNS" "$(json "$(uname -sm)")" \
   "$(IFS=,; echo "${RESULTS[*]}")" > "$OUT"

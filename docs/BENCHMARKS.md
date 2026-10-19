@@ -22,6 +22,8 @@ bench/runtimes.sh --builds    # plus Next.js, Vite and Parcel builds, checked in
 
 ## Results
 
+Numbers below are from penv 1.0.0-rc.1 and have not been rerun on 1.0.0: the 1.0.0 release build exists only once `v1.0.0` is tagged, and benchmarks run on the release binary. After the tag, install it and run `bench/run.sh`, `bench/startup.sh` and `bench/runtimes.sh`. The `url()`, `json()` and `hash()` rows were added after the run and are not yet measured.
+
 penv 1.0.0-rc.1 (the signed release binary, and `@penvhq/cli` from npm), varlock 1.21.0 from npm, dotenvx 2.31.1 from npm and as its binary (the `@dotenvx/dotenvx-linux-x86_64` package), dotenv-cli 11.0.0 from npm. Linux x86_64, 4 vCPU, Node 22.22, median of 30 runs.
 
 ### Startup and memory
@@ -60,6 +62,11 @@ From `bench/run.sh`:
 | Node.js server returning a secret in a response (`run -- node server.js`) | masked in the response bytes | sent unmasked |
 | Python server returning a secret in a response (`run -- python3 server.py`) | masked in the response bytes | sent unmasked |
 | `.env` holding a secret, not in `.gitignore` | `penv check` fails, exit 3 | `varlock load` passes |
+| `url($DATABASE_URL, host)` | resolves to the host | no such function |
+| `json($DB_SECRET, database)` | resolves to the field | no such function |
+| `hash($KEY, algo=sha256, length=8)` | resolves to the 8-character digest | no such function |
+
+The last three rows are penv only: varlock has no `url()`, `json()` or `hash()`, so the varlock column is whether it loads a schema that uses them. Run `bench/run.sh` to fill in its exit code.
 
 Each row is a block in [`bench/run.sh`](../bench/run.sh) that builds a fresh project and runs both tools: [`penv scan`](https://penv.cloud/docs/cli/scan), [`penv run`](https://penv.cloud/docs/cli/run).
 
