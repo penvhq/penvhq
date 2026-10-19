@@ -107,7 +107,7 @@ Functions: `ref`, `concat`, `fallback`, `if`, `match`, `eq`, `not`, `and`, `or`,
 
 ```dotenv
 API=match($APP_ENV, production: api.acme.com, staging: stg.acme.com, _: localhost:3000)
-DATABASE_URL=postgres://app:${DB_PASS | urlencode}@db/app     # filters: urlencode, base64, lower, upper, trim
+DATABASE_URL=postgres://app:${DB_PASS | urlencode}@db/app     # filters: urlencode, base64, b64d, lower, upper, trim
 SESSION_SECRET=random(length=32)                               # generated once per machine
 # @assert(if(forEnv(production), startsWith($STRIPE_KEY, sk_live_), true), "test key in production")
 ```
