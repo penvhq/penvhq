@@ -241,3 +241,24 @@ fn a_duplicate_key_warns_naming_the_key_not_the_value() {
     assert!(e.iter().any(|x| x.message.contains("\"a\"")));
     assert!(e.iter().all(|x| !x.message.contains("fake")));
 }
+
+#[test]
+fn fallback_defaults_a_missing_or_null_field_only() {
+    assert_eq!(eval("fallback(json($DB_SECRET, missing), d)").unwrap(), "d");
+    assert_eq!(eval("fallback(json($DB_SECRET, gone), d)").unwrap(), "d");
+    assert_eq!(
+        eval("fallback(json($DB_SECRET, username), d)").unwrap(),
+        "app"
+    );
+    assert!(eval("fallback(json($APP_ENV, a), d)").is_err());
+    assert!(
+        eval("fallback(json($DB_SECRET, missing))")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn fallback_keeps_a_refused_penv_address_fatal() {
+    assert!(eval("fallback(penv($APP_ENV), d)").is_err());
+}
