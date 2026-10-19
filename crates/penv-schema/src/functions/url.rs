@@ -115,6 +115,38 @@ fn split_host(text: &str) -> (String, Option<String>) {
 }
 
 impl Url {
+    /// An `@` past the authority or a port that is not a number means a raw
+    /// password character split the URL somewhere other than where it was meant.
+    fn unambiguous(&self, part: &str) -> Result<(), String> {
+        let fail = |why: &str| {
+            Err(format!(
+                "url() cannot read part {part}: {why}, so the authority is ambiguous; encode the password (urlencode) so @ # ? / : are escaped"
+            ))
+        };
+        let after = self.path.contains('@')
+            || self.fragment.as_deref().is_some_and(|f| f.contains('@'))
+            || self
+                .query
+                .iter()
+                .any(|(n, v)| n.contains('@') || v.as_deref().is_some_and(|v| v.contains('@')));
+        if after {
+            return fail("an @ appears after the host");
+        }
+        let numeric = |p: &str| {
+            (1..=5).contains(&p.len())
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && p.parse::<u16>().is_ok()
+        };
+        if self
+            .hosts
+            .iter()
+            .any(|(_, p)| p.as_deref().is_some_and(|p| !numeric(p)))
+        {
+            return fail("the port is not a number from 0 to 65535");
+        }
+        Ok(())
+    }
+
     fn single(&self, part: &str) -> Result<&(String, Option<String>), String> {
         match self.hosts.as_slice() {
             [one] => Ok(one),
@@ -166,6 +198,9 @@ impl Url {
 
 fn read(subject: &str, part: &str) -> Result<String, String> {
     let url = parse(subject, part)?;
+    if matches!(part, "host" | "port" | "origin" | "user" | "password") {
+        url.unambiguous(part)?;
+    }
     Ok(match part {
         "scheme" => url.scheme,
         "host" => url.single(part)?.0.clone(),

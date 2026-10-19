@@ -53,6 +53,8 @@ pub const STACK: usize = 16 << 20;
 pub struct Raw {
     pub text: String,
     pub computed: bool,
+    /// Already computed from other keys: read as written, but not a stored value.
+    pub derived: bool,
 }
 
 impl Raw {
@@ -60,6 +62,7 @@ impl Raw {
         Raw {
             text: text.into(),
             computed: false,
+            derived: false,
         }
     }
 
@@ -67,7 +70,23 @@ impl Raw {
         Raw {
             text: text.into(),
             computed: true,
+            derived: false,
         }
+    }
+
+    /// A value an expression already computed, kept as written.
+    pub fn derived(text: impl Into<String>) -> Raw {
+        Raw {
+            text: text.into(),
+            computed: false,
+            derived: true,
+        }
+    }
+
+    /// A value as stored: no expression built it. A `penv()` read is not stored,
+    /// since the other environment may have computed it.
+    pub fn is_stored(&self) -> bool {
+        !self.derived && (!self.computed || !is_expression(&self.text))
     }
 }
 
@@ -376,6 +395,11 @@ impl Run<'_> {
         if self.control > 0 {
             return;
         }
+        self.always_depend(dep);
+    }
+
+    /// Note `dep` even inside control: a secret part read anywhere taints.
+    fn always_depend(&mut self, dep: &str) {
         if let Some(key) = self.stack.last().cloned() {
             self.deps.entry(key).or_default().insert(dep.to_string());
         }
@@ -458,20 +482,26 @@ impl Run<'_> {
 
     fn filter(&mut self, inner: &Expr, filters: &[(String, Vec<Arg>)]) -> Result<String, String> {
         let key = self.stack.last().cloned().unwrap_or_default();
-        let mut subject_key = match inner {
-            Expr::Ref(k) => Some(k.as_str()),
-            _ => None,
-        };
+        // The stored key a chain of url or json reads ends at.
+        let mut origin = self.stored_ref(inner);
         let mut public = 0;
         for (i, (name, args)) in filters.iter().enumerate() {
             if word_takes_args(name) {
+                // A json public path names a path of the key itself.
+                let subject_key = if i == 0 || name == "url" {
+                    origin
+                } else {
+                    None
+                };
                 match functions::taint(name, address(args), subject_key, &key, self.policy) {
                     Taint::Public => public = i + 1,
-                    Taint::Always => self.depend(ALWAYS_SENSITIVE),
+                    Taint::Always => self.always_depend(ALWAYS_SENSITIVE),
                     Taint::Inputs => {}
                 }
             }
-            subject_key = None;
+            if !(matches!(name.as_str(), "url" | "json") && address(args).is_some()) {
+                origin = None;
+            }
         }
         // A public step declassifies what it reads: everything up to it is control.
         self.control += usize::from(public > 0);
@@ -553,13 +583,14 @@ impl Run<'_> {
     /// `url`, `json` or `hash` written as a call, its taint decided first.
     fn tainting(&mut self, name: &str, args: &[Arg]) -> Result<String, String> {
         let subject_key = match args.first() {
-            Some(Arg::Subject(Expr::Ref(k))) => Some(k.as_str()),
+            Some(Arg::Subject(e)) if name == "url" => self.read_origin(e),
+            Some(Arg::Subject(e)) => self.stored_ref(e),
             _ => None,
         };
         let key = self.stack.last().cloned().unwrap_or_default();
         let taint = functions::taint(name, address(args), subject_key, &key, self.policy);
         match taint {
-            Taint::Always => self.depend(ALWAYS_SENSITIVE),
+            Taint::Always => self.always_depend(ALWAYS_SENSITIVE),
             Taint::Public => self.control += 1,
             Taint::Inputs => {}
         }
@@ -568,6 +599,39 @@ impl Run<'_> {
             self.control -= 1;
         }
         out
+    }
+
+    /// The key `expr` names when it is a bare reference to a stored value.
+    fn stored_ref<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
+        match expr {
+            Expr::Ref(k) if self.raw.get(k).is_none_or(Raw::is_stored) => Some(k.as_str()),
+            Expr::Template(parts) => match parts.as_slice() {
+                [one] => self.stored_ref(one),
+                _ => None,
+            },
+            Expr::Filter { inner, filters } if filters.is_empty() => self.stored_ref(inner),
+            _ => None,
+        }
+    }
+
+    /// The stored key a chain of url or json reads ends at, as the filter form follows it.
+    fn read_origin<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
+        let reads =
+            |name: &str, args: &[Arg]| matches!(name, "url" | "json") && address(args).is_some();
+        match expr {
+            Expr::Call(name, args) if reads(name, args) => match args.first() {
+                Some(Arg::Subject(e)) => self.read_origin(e),
+                _ => None,
+            },
+            Expr::Template(parts) => match parts.as_slice() {
+                [one] => self.read_origin(one),
+                _ => None,
+            },
+            Expr::Filter { inner, filters } if filters.iter().all(|(n, a)| reads(n, a)) => {
+                self.read_origin(inner)
+            }
+            _ => self.stored_ref(expr),
+        }
     }
 
     /// Evaluate the arguments, then the function. `piped` is a filter's implied subject.
@@ -2115,6 +2179,11 @@ mod tests {
         assert_eq!(
             functions::taint("url", Some("host"), Some("U"), "H", &policy),
             Taint::Public
+        );
+        assert_eq!(
+            functions::taint("url", Some("host"), None, "H", &policy),
+            Taint::Inputs,
+            "a host read of a built URL"
         );
         assert_eq!(
             functions::taint("url", Some("password"), Some("U"), "P", &policy),
