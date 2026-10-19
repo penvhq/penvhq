@@ -754,7 +754,7 @@ fn random_kinds_hex_and_uuid_keep_their_shape_and_reuse_the_value() {
     let uuid = get("INSTANCE_UUID");
     let parts: Vec<&str> = uuid.split('-').collect();
     let sizes: Vec<usize> = parts.iter().map(|p| p.len()).collect();
-    assert_eq!(sizes, [8, 4, 4, 4, 12], "{uuid}");
+    assert_eq!(sizes, [8, 4, 4, 4, 12], "uuid group sizes {sizes:?}");
     assert!(parts[2].starts_with('4'));
     assert!(matches!(parts[3].as_bytes()[0], b'8' | b'9' | b'a' | b'b'));
     workspace.run(&[], "exit 0");

@@ -48,6 +48,12 @@ pub fn check_args(name: &str, args: &[Arg]) -> Result<(), String> {
     let Some(word) = word(name) else {
         return Ok(());
     };
+    if name == "random"
+        && let Some(Arg::Subject(Expr::Text(text))) = args.first()
+    {
+        // One message for every path: the one `random::spec` gives.
+        super::random::spec(&format!("random({text})"))?;
+    }
     let subjects = args.iter().filter(|a| matches!(a, Arg::Subject(_))).count();
     let has_subject = matches!(args.first(), Some(Arg::Subject(_)));
     if word.subject == "none" && subjects > 0 {

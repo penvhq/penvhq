@@ -25,6 +25,7 @@ pub fn spec(text: &str) -> Result<Option<RandomSpec>, String> {
     };
     let mut kind = RandomKind::Alnum;
     let mut length: Option<usize> = None;
+    let mut seen_kind = false;
     for part in inner.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let Some((name, value)) = part.split_once('=') else {
             return Err(if part.chars().all(|c| c.is_ascii_digit()) {
@@ -36,6 +37,10 @@ pub fn spec(text: &str) -> Result<Option<RandomSpec>, String> {
         let (name, value) = (name.trim(), value.trim());
         match name {
             "kind" => {
+                if seen_kind {
+                    return Err("random() has kind twice; write it once".into());
+                }
+                seen_kind = true;
                 kind = match value {
                     "alnum" => RandomKind::Alnum,
                     "hex" => RandomKind::Hex,
@@ -49,7 +54,11 @@ pub fn spec(text: &str) -> Result<Option<RandomSpec>, String> {
                 }
             }
             "length" => {
-                length = Some(value.parse().map_err(|_| {
+                if length.is_some() {
+                    return Err("random() has length twice; write it once".into());
+                }
+                let whole = !value.is_empty() && value.chars().all(|c| c.is_ascii_digit());
+                length = Some(whole.then(|| value.parse().ok()).flatten().ok_or_else(|| {
                     "random() option `length` is a whole number; write length=32".to_string()
                 })?);
             }
@@ -106,5 +115,21 @@ mod tests {
         assert!(spec("random(kind=nope, length=32)").is_err());
         assert!(spec("random(size=32)").is_err());
         assert!(spec("random(32)").unwrap_err().contains("length=32"));
+        assert!(
+            spec("random(length=8, length=9)")
+                .unwrap_err()
+                .contains("twice")
+        );
+        assert!(
+            spec("random(kind=hex, kind=hex, length=8)")
+                .unwrap_err()
+                .contains("twice")
+        );
+        assert!(
+            spec("random(length=+8)")
+                .unwrap_err()
+                .contains("whole number")
+        );
+        assert!(spec("random(length=-8)").is_err());
     }
 }

@@ -60,7 +60,7 @@ pub fn run(
     let mut notes: Vec<String> = Vec::new();
     let resolved = match source::values(&schema, dir, &environment, env, &mut fetcher) {
         Ok(resolved) => resolved,
-        Err(error) if schema.is_cloud() => {
+        Err(error) if schema.is_cloud() && !is_validation(&error) => {
             notes.push(format!(
                 "the cloud was not read ({}), so this checked the local files",
                 error.message.trim_end_matches('.')
@@ -789,5 +789,29 @@ mod reminder_tests {
             ),
             "rotate K by 2026-03-31T12:00:00Z"
         );
+    }
+}
+
+/// A schema or value mistake is not a cloud failure; the local fallback must not hide it.
+fn is_validation(error: &CliError) -> bool {
+    matches!(
+        error.code,
+        "invalid_value"
+            | "invalid_schema"
+            | "invalid_reference"
+            | "invalid_environment"
+            | "unresolved_value"
+    )
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+
+    #[test]
+    fn value_errors_are_not_cloud_errors() {
+        let bad = CliError::new("invalid_value", "K: bad.", "fix");
+        assert!(is_validation(&bad));
+        assert!(!is_validation(&CliError::new("offline", "x", "y")));
     }
 }
