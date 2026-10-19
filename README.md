@@ -327,7 +327,7 @@ Run `penv help --json` for the machine-readable manifest (completions are genera
 
 **Output and exit codes.** Output is JSON when stdout isn't a terminal, and under agents. Exit codes: `0` ok · `1` error · `2` auth · `3` validation · `4` confirmation required · `5` no credential · `6` environment refused.
 
-**Configuration** lives in `.penv/config.toml`, written by `penv init` with every setting at its default and a comment saying what each value does: `[schema] version`, `[run] preload`, `[local] encrypt`, `[public] prefixes`, `[targets.<name>]`, `[providers.<slug>]`, `[hosts]` (pins for a computed `@hosts`), and the public lists `[url] public`, `[hash] public` and `[json.KEY] public`. A public list declassifies only a stored value's parts, hash keys or JSON paths you name; `penv check` rejects an entry that would expose a secret. See [`docs/Functions.md`](docs/Functions.md#config).
+**Configuration** lives in `.penv/config.toml`, written by `penv init` with every setting at its default and a comment saying what each value does: `[schema] version`, `[run] preload`, `[local] encrypt`, `[public] prefixes`, `[targets.<name>]`, `[providers.<slug>]`, and the public lists `[url] public`, `[hash] public` and `[json.KEY] public`. A public list declassifies only a stored value's parts, hash keys or JSON paths you name; `penv check` rejects an entry that would expose a secret. `[hosts]` holds pins for a computed `@hosts`, written by `penv check --pin-hosts`. See [`docs/Functions.md`](docs/Functions.md#config).
 
 <details>
 <summary><b>Environment variables penv reads</b></summary>
