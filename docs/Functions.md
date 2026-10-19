@@ -33,7 +33,7 @@ DB_HOST=${DB_SECRET | json(database_url) | url(host)}
 | `host` | `db.internal.test` | public |
 | `port` | `5432` | public |
 | `origin` | `postgres://db.internal.test:5432` | public |
-| `path` | `/orders` | public |
+| `path` | `/orders` | sensitive |
 | `user` | `app` | sensitive |
 | `password` | `fakepass` | sensitive, always |
 | `query.NAME` | `query.sslmode` is `require` | sensitive |
@@ -114,7 +114,7 @@ INSTANCE_UUID=random(kind=uuid)                # a version-4 UUID
 
 ```toml
 [url]
-public = ["scheme", "host", "port", "origin", "path"]   # add "user" or "query.sslmode" to opt in
+public = ["scheme", "host", "port", "origin"]           # add "path", "user" or "query.sslmode" to opt in
 
 [json.GCP_SA_JSON]
 public = ["client_email", "project_id"]                 # read paths that are public for this key

@@ -40,7 +40,7 @@ prefixes = []
 [url]
 # URL parts a url() read shows unmasked though the URL is sensitive. password never is.
 # Values: scheme, host, port, origin, path, user and query.NAME, e.g. "query.sslmode".
-public = ["scheme", "host", "port", "origin", "path"]
+public = ["scheme", "host", "port", "origin"]
 
 [hash]
 # Keys whose hash() result is shown unmasked. Each must be a key whose value is a hash() call.

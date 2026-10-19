@@ -7,7 +7,7 @@ pub mod args; pub mod url; pub mod json; pub mod hash; pub mod random;
 /// The `public` lists of .penv/config.toml (docs/Functions.md:113-131). Default = the doc's defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
-    pub url_public: BTreeSet<String>,                    // default: scheme host port origin path
+    pub url_public: BTreeSet<String>,                    // default: scheme host port origin
     pub json_public: BTreeMap<String, BTreeSet<String>>, // subject key -> read paths
     pub hash_public: BTreeSet<String>,                   // result keys
 }

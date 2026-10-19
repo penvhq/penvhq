@@ -3,12 +3,13 @@
 ## Unreleased
 
 ### Added
-- **`url()` reads and rewrites parts of a URL.** `url($DATABASE_URL, host)` reads a part and `url($X, host=replica.internal.test)` writes one; the user, password and query stay sensitive unless a `[url] public` list opts them in.
+- **`url()` reads and rewrites parts of a URL.** `url($DATABASE_URL, host)` reads a part and `url($X, host=replica.internal.test)` writes one; the user, password, path and query stay sensitive unless a `[url] public` list opts them in.
 - **`json()` reads, writes and builds JSON.** `json($X, db.hosts[0])` reads a path, `json($X, project_id=acme)` writes one, and `json(username=$U, password=$P)` builds an object.
 - **`hash()` hashes and signs.** `hash($KEY, algo=sha256, length=8)` and `hmac-sha256`/`hmac-sha512` with `key=`, in `hex`, `base64` or `base64url`.
 - **`random(kind=, length=)` takes named options.** Kinds are `alnum`, `hex`, `base64url` and `uuid`.
 - **`b64d` filter.** `${KEY | b64d}` decodes base64, the inverse of `base64`.
 - **`[url]`, `[hash]` and `[json.KEY]` public lists in `.penv/config.toml`** declassify the parts, hash keys and JSON paths you name; `penv check` rejects an entry that would expose a secret.
+- **A public read declassifies only a stored value.** `url()` and `json()` reads on the `public` lists declassify a part of a key's stored value, never of a value an expression built, so `url("https://${TOKEN}.x.test", host)` stays sensitive. A URL's `path` is sensitive by default, since a webhook URL carries its secret there; add `"path"` to `[url] public` to opt in.
 - **A computed `@hosts` is allowed.** `@hosts=url($DATABASE_URL, host)` is pinned under `[hosts]` in `.penv/config.toml`; `penv check` and a sealed run refuse a key whose hosts differ from the pin, and `penv check --pin-hosts` writes the pins.
 - The editor completes and explains function arguments and suggests the closest option on a typo.
 

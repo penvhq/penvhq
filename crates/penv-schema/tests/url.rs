@@ -227,3 +227,93 @@ fn a_literal_password_is_refused_at_parse() {
     assert!(err.contains("password="), "{err}");
     assert!(!err.contains("literal)"), "{err}");
 }
+
+fn hot_keys(raw: &[(&str, Raw)], policy: &Policy, sensitive: &[&str]) -> BTreeSet<String> {
+    let raw: BTreeMap<String, Raw> = raw.iter().map(|(k, r)| ((*k).into(), r.clone())).collect();
+    let out = resolve_full(&raw, &Values::new(), "dev", &Values::new(), policy);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    tainted(&out.deps, |k| sensitive.contains(&k))
+}
+
+#[test]
+fn a_public_read_declassifies_only_a_stored_value() {
+    let mut policy = Policy::default();
+    for subject in ["SA", "J"] {
+        policy
+            .json_public
+            .insert(subject.into(), BTreeSet::from(["client_email".to_string()]));
+    }
+    let raw = [
+        ("DB", Raw::literal(URL)),
+        ("TOKEN", Raw::literal("fake-token")),
+        ("SA", Raw::literal(r#"{"client_email":"fake@x.test"}"#)),
+        (
+            "HOOK",
+            Raw::literal("https://hooks.test/services/FAKE/SECRET"),
+        ),
+        ("H0", Raw::computed("url($DB, host)")),
+        ("F0", Raw::computed("${DB | url(host)}")),
+        ("F1", Raw::computed("${DB | url(origin) | url(host)}")),
+        ("JS", Raw::computed("json($SA, client_email)")),
+        ("H1", Raw::computed("url(url($DB, host=$TOKEN), host)")),
+        (
+            "H2",
+            Raw::computed(r#"url("https://${TOKEN}.x.test", host)"#),
+        ),
+        (
+            "H3",
+            Raw::computed(r#"url(concat("https://", $TOKEN, ".x.test"), host)"#),
+        ),
+        ("DB2", Raw::computed("url($DB, host=$TOKEN)")),
+        ("H5", Raw::computed("url($DB2, host)")),
+        ("F5", Raw::computed("${DB2 | url(host)}")),
+        ("J", Raw::computed("json(client_email=$TOKEN)")),
+        ("JE", Raw::computed("json($J, client_email)")),
+        ("PATH", Raw::computed("url($HOOK, path)")),
+    ];
+    let hot = hot_keys(&raw, &policy, &["DB", "TOKEN", "SA", "HOOK"]);
+    for public in ["H0", "F0", "F1", "JS"] {
+        assert!(!hot.contains(public), "{public}");
+    }
+    for secret in ["H1", "H2", "H3", "DB2", "H5", "F5", "J", "JE", "PATH"] {
+        assert!(hot.contains(secret), "{secret}");
+    }
+}
+
+#[test]
+fn a_secret_part_taints_through_a_public_read_around_it() {
+    let raw = [
+        ("DB", Raw::literal(URL)),
+        (
+            "H4",
+            Raw::computed(r#"url(concat("https://", url($DB, password), ".x.test"), host)"#),
+        ),
+        (
+            "E",
+            Raw::computed(r#"if(eq(url($DB, password), "x"), "a", "b")"#),
+        ),
+    ];
+    let hot = hot_keys(&raw, &Policy::default(), &[]);
+    assert_eq!(hot, BTreeSet::from(["H4".into(), "E".into()]));
+}
+
+#[test]
+fn computed_hosts_from_a_sensitive_or_computed_value_stay_tainted() {
+    // As a sealed run computes `@hosts`: resolved values, the computed ones derived.
+    let raw = [
+        ("STRIPE_KEY", Raw::literal("sk_test_FAKE")),
+        ("DB", Raw::literal(URL)),
+        ("DB2", Raw::derived("postgres://app:x@fake-token.test/x")),
+        (
+            "A",
+            Raw::computed(r#"url("https://${STRIPE_KEY}.x.test", host)"#),
+        ),
+        ("B", Raw::computed("url($DB2, host)")),
+        ("C", Raw::computed("url($DB, host)")),
+    ];
+    let hot = hot_keys(&raw, &Policy::default(), &["STRIPE_KEY", "DB", "DB2"]);
+    assert!(
+        hot.contains("A") && hot.contains("B") && !hot.contains("C"),
+        "{hot:?}"
+    );
+}

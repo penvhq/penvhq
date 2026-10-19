@@ -54,7 +54,15 @@ pub fn computed_hosts(
     let mut raw: BTreeMap<String, Raw> = resolved
         .values
         .iter()
-        .map(|(k, v)| (k.clone(), Raw::literal(v.clone())))
+        // A computed key stays computed: a public read of it declassifies nothing.
+        .map(|(k, v)| {
+            let raw = if resolved.raw.get(k).is_none_or(Raw::is_stored) {
+                Raw::literal(v.clone())
+            } else {
+                Raw::derived(v.clone())
+            };
+            (k.clone(), raw)
+        })
         .collect();
     for (name, expr) in &computed {
         raw.insert(slot(name), Raw::computed(*expr));

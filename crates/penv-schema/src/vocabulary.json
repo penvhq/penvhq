@@ -206,7 +206,7 @@
     { "name": "host", "doc": "The host. A URL that names several hosts fails.", "public": true },
     { "name": "port", "doc": "The port, empty when the URL has none.", "public": true },
     { "name": "origin", "doc": "Scheme, host and port. Read only.", "public": true, "read_only": true },
-    { "name": "path", "doc": "The path, such as `/orders`.", "public": true },
+    { "name": "path", "doc": "The path, such as `/orders`.", "public": false },
     { "name": "user", "doc": "The user name." },
     { "name": "password", "doc": "The password. Always sensitive; a written one is a reference to another key.", "sensitive": true },
     { "name": "query.NAME", "doc": "One query parameter, such as `query.sslmode`." }

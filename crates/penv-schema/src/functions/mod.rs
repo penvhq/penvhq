@@ -70,7 +70,9 @@ pub enum Taint {
     Always,
 }
 
-/// `key` is the key being computed, `subject_key` the `$KEY` the subject names.
+/// `key` is the key being computed. `subject_key` is the stored `$KEY` the read
+/// chain ends at, `None` when an expression built the subject: only a stored value
+/// is declassified, never one the expression could have put a secret in.
 pub fn taint(
     name: &str,
     address: Option<&str>,
@@ -86,7 +88,7 @@ pub fn taint(
                 .any(|p| p.sensitive && p.names(part));
             if always {
                 Taint::Always
-            } else if policy.url_public.contains(part) {
+            } else if subject_key.is_some() && policy.url_public.contains(part) {
                 Taint::Public
             } else {
                 Taint::Inputs
