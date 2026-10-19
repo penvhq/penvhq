@@ -86,6 +86,7 @@ fn unknown_algorithms_and_encodings_fail() {
 fn length_bounds() {
     assert!(run("x", &[("algo", "sha256"), ("length", "0")]).is_err());
     assert!(run("x", &[("algo", "sha256"), ("length", "abc")]).is_err());
+    assert!(run("x", &[("algo", "sha256"), ("length", "+8")]).is_err());
     let all = run("x", &[("algo", "sha256")]).unwrap();
     assert_eq!(
         run("x", &[("algo", "sha256"), ("length", "999")]).unwrap(),

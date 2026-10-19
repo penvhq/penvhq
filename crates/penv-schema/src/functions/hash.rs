@@ -99,7 +99,7 @@ pub fn eval(call: &Call) -> Result<String, String> {
     let length = match option("length") {
         None => None,
         Some(n) => match n.parse::<usize>() {
-            Ok(n) if n >= 1 => Some(n),
+            Ok(v) if v >= 1 && n.bytes().all(|b| b.is_ascii_digit()) => Some(v),
             _ => {
                 return Err(
                     "hash() length must be a whole number of at least 1; write length=8".into(),
@@ -116,4 +116,29 @@ pub fn eval(call: &Call) -> Result<String, String> {
         Some(n) => text.chars().take(n).collect(),
         None => text,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64;
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        let cases = [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+        ];
+        for (input, want) in cases {
+            assert_eq!(base64(input.as_bytes(), b"+/", true), want, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn base64url_drops_padding() {
+        assert_eq!(base64(b"foob", b"-_", false), "Zm9vYg");
+        assert_eq!(base64(b"", b"-_", false), "");
+    }
 }
