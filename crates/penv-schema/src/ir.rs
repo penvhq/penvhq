@@ -195,6 +195,8 @@ pub struct Key {
     /// `@hosts`: the only hosts this value may be sent to. When set, an agent's
     /// process holds a placeholder and penv puts the value in on the way out.
     pub hosts: Vec<String>,
+    /// `@hosts=url($X, host)`: computed, and allowed only where `[hosts]` pins it.
+    pub hosts_expr: Option<String>,
 }
 
 impl Key {

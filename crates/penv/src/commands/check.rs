@@ -23,6 +23,7 @@ pub fn run(
     only: Option<&str>,
     env_flag: Option<&str>,
     strict: bool,
+    pin_hosts: bool,
     env: &Env,
 ) -> Result<Report, CliError> {
     let style = out.style();
@@ -88,6 +89,9 @@ pub fn run(
     };
     let values = &resolved.values;
     let schema = schema.for_environment(&environment);
+    if pin_hosts {
+        return pin(&schema, &resolved, dir, env, &detection);
+    }
     let file_warnings: Vec<penv_dotenv::Warning> = resolved
         .layers
         .warnings
@@ -197,7 +201,19 @@ pub fn run(
             ));
         }
     }
-    for key in schema.keys.iter().filter(|k| !k.hosts.is_empty()) {
+    let config = crate::config::Config::load(dir)?;
+    for (name, pinned) in crate::sealed::run::host_pins(&schema, &resolved, env, &config) {
+        if let Err(problem) = pinned
+            && only.is_none_or(|n| n == name)
+        {
+            violations.push(Violation::new(&name, "hosts", problem));
+        }
+    }
+    for key in schema
+        .keys
+        .iter()
+        .filter(|k| !k.hosts.is_empty() || k.hosts_expr.is_some())
+    {
         if let Some(why) = crate::sealed::signing_secret(&key.name) {
             violations.push(Violation::new(
                 &key.name,
@@ -234,7 +250,6 @@ pub fn run(
         violations.extend(config_violations);
     }
     notes.extend(config_notes);
-    let config = crate::config::Config::load(dir)?;
     let (policy_violations, policy_notes) = public_lists(&config, &schema, &resolved.raw);
     if only.is_none() {
         violations.extend(policy_violations);
@@ -355,6 +370,75 @@ pub fn run(
     } else {
         report.with_exit(Exit::Validation)
     })
+}
+
+/// An agent, detected or declared with `--agent`, may not pin hosts.
+fn pin_refusal(detection: &penv_agent::Detection, agent_flag: bool) -> Option<CliError> {
+    if penv_agent::Policy::for_(detection, agent_flag).pull_allowed {
+        return None;
+    }
+    Some(
+        CliError::new(
+            "agent_session",
+            format!(
+                "--pin-hosts approves where secrets may be sent, and this session is {}.",
+                detection.name().unwrap_or("an agent")
+            ),
+            "Run penv check --pin-hosts yourself.",
+        )
+        .with_exit(Exit::Auth),
+    )
+}
+
+/// `check --pin-hosts`: write each computed `@hosts` into `[hosts]` and print
+/// only the hosts that changed. Pinning says where a secret may be sent, so a
+/// person does it.
+fn pin(
+    schema: &penv_schema::Schema,
+    resolved: &source::Resolved,
+    dir: &Path,
+    env: &Env,
+    detection: &penv_agent::Detection,
+) -> Result<Report, CliError> {
+    if let Some(refusal) = pin_refusal(detection, crate::agent::flagged()) {
+        return Err(refusal);
+    }
+    let mut config = crate::config::Config::load(dir)?;
+    let mut changed: Vec<Value> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut problems: Vec<String> = Vec::new();
+    for (name, computed) in crate::sealed::run::computed_hosts(schema, resolved, env) {
+        let hosts = match computed {
+            Ok(hosts) => hosts,
+            Err(problem) => {
+                problems.push(problem);
+                continue;
+            }
+        };
+        let pinned = config.pinned_hosts(&name).unwrap_or_default();
+        let added: Vec<&String> = hosts.iter().filter(|h| !pinned.contains(h)).collect();
+        let removed: Vec<&String> = pinned.iter().filter(|h| !hosts.contains(h)).collect();
+        if added.is_empty() && removed.is_empty() && config.pinned_hosts(&name).is_some() {
+            continue;
+        }
+        config.set_pinned_hosts(&name, &hosts);
+        let mut parts: Vec<String> = added.iter().map(|h| format!("+{h}")).collect();
+        parts.extend(removed.iter().map(|h| format!("-{h}")));
+        lines.push(format!("pinned {name} {}", parts.join(" ")));
+        changed.push(json!({ "key": name, "added": added, "removed": removed, "hosts": hosts }));
+    }
+    if !problems.is_empty() {
+        return Err(CliError::new(
+            "hosts_uncomputed",
+            problems.join("\n"),
+            "Fix the @hosts it names, then run penv check --pin-hosts again; nothing was pinned.",
+        )
+        .with_exit(Exit::Validation));
+    }
+    if !changed.is_empty() {
+        config.save(dir)?;
+    }
+    Ok(Report::new(json!({ "pinned": changed }), lines.join("\n")))
 }
 
 pub(super) fn body(
@@ -864,5 +948,18 @@ mod fallback_tests {
         let bad = CliError::new("invalid_value", "K: bad.", "fix");
         assert!(is_validation(&bad));
         assert!(!is_validation(&CliError::new("offline", "x", "y")));
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::pin_refusal;
+
+    #[test]
+    fn the_agent_flag_refuses_pinning_without_detection() {
+        let human = penv_agent::Detection::default();
+        assert!(pin_refusal(&human, false).is_none());
+        let refused = pin_refusal(&human, true).expect("--agent refuses --pin-hosts");
+        assert_eq!(refused.code, "agent_session");
     }
 }

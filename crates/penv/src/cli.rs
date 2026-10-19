@@ -224,6 +224,9 @@ pub enum Command {
         /// Fail when code reads a variable .env.schema does not declare
         #[arg(long)]
         strict: bool,
+        /// Pin the hosts each computed @hosts reaches in [hosts], printing the ones that changed
+        #[arg(long, conflicts_with_all = ["key", "strict"])]
+        pin_hosts: bool,
     },
 
     /// Write the typed file for your language (ts, py, go, rust, php, java, csharp)
