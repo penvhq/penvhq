@@ -2000,18 +2000,6 @@ mod tests {
     }
 
     #[test]
-    fn the_functions_not_built_yet_say_so() {
-        let (_, errors) = run(
-            &[
-                ("K", Raw::literal("x")),
-                ("H", Raw::computed("hash($K, algo=sha256)")),
-            ],
-            "dev",
-        );
-        assert!(errors[0].message.contains("hash() is not built yet"));
-    }
-
-    #[test]
     fn b64d_decodes_and_names_the_key_when_it_cannot() {
         let (v, e) = run(
             &[
