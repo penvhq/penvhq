@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
 
 ### Added
 - **`url()` reads and rewrites parts of a URL.** `url($DATABASE_URL, host)` reads a part and `url($X, host=replica.internal.test)` writes one; the user, password, path and query stay sensitive unless a `[url] public` list opts them in.
