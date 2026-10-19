@@ -221,6 +221,9 @@ impl Key {
         if !self.hosts.is_empty() {
             out["hosts"] = json!(self.hosts);
         }
+        if let Some(expr) = &self.hosts_expr {
+            out["hostsExpr"] = json!(expr);
+        }
         out
     }
 }
@@ -386,5 +389,27 @@ impl Diagnostic {
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{} {}", self.line, self.column, self.message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_computed_hosts_key_emits_hosts_expr_and_no_hosts() {
+        let key = Key {
+            name: "DB".into(),
+            hosts_expr: Some("url($DATABASE_URL, host)".into()),
+            ..Default::default()
+        };
+        let out = key.to_json();
+        assert_eq!(out["hostsExpr"], "url($DATABASE_URL, host)");
+        assert!(out.get("hosts").is_none());
+    }
+
+    #[test]
+    fn a_key_without_computed_hosts_omits_hosts_expr() {
+        assert!(Key::default().to_json().get("hostsExpr").is_none());
     }
 }

@@ -149,6 +149,8 @@ A redacted key has a value: the CLI never reports it missing and exits 6 where i
 
 A `PUT` or `PATCH` whose schema has no `hosts` removes it. When a server answers `400 schema_invalid` to a write that carried `hosts`, the CLI retries once without it and warns that the cloud copy lacks it.
 
+`hostsExpr` is the computed form (`@hosts=url($X, host)`), sent instead of `hosts`: a non-empty string of at most 1024 characters, stored unparsed (`400 schema_invalid`, `"field": "hostsExpr"`), and dropped by the same CLI retry.
+
 ## Reveal approvals
 
 An agent may ask for a value; only a person releases one. The CLI side is on the [`penv reveal`](https://penv.cloud/docs/cli/reveal) page.
