@@ -161,6 +161,9 @@ KEY_FP=hash($STRIPE_SECRET_KEY, algo=sha256, length=8)
 EOF
 printf 'DATABASE_URL=postgres://app:fakepass@db.internal.test:5432/orders\nDB_SECRET=%s\n' \
   '{"database":"orders"}' >> .env
+# Only a public list declassifies a derived value (docs/Functions.md#config); url host is public by default.
+mkdir -p .penv
+printf '[json.DB_SECRET]\npublic = ["database"]\n\n[hash]\npublic = ["KEY_FP"]\n' > .penv/config.toml
 resolved() { # key, expected
   local got; got=$("$PENV" run -- node -e 'process.stdout.write(process.env[process.argv[1]]||"")' "$1" 2>/dev/null)
   [ "$got" = "$2" ] && echo "resolved: $got" || echo "failed"
