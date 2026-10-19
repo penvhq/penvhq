@@ -195,6 +195,7 @@ Register-ArgumentCompleter -Native -CommandName 'penv', 'penv.exe' -ScriptBlock 
         'penv;check' {
             [CompletionResult]::new('--env', '--env', [CompletionResultType]::ParameterValue, 'The environment to check')
             [CompletionResult]::new('--strict', '--strict', [CompletionResultType]::ParameterValue, 'Fail when code reads a variable .env.schema does not declare')
+            [CompletionResult]::new('--pin-hosts', '--pin-hosts', [CompletionResultType]::ParameterValue, 'Pin the hosts each computed @hosts reaches in [hosts], printing the ones that changed')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterValue, 'Emit JSON on stdout, whatever stdout is attached to')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterValue, 'Pick the output format: json or text')
             [CompletionResult]::new('--agent', '--agent', [CompletionResultType]::ParameterValue, 'Treat this session as an agent: JSON out, values masked')

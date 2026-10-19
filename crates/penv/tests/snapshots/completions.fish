@@ -85,6 +85,7 @@ complete -c penv -n '__fish_penv_at "bundle"' -l env -r -d 'The environment to b
 complete -c penv -n '__fish_penv_at "why"' -l env -r -d 'The environment to read'
 complete -c penv -n '__fish_penv_at "check"' -l env -r -d 'The environment to check'
 complete -c penv -n '__fish_penv_at "check"' -l strict -d 'Fail when code reads a variable .env.schema does not declare'
+complete -c penv -n '__fish_penv_at "check"' -l pin-hosts -d 'Pin the hosts each computed @hosts reaches in [hosts], printing the ones that changed'
 complete -c penv -n '__fish_penv_at "gen"' -l out -r -d 'Write here instead, relative to the repository root'
 complete -c penv -n '__fish_penv_at "gen"' -l check -d 'Compare with what is on disk instead of writing'
 complete -c penv -n '__fish_penv_at "gen"' -l options -d 'Show what this target'\''s options change instead of writing'

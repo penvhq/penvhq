@@ -429,6 +429,28 @@ impl Config {
             table.insert(key.to_string(), toml::Value::String(day.to_string()));
         }
     }
+
+    /// `[hosts]`: the hosts pinned for a key whose `@hosts` is computed.
+    pub fn pinned_hosts(&self, key: &str) -> Option<Vec<String>> {
+        self.table
+            .get("hosts")?
+            .get(key)
+            .map(|l| strings(l).collect())
+    }
+
+    pub fn set_pinned_hosts(&mut self, key: &str, hosts: &[String]) {
+        let section = self
+            .table
+            .entry("hosts")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !section.is_table() {
+            *section = toml::Value::Table(toml::Table::new());
+        }
+        if let Some(table) = section.as_table_mut() {
+            let list = hosts.iter().cloned().map(toml::Value::String).collect();
+            table.insert(key.to_string(), toml::Value::Array(list));
+        }
+    }
 }
 
 fn strings(list: &toml::Value) -> impl Iterator<Item = String> + '_ {
@@ -561,6 +583,32 @@ mod tests {
         let back = Config::parse(&config.render()).unwrap();
         assert_eq!(back.rotated("STRIPE_SECRET_KEY"), Some("2026-09-22"));
         assert!(back.render().contains("[future]"));
+    }
+
+    #[test]
+    fn a_host_pin_keeps_the_comments_and_order_around_it() {
+        let text = "[url]\npublic = [\"host\"]\n\n[hosts]\n# approved by ops\nDATABASE_URL = [\"old.internal.test\"] # pin\nREDIS_URL = [\"cache.internal.test\"]\n";
+        let mut config = Config::parse(text).unwrap();
+        assert_eq!(
+            config.pinned_hosts("REDIS_URL").unwrap(),
+            ["cache.internal.test"]
+        );
+        assert_eq!(config.pinned_hosts("NONE"), None);
+        config.set_pinned_hosts("DATABASE_URL", &["db.internal.test".into()]);
+        config.set_pinned_hosts("QUEUE_URL", &["queue.internal.test".into()]);
+        let out = config.render();
+        assert!(
+            out.contains(
+                "# approved by ops\nDATABASE_URL = [\"db.internal.test\"] # pin\nREDIS_URL"
+            ),
+            "{out}"
+        );
+        assert!(out.starts_with("[url]\npublic = [\"host\"]\n"), "{out}");
+        let back = Config::parse(&out).unwrap();
+        assert_eq!(
+            back.pinned_hosts("QUEUE_URL").unwrap(),
+            ["queue.internal.test"]
+        );
     }
 
     #[test]

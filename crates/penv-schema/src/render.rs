@@ -93,6 +93,9 @@ pub fn render_key(key: &Key) -> String {
             decorators.push(format!("@deprecated={}", quote(v)));
         }
     }
+    if let Some(expr) = &key.hosts_expr {
+        decorators.push(format!("@hosts={expr}"));
+    }
     match key.hosts.as_slice() {
         [] => {}
         [one] => decorators.push(format!("@hosts={one}")),
