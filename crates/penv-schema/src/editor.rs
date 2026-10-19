@@ -153,6 +153,57 @@ pub struct Word {
     pub doc: String,
     /// Offered as a completion. Words penv only reads past are not.
     pub complete: bool,
+    /// Functions taking `name=value` arguments: `required`, `optional` or `none`; empty otherwise.
+    pub subject: String,
+    /// The one bare argument a call may hold after its subject.
+    pub address: Option<Slot>,
+    /// Open `name=value` labels, as the parts or paths a call writes.
+    pub labels: Option<Slot>,
+    /// The fixed options a call takes.
+    pub args: Vec<Opt>,
+}
+
+/// Where an address or label takes its names from; `None` takes any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slot {
+    pub values_from: Option<String>,
+}
+
+/// One `name=value` option of a function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opt {
+    pub name: String,
+    pub doc: String,
+    pub required: bool,
+    pub values_from: Option<String>,
+    pub default: Option<String>,
+    /// `integer`, `value`, or empty for text.
+    pub kind: String,
+}
+
+/// One entry of a section such as `algorithms` or `url-parts`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub doc: String,
+    pub needs: Vec<String>,
+    pub public: bool,
+    /// Sensitive whatever the `public` lists say.
+    pub sensitive: bool,
+    /// Read, never written.
+    pub read_only: bool,
+}
+
+impl Entry {
+    /// `query.NAME` stands for every `query.<name>`.
+    pub fn names(&self, text: &str) -> bool {
+        match self.name.strip_suffix("NAME") {
+            Some(prefix) if prefix.ends_with('.') => {
+                text.len() > prefix.len() && text.starts_with(prefix)
+            }
+            _ => self.name == text,
+        }
+    }
 }
 
 impl Word {
@@ -176,6 +227,23 @@ pub struct Vocabulary {
     pub filters: Vec<Word>,
     pub types: Vec<Word>,
     pub rotate: Vec<String>,
+    pub algorithms: Vec<Entry>,
+    pub encodings: Vec<Entry>,
+    pub url_parts: Vec<Entry>,
+    pub random_kinds: Vec<Entry>,
+}
+
+impl Vocabulary {
+    /// A section by the name a `values_from` gives.
+    pub fn section(&self, name: &str) -> &[Entry] {
+        match name {
+            "algorithms" => &self.algorithms,
+            "encodings" => &self.encodings,
+            "url-parts" => &self.url_parts,
+            "random-kinds" => &self.random_kinds,
+            _ => &[],
+        }
+    }
 }
 
 /// Every word an editor offers or explains, from `vocabulary.json`.
@@ -203,8 +271,56 @@ pub fn vocabulary() -> &'static Vocabulary {
                         .collect()
                 })
                 .unwrap_or_default(),
+            algorithms: entries(&root["algorithms"]),
+            encodings: entries(&root["encodings"]),
+            url_parts: entries(&root["url-parts"]),
+            random_kinds: entries(&root["random-kinds"]),
         }
     })
+}
+
+fn entries(list: &Value) -> Vec<Entry> {
+    let strings = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .map(|l| {
+                l.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    list.as_array()
+        .map(|l| {
+            l.iter()
+                .map(|v| Entry {
+                    name: v["name"].as_str().unwrap_or_default().to_string(),
+                    doc: v["doc"].as_str().unwrap_or_default().to_string(),
+                    needs: strings(&v["needs"]),
+                    public: v["public"].as_bool().unwrap_or(false),
+                    sensitive: v["sensitive"].as_bool().unwrap_or(false),
+                    read_only: v["read_only"].as_bool().unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn slot(v: &Value) -> Option<Slot> {
+    v.is_object().then(|| Slot {
+        values_from: v["values_from"].as_str().map(str::to_string),
+    })
+}
+
+fn opt(v: &Value) -> Opt {
+    let text = |k: &str| v[k].as_str().map(str::to_string);
+    Opt {
+        name: text("name").unwrap_or_default(),
+        doc: text("doc").unwrap_or_default(),
+        required: v["required"].as_bool().unwrap_or(false),
+        values_from: text("values_from"),
+        default: text("default"),
+        kind: text("type").unwrap_or_default(),
+    }
 }
 
 fn word(v: &Value) -> Word {
@@ -217,6 +333,13 @@ fn word(v: &Value) -> Word {
         insert: text("insert"),
         doc: text("doc"),
         complete: v["complete"].as_bool().unwrap_or(true),
+        subject: text("subject"),
+        address: slot(&v["address"]),
+        labels: slot(&v["labels"]),
+        args: v["args"]
+            .as_array()
+            .map(|l| l.iter().map(opt).collect())
+            .unwrap_or_default(),
     }
 }
 
