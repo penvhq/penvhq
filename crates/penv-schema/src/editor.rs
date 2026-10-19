@@ -616,15 +616,70 @@ fn call_problems(text: &str) -> Vec<Diagnostic> {
             continue;
         }
         if let Err(message) = crate::resolve::check_expression(&value) {
+            let column = problem_token(&line.chars, eq + 1, &message)
+                .map_or(1, |at| (at - line.shift) as u32 + 1);
             out.push(Diagnostic::new(
                 row as u32 + 1,
-                1,
+                column,
                 "bad-expression",
                 message,
             ));
         }
     }
     out
+}
+
+/// Where in the value the label, part or option the message names starts.
+fn problem_token(chars: &[char], from: usize, message: &str) -> Option<usize> {
+    let words: Vec<&str> = message
+        .split(|c: char| c.is_whitespace() || c == ';')
+        .collect();
+    let named = ["option", "part", "has", "reads"].iter().find_map(|key| {
+        let i = words.iter().position(|w| w == key)?;
+        words.get(i + 1).copied().filter(|w| is_token_str(w))
+    });
+    if let Some(label) = named {
+        let want: Vec<char> = label.chars().collect();
+        let mut i = from;
+        while i + want.len() <= chars.len() {
+            let before = i == 0 || !is_token(chars[i - 1]);
+            let after = chars.get(i + want.len()).is_none_or(|c| !is_token(*c));
+            if before && after && chars[i..i + want.len()] == want[..] {
+                return Some(i);
+            }
+            i += 1;
+        }
+    }
+    if message.contains("bare argument") {
+        let open = chars[from..].iter().position(|c| *c == '(')? + from;
+        let mut depth = 0;
+        let mut start = open + 1;
+        for i in open..chars.len() {
+            let c = chars[i];
+            if c == '(' {
+                depth += 1;
+            }
+            if depth == 1 && (c == ',' || c == ')') || (c == ')' && depth == 1) {
+                let arg = &chars[start..i];
+                let first = arg.iter().position(|c| !c.is_whitespace());
+                if let Some(f) = first
+                    && !arg.contains(&'=')
+                    && arg[f] != '$'
+                {
+                    return Some(start + f);
+                }
+                start = i + 1;
+            }
+            if c == ')' {
+                depth -= 1;
+            }
+        }
+    }
+    None
+}
+
+fn is_token_str(w: &str) -> bool {
+    !w.is_empty() && w.chars().all(is_token)
 }
 
 /// The parser's problems and the binary's notes, placed on the text.
@@ -1051,12 +1106,17 @@ fn complete_call(lines: &[Line], row: usize, c: usize) -> Option<Vec<Completion>
         .zip(starts[1..].iter())
         .filter_map(|(a, b)| arg_label(chars, *a, *b - 1))
         .collect();
+    let followed_by_eq = chars[te..].iter().find(|c| !c.is_whitespace()) == Some(&'=');
     let mut items: Vec<Completion> = word
         .args
         .iter()
         .filter(|o| !given.contains(&o.name))
         .map(|o| Completion {
-            insert: format!("{}=", o.name),
+            insert: if followed_by_eq {
+                o.name.clone()
+            } else {
+                format!("{}=", o.name)
+            },
             ..plain(&o.name, KIND_PROPERTY, "option", &o.doc, replace)
         })
         .collect();

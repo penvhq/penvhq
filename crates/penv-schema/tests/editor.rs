@@ -570,3 +570,35 @@ fn every_values_from_names_an_existing_section() {
         }
     }
 }
+
+#[test]
+fn an_option_name_already_followed_by_eq_inserts_bare() {
+    let text = call_schema("hash($K, al=sha256)");
+    let items = complete(&text, after(&text, 4, "hash($K, al"));
+    let algo = items.iter().find(|c| c.label == "algo").unwrap();
+    assert_eq!(algo.insert, "algo");
+    let text = call_schema("hash($K, al)");
+    let items = complete(&text, after(&text, 4, "hash($K, al"));
+    assert_eq!(
+        items.iter().find(|c| c.label == "algo").unwrap().insert,
+        "algo="
+    );
+}
+
+#[test]
+fn bad_call_diagnostics_sit_on_the_offending_token() {
+    let text = call_schema("url($K, hots)");
+    let notes = diagnostics(&text, &[]);
+    let n = notes
+        .iter()
+        .find(|n| n.message.contains("did you mean"))
+        .unwrap();
+    assert_eq!(n.range.start, at(4, 10));
+    let text = call_schema("hash($K, algo=sha256, lenth=4)");
+    let notes = diagnostics(&text, &[]);
+    let n = notes
+        .iter()
+        .find(|n| n.message.contains("no option"))
+        .unwrap();
+    assert_eq!(n.range.start, at(4, 24));
+}
