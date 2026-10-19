@@ -234,6 +234,12 @@ pub fn run(
         violations.extend(config_violations);
     }
     notes.extend(config_notes);
+    let config = crate::config::Config::load(dir)?;
+    let (policy_violations, policy_notes) = public_lists(&config, &schema, &resolved.raw);
+    if only.is_none() {
+        violations.extend(policy_violations);
+    }
+    notes.extend(policy_notes);
     if let Some(features) = penv_only(&schema_path) {
         notes.push(format!(
             "{} uses penv-only features ({features}); varlock will not load it",
@@ -499,6 +505,9 @@ fn penv_only(schema_path: &Path) -> Option<String> {
         ("random(", "random()"),
         ("match(", "match()"),
         ("penv(", "penv()"),
+        ("url(", "url()"),
+        ("json(", "json()"),
+        ("hash(", "hash()"),
         ("| urlencode", "filters"),
         ("| base64", "filters"),
         ("| lower", "filters"),
@@ -515,6 +524,45 @@ fn penv_only(schema_path: &Path) -> Option<String> {
         acc
     });
     (!found.is_empty()).then(|| found.join(", "))
+}
+
+/// The `public` lists of `.penv/config.toml`: each refused entry is a violation
+/// naming its section, and each `[hash] public` key is a note.
+fn public_lists(
+    config: &crate::config::Config,
+    schema: &penv_schema::Schema,
+    raw: &std::collections::BTreeMap<String, penv_schema::resolve::Raw>,
+) -> (Vec<Violation>, Vec<String>) {
+    let mut problems = config.policy_problems();
+    let mut notes = Vec::new();
+    let listed = config.policy();
+    for key in listed.json_public.keys() {
+        if schema.get(key).is_none() {
+            problems.push(format!(
+                "[json.{}] names no key in .env.schema; rename the section to a declared key or remove it",
+                crate::config::label(key, None)
+            ));
+        }
+    }
+    let raw = source::with_defaults(schema, raw.clone());
+    let kept = source::policy(config, &raw);
+    for key in &listed.hash_public {
+        if kept.hash_public.contains(key) && schema.get(key).is_some() {
+            notes.push(format!(
+                "{key} is in [hash] public, so its hash() result is shown unmasked"
+            ));
+        } else {
+            problems.push(format!(
+                "[hash] public lists {}, which is not a key whose value is a hash() call; remove it or compute it with hash()",
+                crate::config::label(key, None)
+            ));
+        }
+    }
+    let violations = problems
+        .into_iter()
+        .map(|message| Violation::new(crate::config::CONFIG_FILE, "public", message))
+        .collect();
+    (violations, notes)
 }
 
 /// Config files that can send any variable to the client, whatever its prefix:

@@ -3,6 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
+use penv_schema::editor::vocabulary;
+use penv_schema::functions::Policy;
+
 use crate::error::CliError;
 use crate::files::{read_file, show, write_file_making_parents};
 
@@ -32,6 +35,20 @@ encrypt = false
 # Prefixes that ship a key to the browser, beyond NEXT_PUBLIC_, VITE_, PUBLIC_ and the like.
 # Values: a list of prefixes, e.g. ["APP_PUBLIC_"]; empty adds none.
 prefixes = []
+
+[url]
+# URL parts a url() read shows unmasked though the URL is sensitive. password never is.
+# Values: scheme, host, port, origin, path, user and query.NAME, e.g. "query.sslmode".
+public = ["scheme", "host", "port", "origin", "path"]
+
+[hash]
+# Keys whose hash() result is shown unmasked. Each must be a key whose value is a hash() call.
+# Values: a list of keys, e.g. ["API_KEY_FP"]; empty adds none.
+public = []
+
+# One section per key whose json() reads may be shown unmasked:
+# [json.GCP_SA_JSON]
+# public = ["client_email", "project_id"]
 "#;
 
 /// The file as a table, so sections this build does not know survive a write,
@@ -311,6 +328,83 @@ impl Config {
         }
     }
 
+    /// `[url] public`, `[json.KEY] public` and `[hash] public`. An absent list is the
+    /// default; a list or entry `check` refuses declassifies nothing.
+    pub fn policy(&self) -> Policy {
+        let mut policy = Policy::default();
+        if let Some(list) = self.table.get("url").and_then(|t| t.get("public")) {
+            policy.url_public = strings(list).filter(|p| url_part(p)).collect();
+        }
+        if let Some(keys) = self.table.get("json").and_then(|t| t.as_table()) {
+            for (key, section) in keys {
+                if let Some(list) = section.get("public") {
+                    policy
+                        .json_public
+                        .insert(key.clone(), strings(list).collect());
+                }
+            }
+        }
+        if let Some(list) = self.table.get("hash").and_then(|t| t.get("public")) {
+            policy.hash_public = strings(list).collect();
+        }
+        policy
+    }
+
+    /// What `check` refuses in the `public` lists that needs no schema to see,
+    /// each naming the section and the entry.
+    pub fn policy_problems(&self) -> Vec<String> {
+        let mut found = Vec::new();
+        match self.table.get("url") {
+            None => {}
+            Some(toml::Value::Table(url)) => {
+                if let Some(list) = url.get("public") {
+                    found.extend(list_problems("[url] public", list, "URL parts"));
+                    for (i, part) in list.as_array().into_iter().flatten().enumerate() {
+                        let Some(part) = part.as_str() else { continue };
+                        if is_sensitive_part(part) {
+                            found.push(format!(
+                                "[url] public lists {part}, which is always sensitive; remove it"
+                            ));
+                        } else if !url_part(part) {
+                            found.push(format!(
+                                "[url] public lists {}, which is not a URL part; use scheme, host, port, origin, path, user or query.NAME",
+                                label(part, Some(i))
+                            ));
+                        }
+                    }
+                }
+            }
+            Some(_) => found.push("url is not a section; write [url] public = [...]".into()),
+        }
+        match self.table.get("json") {
+            None => {}
+            Some(toml::Value::Table(keys)) => {
+                for (key, section) in keys {
+                    let name = format!("[json.{}] public", label(key, None));
+                    match section.get("public") {
+                        Some(list) => found.extend(list_problems(&name, list, "read paths")),
+                        None => found.push(format!(
+                            "{name} is missing; write a list of read paths, such as [\"client_email\"]"
+                        )),
+                    }
+                }
+            }
+            Some(_) => found.push(
+                "json is not a section; write one per key, such as [json.GCP_SA_JSON]".into(),
+            ),
+        }
+        match self.table.get("hash") {
+            None => {}
+            Some(toml::Value::Table(hash)) => {
+                if let Some(list) = hash.get("public") {
+                    found.extend(list_problems("[hash] public", list, "keys"));
+                }
+            }
+            Some(_) => found.push("hash is not a section; write [hash] public = [...]".into()),
+        }
+        found
+    }
+
     /// `[rotation]`: the day each key was last written in local mode.
     pub fn rotated(&self, key: &str) -> Option<&str> {
         self.table.get("rotation")?.get(key)?.as_str()
@@ -330,9 +424,100 @@ impl Config {
     }
 }
 
+fn strings(list: &toml::Value) -> impl Iterator<Item = String> + '_ {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+}
+
+/// A part `url()` reads that a `public` list may name: never `password`.
+fn url_part(part: &str) -> bool {
+    vocabulary().url_parts.iter().any(|p| p.names(part)) && !is_sensitive_part(part)
+}
+
+fn is_sensitive_part(part: &str) -> bool {
+    vocabulary()
+        .url_parts
+        .iter()
+        .any(|p| p.sensitive && p.names(part))
+}
+
+fn list_problems(name: &str, list: &toml::Value, what: &str) -> Vec<String> {
+    let Some(items) = list.as_array() else {
+        return vec![format!("{name} must be a list of {what}")];
+    };
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| !v.is_str())
+        .map(|(i, _)| format!("{name} entry {} is not a string; quote it", i + 1))
+        .collect()
+}
+
+/// A config entry as a message shows it: by its text when that reads as a name,
+/// otherwise by position, so a value pasted into a list is never echoed.
+pub fn label(entry: &str, index: Option<usize>) -> String {
+    let named = !entry.is_empty()
+        && entry.len() <= 64
+        && entry
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_.-[]".contains(c));
+    match (named, index) {
+        (true, _) => entry.to_string(),
+        (false, Some(i)) => format!("entry {}", i + 1),
+        (false, None) => "an entry that is not a name".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_absent_policy_is_the_default_and_a_refused_entry_declassifies_nothing() {
+        assert_eq!(Config::default().policy(), Policy::default());
+        let config = Config::parse(
+            "[url]\npublic = [\"host\", \"user\", \"password\", \"query.sslmode\", \"hots\", 3]\n\n[json.SA]\npublic = [\"client_email\"]\n\n[hash]\npublic = [\"FP\"]\n",
+        )
+        .unwrap();
+        let policy = config.policy();
+        let url: Vec<&str> = policy.url_public.iter().map(String::as_str).collect();
+        assert_eq!(url, ["host", "query.sslmode", "user"]);
+        assert!(policy.json_public["SA"].contains("client_email"));
+        assert!(policy.hash_public.contains("FP"));
+        let problems = config.policy_problems().join("\n");
+        assert!(
+            problems.contains("[url] public lists password"),
+            "{problems}"
+        );
+        assert!(problems.contains("[url] public lists hots"), "{problems}");
+        assert!(
+            problems.contains("[url] public entry 6 is not a string"),
+            "{problems}"
+        );
+    }
+
+    #[test]
+    fn a_public_list_that_is_not_a_list_is_empty_and_refused() {
+        let config = Config::parse("[url]\npublic = \"user\"\n").unwrap();
+        assert!(config.policy().url_public.is_empty());
+        assert_eq!(
+            config.policy_problems(),
+            ["[url] public must be a list of URL parts"]
+        );
+        let pasted = Config::parse("[url]\npublic = [\"postgres://u:pw@db.test/x\"]\n").unwrap();
+        let problems = pasted.policy_problems().join("\n");
+        assert!(problems.contains("entry 1"), "{problems}");
+        assert!(!problems.contains("pw@"), "{problems}");
+    }
+
+    #[test]
+    fn the_template_reads_as_the_default_policy() {
+        let config = Config::parse(&template()).unwrap();
+        assert_eq!(config.policy(), Policy::default());
+        assert!(config.policy_problems().is_empty());
+    }
 
     #[test]
     fn rotation_dates_are_kept_and_other_sections_survive() {
