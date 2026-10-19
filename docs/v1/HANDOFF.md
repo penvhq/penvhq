@@ -30,7 +30,7 @@
 | T4 ✓ | hash | `hash()` sha/hmac, encodings, length | Functions.md:77-95 | penv-schema/src/functions/hash.rs, penv-schema/tests/hash.rs, Cargo.toml, penv-schema/Cargo.toml, penv-cloud/Cargo.toml | T1 | sonnet | B |
 | T5 ✓ | random | `random(kind=,length=)`, kinds, `random(N)` fails | Functions.md:97-111 | penv-schema/src/functions/random.rs, penv/src/source.rs (randoms), penv/tests/{run.rs,encrypt.rs} | T1 | sonnet | B |
 | T8 ✓ | editor | Completions, hover, did-you-mean for args | Functions.md:146-149 | penv-schema/src/editor.rs (complete/diagnostics), penv-schema/tests/editor.rs | T1 | sonnet | B |
-| T6 | policy-config | `public` lists from config, check validation and notes | Functions.md:113-131; Design.md:120 | penv/src/config.rs, penv/src/source.rs (policy), penv/src/commands/check.rs, penv/tests/policy.rs | T1,T5 | opus | C |
+| T6 ✓ | policy-config | `public` lists from config, check validation and notes | Functions.md:113-131; Design.md:120 | penv/src/config.rs, penv/src/source.rs (policy), penv/src/commands/check.rs, penv/tests/policy.rs | T1,T5 | opus | C |
 | T7 | computed-hosts | Computed `@hosts`, `[hosts]` pins, `--pin-hosts`, sealed refusal | Functions.md:44 | penv-schema/src/{parse.rs,ir.rs}, penv/src/{cli.rs,commands/check.rs,sealed/run.rs,config.rs}, penv/tests/hosts.rs | T2,T6 | opus | D |
 | T9 | docs-e2e | CHANGELOG, Design filter list, end-to-end fixture tests, manifest check | ORCHESTRATOR.md decisions 11,14 | CHANGELOG.md, docs/Design.md:110, penv/tests/functions.rs | T2-T8 | haiku | E |
 | T10 ✓ | wire-up | fallback errors, json dup warning, url password at parse, penv deps | specs/T10-wire-up.md | see spec | T2-T5 | sonnet | C |
@@ -46,3 +46,4 @@ T4 b1d97e7 pass; sha2/hmac to workspace deps (penv crate still pins its own: T10
 T5 b92cb0b pass after 1 fix round; check_args calls random::spec; check.rs keeps validation errors out of cloud fallback
 T8 8f341f3 pass after 1 fix round; added resolve::check_expression, did-you-mean in args.rs
 T10 b69ee48 pass after 1 fix round (fallback only defaults missing/null json fields; other errors stay fatal)
+T6 4a9af34 pass after 1 fix round (gen uses run-time policy; is_whole_call replaces text scanner; entries echoed only if key/part name)
