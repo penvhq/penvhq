@@ -185,3 +185,38 @@ fn taint_follows_the_public_list() {
     let open = sensitive_set(&policy, &exprs, true);
     assert_eq!(open, BTreeSet::from(["P".into(), "W".into()]));
 }
+
+#[test]
+fn written_host_is_validated_and_bracketed() {
+    for bad in ["", "a/b", "a?b", "a#b", "a@b", "a,b", "a b"] {
+        let err = run(URL, &format!("url($U, host=\"{bad}\")")).unwrap_err();
+        assert!(err.contains("host"), "{err}");
+    }
+    let out = run(URL, "url($U, host=\"::1\")").unwrap();
+    assert!(out.contains("@[::1]:5432/"), "{out}");
+}
+
+#[test]
+fn written_path_is_encoded() {
+    let out = run(URL, "url($U, path=\"/a b/c?d#e\")").unwrap();
+    assert!(out.contains(":5432/a%20b/c%3Fd%23e?sslmode"), "{out}");
+}
+
+#[test]
+fn written_port_rejects_sign() {
+    let err = run(URL, "url($U, port=\"+5\")").unwrap_err();
+    assert!(err.contains("port"), "{err}");
+}
+
+#[test]
+fn written_scheme_is_validated() {
+    for bad in ["", "1x", "a b", "a:b"] {
+        let err = run(URL, &format!("url($U, scheme=\"{bad}\")")).unwrap_err();
+        assert!(err.contains("scheme"), "{err}");
+    }
+    assert!(
+        run(URL, "url($U, scheme=mysql)")
+            .unwrap()
+            .starts_with("mysql://")
+    );
+}

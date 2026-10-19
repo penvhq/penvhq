@@ -196,24 +196,59 @@ fn write(subject: &str, options: &[(&str, String)]) -> Result<String, String> {
     let mut url = parse(subject, options[0].0)?;
     for (part, value) in options {
         match *part {
-            "scheme" => url.scheme = value.clone(),
+            "scheme" => {
+                let mut chars = value.chars();
+                let ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+                    && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+                if !ok {
+                    return Err(
+                        "url() scheme must start with a letter and use letters, digits, + - or ."
+                            .into(),
+                    );
+                }
+                url.scheme = value.clone();
+            }
             "host" | "port" => {
                 if url.hosts.len() != 1 {
                     url.single(part)?;
                 }
                 if *part == "host" {
-                    url.hosts[0].0 = value.clone();
+                    let bad =
+                        |c: char| matches!(c, '/' | '?' | '#' | '@' | ',') || c.is_whitespace();
+                    if value.is_empty() || value.chars().any(bad) {
+                        return Err(
+                            "url() host must be non-empty and free of / ? # @ , and whitespace"
+                                .into(),
+                        );
+                    }
+                    url.hosts[0].0 = if value.contains(':') && !value.starts_with('[') {
+                        format!("[{value}]")
+                    } else {
+                        value.clone()
+                    };
                 } else if value.is_empty() {
                     url.hosts[0].1 = None;
-                } else if value.parse::<u16>().is_ok() {
+                } else if value.bytes().all(|b| b.is_ascii_digit()) && value.parse::<u16>().is_ok()
+                {
                     url.hosts[0].1 = Some(value.clone());
                 } else {
                     return Err("url() port takes a whole number from 0 to 65535".into());
                 }
             }
             "path" => {
+                let value: String = value
+                    .chars()
+                    .map(|c| match c {
+                        '?' => "%3F".to_string(),
+                        '#' => "%23".to_string(),
+                        c if c.is_whitespace() => {
+                            c.to_string().bytes().map(|b| format!("%{b:02X}")).collect()
+                        }
+                        c => c.to_string(),
+                    })
+                    .collect();
                 url.path = if value.is_empty() || value.starts_with('/') {
-                    value.clone()
+                    value
                 } else {
                     format!("/{value}")
                 }
