@@ -11,6 +11,7 @@
 - **`[url]`, `[hash]` and `[json.KEY]` public lists in `.penv/config.toml`** declassify the parts, hash keys and JSON paths you name; `penv check` rejects an entry that would expose a secret.
 - **A public read declassifies only a stored value.** `url()` and `json()` reads on the `public` lists declassify a part of a key's stored value, never of a value an expression built, so `url("https://${TOKEN}.x.test", host)` stays sensitive. A URL's `path` is sensitive by default, since a webhook URL carries its secret there; add `"path"` to `[url] public` to opt in.
 - **A computed `@hosts` is allowed.** `@hosts=url($DATABASE_URL, host)` is pinned under `[hosts]` in `.penv/config.toml`; `penv check` and a sealed run refuse a key whose hosts differ from the pin, and `penv check --pin-hosts` writes the pins.
+- A key with a computed `@hosts` is not yet published as sealed in the schema JSON sent to penv.cloud; its restriction is enforced locally by sealed runs and `[hosts]` pins.
 - The editor completes and explains function arguments and suggests the closest option on a typo.
 
 ### Breaking

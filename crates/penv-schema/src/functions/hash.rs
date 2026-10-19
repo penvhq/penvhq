@@ -3,7 +3,8 @@
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256, Sha512};
 
-use super::Call;
+use super::{Call, Policy, Taint};
+use crate::editor::{Entry, vocabulary};
 
 type Run = fn(data: &[u8], key: Option<&[u8]>) -> Vec<u8>;
 type Encode = fn(&[u8]) -> String;
@@ -69,6 +70,26 @@ fn base64(bytes: &[u8], extra: &[u8; 2], pad: bool) -> String {
     out
 }
 
+/// Declassified when the key being computed is on the `hash` public list.
+pub fn taint(_: Option<&str>, _: Option<&str>, key: &str, policy: &Policy) -> Taint {
+    if policy.hash_public.contains(key) {
+        Taint::Public
+    } else {
+        Taint::Inputs
+    }
+}
+
+/// `hash() <option> is not offered; use a, b or c`, listing the vocabulary section.
+fn not_offered(option: &str, entries: &[Entry]) -> String {
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    let list = match names.split_last() {
+        Some((last, [])) => (*last).to_string(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    format!("hash() {option} is not offered; use {list}")
+}
+
 pub fn eval(call: &Call) -> Result<String, String> {
     let option = |name: &str| {
         call.options
@@ -80,7 +101,7 @@ pub fn eval(call: &Call) -> Result<String, String> {
     let &(_, signs, run) = ALGORITHMS
         .iter()
         .find(|(n, _, _)| *n == algo)
-        .ok_or("hash() algo is not offered; use sha256, sha512, hmac-sha256 or hmac-sha512")?;
+        .ok_or_else(|| not_offered("algo", &vocabulary().algorithms))?;
     let key = option("key");
     match (signs, key) {
         (true, None) => return Err(format!("hash() algo {algo} needs key=; add key=$SECRET")),
@@ -95,7 +116,7 @@ pub fn eval(call: &Call) -> Result<String, String> {
     let &(_, encode) = ENCODINGS
         .iter()
         .find(|(n, _)| *n == encoding)
-        .ok_or("hash() encoding is not offered; use hex, base64 or base64url")?;
+        .ok_or_else(|| not_offered("encoding", &vocabulary().encodings))?;
     let length = match option("length") {
         None => None,
         Some(n) => match n.parse::<usize>() {

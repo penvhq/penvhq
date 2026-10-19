@@ -8,7 +8,7 @@ use penv_schema::{Schema, Values};
 use serde_json::Value;
 
 /// A computed default is dropped and its key required, because a literal
-/// fallback like `"random(48)"` would be a wrong value outside `penv run`; a key
+/// fallback like `"random(length=48)"` would be a wrong value outside `penv run`; a key
 /// computed from a secret is sensitive; each key says whether it is public.
 /// `environment` is the one the computed defaults are read in, and `policy` the
 /// `public` lists `penv run` reads them under.
@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn a_computed_default_is_dropped_and_a_key_built_from_a_secret_is_one() {
         let schema = penv_schema::parse(
-            "# @type=string\nSTRIPE_SECRET_KEY=\n\n# @type=string @sensitive=false\nNEXT_PUBLIC_TOKEN=${STRIPE_SECRET_KEY}\n\n# @type=string\nSESSION=random(32)\n\n# @type=port @sensitive=false\nPORT=3000\n",
+            "# @type=string\nSTRIPE_SECRET_KEY=\n\n# @type=string @sensitive=false\nNEXT_PUBLIC_TOKEN=${STRIPE_SECRET_KEY}\n\n# @type=string\nSESSION=random(length=32)\n\n# @type=port @sensitive=false\nPORT=3000\n",
         )
         .unwrap();
         let json = view(&schema, "development", &Policy::default());
