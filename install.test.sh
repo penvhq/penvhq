@@ -5,7 +5,7 @@ set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 shipped=$here/install.sh
-# The unsigned cases run the installer as it ships with no release key pasted in.
+# The unsigned cases run a copy of the installer with its release keys removed.
 installer=$(mktemp "${TMPDIR:-/tmp}/penv-install-keyless.XXXXXX")
 sed 's|^public_keys=".*"$|public_keys=""|' "$shipped" >"$installer"
 tag=v9.9.9
