@@ -306,29 +306,35 @@ pub fn writable(keys: &[penv_cloud::api::CloudKey]) -> Result<(), CliError> {
     .with_exit(Exit::Validation))
 }
 
+const HOST_FIELDS: [&str; 2] = ["hosts", "hostsExpr"];
+
 /// Write with every key's schema as written, and when penv.cloud refuses a
-/// schema field it does not store yet (`hosts`, docs/Cloud-API.md), write once
-/// more without it. The committed .env.schema keeps @hosts either way; the
-/// warning says the cloud copy lacks it.
+/// schema field it does not store yet (`hosts`, `hostsExpr`, docs/Cloud-API.md),
+/// write once more without them. The committed .env.schema keeps @hosts either
+/// way; the warning says the cloud copy lacks it.
 pub fn with_hosts_fallback<T>(
     keys: &mut [penv_cloud::api::CloudKey],
     mut write: impl FnMut(&[penv_cloud::api::CloudKey]) -> Result<T, penv_cloud::CloudError>,
 ) -> Result<T, penv_cloud::CloudError> {
-    let carries_hosts = keys
-        .iter()
-        .any(|k| k.schema.as_ref().is_some_and(|s| s.get("hosts").is_some()));
+    let carries_hosts = keys.iter().any(|k| {
+        k.schema
+            .as_ref()
+            .is_some_and(|s| HOST_FIELDS.iter().any(|f| s.get(f).is_some()))
+    });
     match write(keys) {
         Err(penv_cloud::CloudError::Api(e))
             if carries_hosts && e.status == 400 && e.code == "schema_invalid" =>
         {
             for key in keys.iter_mut() {
                 if let Some(schema) = key.schema.as_mut().and_then(|s| s.as_object_mut()) {
-                    schema.remove("hosts");
+                    for field in HOST_FIELDS {
+                        schema.remove(field);
+                    }
                 }
             }
             let written = write(keys)?;
             crate::ui::warn(
-                "penv.cloud does not store @hosts yet, so the cloud copy of the schema lacks it; .env.schema keeps it.",
+                "penv.cloud does not store @hosts or its computed form yet, so the cloud copy of the schema lacks it; .env.schema keeps it.",
             );
             Ok(written)
         }
@@ -1293,5 +1299,34 @@ mod tests {
     fn a_project_is_named_after_its_directory() {
         assert_eq!(project_name(Path::new("/src/api-gateway")), "api-gateway");
         assert_eq!(project_name(Path::new("")), "app");
+    }
+
+    #[test]
+    fn an_older_cloud_refusing_hosts_expr_gets_one_retry_without_it() {
+        let mut keys = vec![penv_cloud::api::CloudKey {
+            name: "DB".into(),
+            schema: Some(serde_json::json!({ "sensitive": true, "hostsExpr": "url($X, host)" })),
+            ..Default::default()
+        }];
+        let mut sent = Vec::new();
+        let refused = ApiError {
+            status: 400,
+            code: "schema_invalid".into(),
+            retry_after: None,
+            message: None,
+            detail: None,
+            exchange: None,
+        };
+        let result = with_hosts_fallback(&mut keys, |k| {
+            sent.push(k[0].schema.clone().unwrap());
+            if sent.len() == 1 {
+                Err(penv_cloud::CloudError::Api(refused.clone()))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(sent[0]["hostsExpr"], "url($X, host)");
+        assert_eq!(sent[1], serde_json::json!({ "sensitive": true }));
     }
 }
