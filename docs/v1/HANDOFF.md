@@ -10,6 +10,8 @@
   `cargo clippy -p C -- -D warnings`, `cargo fmt --all -- --check`. Never `cargo build --release`.
 - Commits carry no attribution lines. Never print a value; tests use obviously fake values.
 - Report <=10 lines. Append one line per task to Log: `T<n> <sha> <pass|fail> <note>`.
+- penv crate tests refuse to run inside an agent session (env + parent-process detection). To run them locally: `env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u AI_AGENT setsid -f sh -c 'cargo test -p penv > /tmp/penv-test.out 2>&1; echo done >> /tmp/penv-test.out'` then wait for `done`. Never weaken the guard in code.
+- json() quoted option values: `Call.quoted` holds option names written in quotes (T1 fix); T3 must honour it (Functions.md:74).
 
 ## Conventions
 - `functions/<name>.rs` exposes `pub fn eval(call: &Call) -> Result<String, String>`; `functions::eval` dispatches.
