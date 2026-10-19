@@ -83,10 +83,10 @@ impl Raw {
         }
     }
 
-    /// A value as stored, or read whole by `penv()`: no expression built it.
+    /// A value as stored: no expression built it. A `penv()` read is not stored,
+    /// since the other environment may have computed it.
     pub fn is_stored(&self) -> bool {
-        !self.derived
-            && (!self.computed || !is_expression(&self.text) || is_whole_call(&self.text, "penv"))
+        !self.derived && (!self.computed || !is_expression(&self.text))
     }
 }
 
@@ -583,6 +583,7 @@ impl Run<'_> {
     /// `url`, `json` or `hash` written as a call, its taint decided first.
     fn tainting(&mut self, name: &str, args: &[Arg]) -> Result<String, String> {
         let subject_key = match args.first() {
+            Some(Arg::Subject(e)) if name == "url" => self.read_origin(e),
             Some(Arg::Subject(e)) => self.stored_ref(e),
             _ => None,
         };
@@ -604,7 +605,32 @@ impl Run<'_> {
     fn stored_ref<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
         match expr {
             Expr::Ref(k) if self.raw.get(k).is_none_or(Raw::is_stored) => Some(k.as_str()),
+            Expr::Template(parts) => match parts.as_slice() {
+                [one] => self.stored_ref(one),
+                _ => None,
+            },
+            Expr::Filter { inner, filters } if filters.is_empty() => self.stored_ref(inner),
             _ => None,
+        }
+    }
+
+    /// The stored key a chain of url or json reads ends at, as the filter form follows it.
+    fn read_origin<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
+        let reads =
+            |name: &str, args: &[Arg]| matches!(name, "url" | "json") && address(args).is_some();
+        match expr {
+            Expr::Call(name, args) if reads(name, args) => match args.first() {
+                Some(Arg::Subject(e)) => self.read_origin(e),
+                _ => None,
+            },
+            Expr::Template(parts) => match parts.as_slice() {
+                [one] => self.read_origin(one),
+                _ => None,
+            },
+            Expr::Filter { inner, filters } if filters.iter().all(|(n, a)| reads(n, a)) => {
+                self.read_origin(inner)
+            }
+            _ => self.stored_ref(expr),
         }
     }
 

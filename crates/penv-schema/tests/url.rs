@@ -317,3 +317,57 @@ fn computed_hosts_from_a_sensitive_or_computed_value_stay_tainted() {
         "{hot:?}"
     );
 }
+
+#[test]
+fn a_public_read_follows_a_wrapped_or_nested_read_but_not_a_filter() {
+    let raw = [
+        ("DB", Raw::literal(URL)),
+        ("W", Raw::computed("url(${DB}, host)")),
+        ("N", Raw::computed("url(url($DB, origin), host)")),
+        ("T", Raw::computed("${DB | trim | url(host)}")),
+    ];
+    let hot = hot_keys(&raw, &Policy::default(), &["DB"]);
+    assert_eq!(hot, BTreeSet::from(["T".to_string()]));
+}
+
+#[test]
+fn a_penv_read_is_never_stored_for_a_public_read() {
+    // production computed DATABASE_URL from TOKEN; penv() hands over that result.
+    let raw = BTreeMap::from([
+        (
+            "REPLICA".to_string(),
+            Raw::computed("penv(production/DATABASE_URL)"),
+        ),
+        ("H".to_string(), Raw::computed("url($REPLICA, host)")),
+    ]);
+    let fetched = Values::from([(
+        "production/DATABASE_URL".to_string(),
+        "https://fake-token.db.test/x".to_string(),
+    )]);
+    let out = resolve_full(&raw, &Values::new(), "dev", &fetched, &Policy::default());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let hot = tainted(&out.deps, |k| k == "DATABASE_URL");
+    assert!(hot.contains("H"), "{hot:?}");
+}
+
+#[test]
+fn an_ambiguous_authority_fails_the_host_reads() {
+    for url in [
+        "https://u:se#cret@h.test",
+        "https://u:1234/x@h.test",
+        "https://u:se?cret@h.test",
+        "https://h.test:99999/x",
+        "https://h.test:/x",
+    ] {
+        for part in ["host", "port", "origin", "user", "password"] {
+            let err = read(url, part).unwrap_err();
+            assert!(err.contains("encode the password"), "{url} {part}: {err}");
+            assert!(!err.contains("cret") && !err.contains("1234"), "{err}");
+        }
+    }
+    assert_eq!(read("https://h.test:8080/a", "port").unwrap(), "8080");
+    assert_eq!(
+        read("https://u:se%23cret@h.test/a", "host").unwrap(),
+        "h.test"
+    );
+}
