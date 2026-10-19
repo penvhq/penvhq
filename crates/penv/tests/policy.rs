@@ -31,6 +31,9 @@ DB_USER=url($DATABASE_URL, user)
 # @type=string @sensitive=false
 API_KEY_FP=hash($API_KEY, algo=sha256)
 
+# @type=string
+API_KEY_HASH=hash($API_KEY, algo=sha256)
+
 # @type=string @sensitive=false
 NOT_A_HASH=url($DATABASE_URL, scheme)
 
@@ -130,7 +133,7 @@ fn a_url_list_with_user_declassifies_it_and_one_with_password_fails_check() {
     let (code, text) = penv(&dir, &["check"]);
     assert_ne!(code, 0, "{text}");
     assert!(text.contains("[url] public lists password"), "{text}");
-    assert!(text.contains("[url] public lists hots"), "{text}");
+    assert!(text.contains("[url] public lists entry 3"), "{text}");
 }
 
 #[test]
@@ -143,6 +146,27 @@ fn a_hash_list_declassifies_a_hash_key_and_fails_check_naming_any_other() {
     assert!(text.contains("[hash] public lists NOT_A_HASH"), "{text}");
     assert!(text.contains("API_KEY_FP is in [hash] public"), "{text}");
     assert!(!text.contains("[hash] public lists API_KEY_FP"), "{text}");
+}
+
+#[test]
+fn a_sensitive_hash_key_is_noted_as_kept_and_a_pasted_token_is_not_echoed() {
+    let dir = workspace(Some(
+        "[hash]\npublic = [\"API_KEY_HASH\", \"sk_live_FAKE0123456789abcdef\"]\n",
+    ));
+    assert!(sensitivity(&dir)["API_KEY_HASH"]);
+    let (code, text) = penv(&dir, &["check"]);
+    assert_ne!(code, 0, "{text}");
+    assert!(
+        text.contains("API_KEY_HASH is in [hash] public but stays sensitive"),
+        "{text}"
+    );
+    assert!(text.contains("@sensitive=false"), "{text}");
+    assert!(
+        !text.contains("API_KEY_HASH is in [hash] public, so"),
+        "{text}"
+    );
+    assert!(text.contains("[hash] public lists entry 2"), "{text}");
+    assert!(!text.contains("sk_live"), "{text}");
 }
 
 #[test]
@@ -159,7 +183,8 @@ fn a_json_list_declassifies_only_that_read_and_must_name_a_schema_key() {
     .unwrap();
     let (code, text) = penv(&dir, &["check"]);
     assert_ne!(code, 0, "{text}");
-    assert!(text.contains("[json.NOT_DECLARED] names no key"), "{text}");
+    assert!(text.contains("[json.entry 1] names no key"), "{text}");
+    assert!(!text.contains("NOT_DECLARED"), "{text}");
 }
 
 #[test]

@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use penv_cloud::api::Address;
 use penv_schema::functions::Policy;
 use penv_schema::functions::random::{self, RandomKind, RandomSpec};
-use penv_schema::resolve::{Raw, ResolveError, penv_addresses, resolve, resolve_full, tainted};
+use penv_schema::resolve::{
+    Raw, ResolveError, is_whole_call, penv_addresses, resolve, resolve_full, tainted,
+};
 use penv_schema::{Diagnostic, Schema, Values};
 
 use crate::commands::cloud::Fetcher;
@@ -635,72 +637,11 @@ pub fn values_with(
 /// is a `hash()` call, as `check` requires.
 pub fn policy(config: &crate::config::Config, raw: &BTreeMap<String, Raw>) -> Policy {
     let mut policy = config.policy();
+    policy.hash_public.retain(|key| {
+        raw.get(key)
+            .is_some_and(|r| r.computed && is_whole_call(&r.text, "hash"))
+    });
     policy
-        .hash_public
-        .retain(|key| raw.get(key).is_some_and(hashes));
-    policy
-}
-
-/// True when the whole value is one `hash()` call, written as a call or as the
-/// last filter of `${...}`.
-pub fn hashes(raw: &Raw) -> bool {
-    let text = raw.text.trim();
-    if !raw.computed {
-        return false;
-    }
-    if text.starts_with("${") {
-        if closing(text, 1) != Some(text.len() - 1) {
-            return false;
-        }
-        let inner = &text[2..text.len() - 1];
-        return last_pipe(inner).is_some_and(|at| whole_hash(inner[at + 1..].trim()));
-    }
-    whole_hash(text)
-}
-
-fn whole_hash(text: &str) -> bool {
-    text.starts_with("hash(") && closing(text, 4) == Some(text.len() - 1)
-}
-
-/// The index of the bracket closing the one at `open`, skipping quoted text.
-fn closing(text: &str, open: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut quote = None;
-    for (i, c) in text.char_indices().skip_while(|(i, _)| *i < open) {
-        match (quote, c) {
-            (Some(q), c) if c == q => quote = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"') => quote = Some(c),
-            (None, '(' | '{') => depth += 1,
-            (None, ')' | '}') => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// The last `|` outside brackets and quotes.
-fn last_pipe(text: &str) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut quote = None;
-    let mut last = None;
-    for (i, c) in text.char_indices() {
-        match (quote, c) {
-            (Some(q), c) if c == q => quote = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"') => quote = Some(c),
-            (None, '(' | '{') => depth += 1,
-            (None, ')' | '}') => depth = depth.saturating_sub(1),
-            (None, '|') if depth == 0 => last = Some(i),
-            _ => {}
-        }
-    }
-    last
 }
 
 /// The values again with each sealed key standing as its placeholder, so a key
@@ -1215,29 +1156,6 @@ pub fn unresolved(errors: &[ResolveError]) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_a_whole_hash_call_counts_as_one() {
-        for text in [
-            "hash($API_KEY, algo=sha256)",
-            " hash($API_KEY, algo=sha256, encoding=\"hex\") ",
-            "${API_KEY | trim | hash(algo=sha256)}",
-            "hash($A, algo=hmac-sha256, key=${K})",
-        ] {
-            assert!(hashes(&Raw::computed(text)), "{text}");
-        }
-        for text in [
-            "hash($API_KEY, algo=sha256)-${SECRET}",
-            "${A}-${B | hash(algo=sha256)}",
-            "${API_KEY | hash(algo=sha256) | upper}",
-            "url($DATABASE_URL, host)",
-            "pre-hash($A, algo=sha256)",
-            "hash($A, algo=sha256",
-        ] {
-            assert!(!hashes(&Raw::computed(text)), "{text}");
-        }
-        assert!(!hashes(&Raw::literal("hash($API_KEY, algo=sha256)")));
-    }
 
     fn dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

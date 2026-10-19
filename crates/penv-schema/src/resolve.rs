@@ -92,6 +92,19 @@ pub fn check_expression(text: &str) -> Result<(), String> {
     parse(text).map(|_| ())
 }
 
+/// True when the whole value is one `name()` call, written as a call or as the
+/// last filter of a template that is exactly one `${...}`.
+pub fn is_whole_call(text: &str, name: &str) -> bool {
+    match parse(text) {
+        Ok(Expr::Call(called, _)) => called == name,
+        Ok(Expr::Template(parts)) => match parts.as_slice() {
+            [Expr::Filter { filters, .. }] => filters.last().is_some_and(|(f, _)| f == name),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Compute every value. `outside` is the process environment, read only when a
 /// reference names a key that no file or default supplies. `fetched` holds each
 /// `penv(address)` the caller looked up, keyed by the address as written.
@@ -1259,6 +1272,29 @@ fn split(inner: &str) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_whole_hash_call_is_one() {
+        for text in [
+            "hash($API_KEY, algo=sha256)",
+            " hash($API_KEY, algo=sha256, encoding=\"hex\") ",
+            "${API_KEY | trim | hash(algo=sha256)}",
+            "hash($A, algo=hmac-sha256, key=${K})",
+        ] {
+            assert!(is_whole_call(text, "hash"), "{text}");
+        }
+        for text in [
+            "hash($API_KEY, algo=sha256)-${SECRET}",
+            "${A}-${B | hash(algo=sha256)}",
+            "${API_KEY | hash(algo=sha256) | upper}",
+            "url($DATABASE_URL, host)",
+            "pre-hash($A, algo=sha256)",
+            "hash($A, algo=sha256",
+            "$API_KEY",
+        ] {
+            assert!(!is_whole_call(text, "hash"), "{text}");
+        }
+    }
 
     fn run(pairs: &[(&str, Raw)], env: &str) -> (Values, Vec<ResolveError>) {
         let raw = pairs

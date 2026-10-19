@@ -533,29 +533,32 @@ fn public_lists(
     schema: &penv_schema::Schema,
     raw: &std::collections::BTreeMap<String, penv_schema::resolve::Raw>,
 ) -> (Vec<Violation>, Vec<String>) {
-    let mut problems = config.policy_problems();
+    let mut problems = config.policy_problems(schema);
     let mut notes = Vec::new();
     let listed = config.policy();
-    for key in listed.json_public.keys() {
+    for (i, key) in listed.json_public.keys().enumerate() {
         if schema.get(key).is_none() {
             problems.push(format!(
                 "[json.{}] names no key in .env.schema; rename the section to a declared key or remove it",
-                crate::config::label(key, None)
+                crate::config::label(key, i, schema)
             ));
         }
     }
     let raw = source::with_defaults(schema, raw.clone());
     let kept = source::policy(config, &raw);
-    for key in &listed.hash_public {
-        if kept.hash_public.contains(key) && schema.get(key).is_some() {
-            notes.push(format!(
-                "{key} is in [hash] public, so its hash() result is shown unmasked"
-            ));
-        } else {
-            problems.push(format!(
+    for (i, key) in listed.hash_public.iter().enumerate() {
+        match schema.get(key) {
+            Some(declared) if kept.hash_public.contains(key) => notes.push(if declared.sensitive {
+                format!(
+                    "{key} is in [hash] public but stays sensitive because of its decorator; mark it @sensitive=false to show its hash() result"
+                )
+            } else {
+                format!("{key} is in [hash] public, so its hash() result is shown unmasked")
+            }),
+            _ => problems.push(format!(
                 "[hash] public lists {}, which is not a key whose value is a hash() call; remove it or compute it with hash()",
-                crate::config::label(key, None)
-            ));
+                crate::config::label(key, i, schema)
+            )),
         }
     }
     let violations = problems
