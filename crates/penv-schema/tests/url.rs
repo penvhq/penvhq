@@ -220,3 +220,10 @@ fn written_scheme_is_validated() {
             .starts_with("mysql://")
     );
 }
+
+#[test]
+fn a_literal_password_is_refused_at_parse() {
+    let err = run(URL, "url($U, password=literal)").unwrap_err();
+    assert!(err.contains("password="), "{err}");
+    assert!(!err.contains("literal)"), "{err}");
+}

@@ -54,6 +54,9 @@ pub fn check_args(name: &str, args: &[Arg]) -> Result<(), String> {
         // One message for every path: the one `random::spec` gives.
         super::random::spec(&format!("random({text})"))?;
     }
+    if name == "url" {
+        super::url::check_password(args)?;
+    }
     let subjects = args.iter().filter(|a| matches!(a, Arg::Subject(_))).count();
     let has_subject = matches!(args.first(), Some(Arg::Subject(_)));
     if word.subject == "none" && subjects > 0 {

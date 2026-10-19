@@ -458,6 +458,16 @@ fn typed(text: &str, quoted: bool) -> J {
 }
 
 pub fn eval(call: &Call) -> Result<String, String> {
+    lookup(call)?.ok_or_else(|| {
+        format!(
+            "json() path `{}` is missing or null; check the path or wrap in fallback()",
+            call.address.unwrap_or_default()
+        )
+    })
+}
+
+/// As `eval`, with a missing or null field read as `None` so `fallback()` can default it.
+pub fn lookup(call: &Call) -> Result<Option<String>, String> {
     let doc = call
         .subject
         .as_deref()
@@ -479,11 +489,9 @@ pub fn eval(call: &Call) -> Result<String, String> {
         };
         let segs = parse_path(path)?;
         return match get(&doc, &segs) {
-            None | Some(J::Null) => Err(format!(
-                "json() path `{path}` is missing or null; check the path or wrap in fallback()"
-            )),
-            Some(J::Str(s)) => Ok(s.clone()),
-            Some(other) => Ok(compact(other)),
+            None | Some(J::Null) => Ok(None),
+            Some(J::Str(s)) => Ok(Some(s.clone())),
+            Some(other) => Ok(Some(compact(other))),
         };
     }
 
@@ -505,5 +513,5 @@ pub fn eval(call: &Call) -> Result<String, String> {
         };
         set(&mut doc, &segs, new, label)?;
     }
-    Ok(compact(&doc))
+    Ok(Some(compact(&doc)))
 }
