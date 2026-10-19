@@ -175,6 +175,42 @@ fn an_agent_cannot_pin_hosts() {
 }
 
 #[test]
+fn the_agent_flag_alone_cannot_pin_hosts() {
+    let dir = workspace(SCHEMA, "db.internal.test", None);
+    let out = Command::new(env!("CARGO_BIN_EXE_penv"))
+        .env(
+            "PENV_LOCAL_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .env_remove("PENV_ENV")
+        .env_remove("AI_AGENT")
+        .current_dir(&dir)
+        .args(["--agent", "check", "--pin-hosts"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{text}");
+    assert!(text.contains("agent_session"), "{text}");
+    assert!(!dir.join(".penv/config.toml").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unset_optional_key_needs_no_computed_host() {
+    let schema =
+        "# @schema=1\n\n# @type=url @optional @hosts=url($REPLICA_URL, host)\nREPLICA_URL=\n";
+    let dir = workspace(schema, "db.internal.test", None);
+    let (code, text) = penv(&dir, &["check"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(!text.contains("REPLICA_URL"), "{text}");
+    let (code, text) = penv(&dir, &["check", "--pin-hosts"]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(text.trim(), "");
+    assert!(!dir.join(".penv/config.toml").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_literal_host_behaves_as_before_and_is_never_pinned() {
     let schema = "# @type=string(startsWith=sk_test_) @hosts=api.stripe.com\nSTRIPE_SECRET_KEY=\n";
     let parsed = penv_schema::parse(schema).unwrap();
@@ -202,4 +238,16 @@ fn a_computed_host_is_kept_as_written_through_a_render() {
         again.get("DATABASE_URL").unwrap().hosts_expr,
         key.hosts_expr
     );
+}
+
+#[test]
+fn why_says_a_computed_host_seals_the_key() {
+    let dir = workspace(SCHEMA, "db.internal.test", None);
+    let (code, text) = penv(&dir, &["why", "DATABASE_URL"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("sealed to url($DATABASE_URL, host)"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

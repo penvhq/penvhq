@@ -140,9 +140,10 @@ const META: &[Meta] = &[
     Meta {
         path: "check",
         implemented: true,
-        // penv() naming a write-only key is refused as redacted.
-        exit_codes: &[0, 1, 3, 6],
+        // penv() naming a write-only key is refused as redacted; --pin-hosts refuses an agent.
+        exit_codes: &[0, 1, 2, 3, 6],
         env_flags: &[("env", "PENV_ENV")],
+        human_flags: &["pin-hosts"],
         ..DEFAULT_META
     },
     Meta {

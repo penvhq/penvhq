@@ -44,6 +44,8 @@ pub fn computed_hosts(
         .keys
         .iter()
         .filter_map(|k| Some((k.name.as_str(), k.hosts_expr.as_deref()?)))
+        // An unset key sends nothing, so its hosts need not compute.
+        .filter(|(name, _)| resolved.values.get(*name).is_some_and(|v| !v.is_empty()))
         .collect();
     if computed.is_empty() {
         return Vec::new();

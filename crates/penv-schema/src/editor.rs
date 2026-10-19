@@ -1301,6 +1301,9 @@ fn summary(text: &str, name: &str, notes: &[KeyNote]) -> String {
             let hosts: Vec<String> = key.hosts.iter().map(|h| code(h)).collect();
             facts.push(format!("sealed to {}", hosts.join(", ")));
         }
+        if let Some(expr) = &key.hosts_expr {
+            facts.push(format!("sealed to {}", code(expr)));
+        }
         if let Some(rotate) = &key.rotate {
             facts.push(format!("rotate every {}", code(rotate)));
         }

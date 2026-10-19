@@ -427,6 +427,13 @@ fn hovering_a_reference_function_or_type_explains_it() {
 }
 
 #[test]
+fn a_computed_host_shows_as_sealed_to_its_expression() {
+    let text = "# @type=url @hosts=url($DATABASE_URL, host)\nDATABASE_URL=\n";
+    let md = hover(text, at(1, 0), &[]).unwrap().markdown;
+    assert!(md.contains("sealed to `url($DATABASE_URL, host)`"), "{md}");
+}
+
+#[test]
 fn an_error_in_another_block_still_leaves_each_key_its_summary() {
     let text = "# @defaultSensitive=false\n# ---\n\n# @rotate=soon\nA=\n\n# @type=url @hosts(x.example.com)\nB=\n";
     assert!(parse(text).is_err());

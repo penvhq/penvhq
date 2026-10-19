@@ -372,6 +372,24 @@ pub fn run(
     })
 }
 
+/// An agent, detected or declared with `--agent`, may not pin hosts.
+fn pin_refusal(detection: &penv_agent::Detection, agent_flag: bool) -> Option<CliError> {
+    if penv_agent::Policy::for_(detection, agent_flag).pull_allowed {
+        return None;
+    }
+    Some(
+        CliError::new(
+            "agent_session",
+            format!(
+                "--pin-hosts approves where secrets may be sent, and this session is {}.",
+                detection.name().unwrap_or("an agent")
+            ),
+            "Run penv check --pin-hosts yourself.",
+        )
+        .with_exit(Exit::Auth),
+    )
+}
+
 /// `check --pin-hosts`: write each computed `@hosts` into `[hosts]` and print
 /// only the hosts that changed. Pinning says where a secret may be sent, so a
 /// person does it.
@@ -382,16 +400,8 @@ fn pin(
     env: &Env,
     detection: &penv_agent::Detection,
 ) -> Result<Report, CliError> {
-    if detection.is_agent() {
-        return Err(CliError::new(
-            "agent_session",
-            format!(
-                "--pin-hosts approves where secrets may be sent, and this session is {}.",
-                detection.name().unwrap_or("an agent")
-            ),
-            "Run penv check --pin-hosts yourself.",
-        )
-        .with_exit(Exit::Auth));
+    if let Some(refusal) = pin_refusal(detection, crate::agent::flagged()) {
+        return Err(refusal);
     }
     let mut config = crate::config::Config::load(dir)?;
     let mut changed: Vec<Value> = Vec::new();
@@ -938,5 +948,18 @@ mod fallback_tests {
         let bad = CliError::new("invalid_value", "K: bad.", "fix");
         assert!(is_validation(&bad));
         assert!(!is_validation(&CliError::new("offline", "x", "y")));
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::pin_refusal;
+
+    #[test]
+    fn the_agent_flag_refuses_pinning_without_detection() {
+        let human = penv_agent::Detection::default();
+        assert!(pin_refusal(&human, false).is_none());
+        let refused = pin_refusal(&human, true).expect("--agent refuses --pin-hosts");
+        assert_eq!(refused.code, "agent_session");
     }
 }
