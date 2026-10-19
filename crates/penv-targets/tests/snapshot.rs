@@ -116,7 +116,11 @@ fn every_new_target_hides_secrets_behind_a_redacting_type() {
 
 /// The schema JSON exactly as `penv gen` hands it over.
 fn view(schema: &penv_schema::Schema) -> serde_json::Value {
-    penv_targets::view(schema, "development")
+    penv_targets::view(
+        schema,
+        "development",
+        &penv_schema::functions::Policy::default(),
+    )
 }
 
 #[test]

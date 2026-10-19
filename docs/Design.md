@@ -77,6 +77,8 @@ Rules:
 | `[public] prefixes` | `[]` | extra prefixes that ship a key to the browser |
 | `[targets.<n>]` | written by `gen` | output and options per language |
 | `[providers.<slug>] url` | none | another root for that provider (never receives a token-type credential) |
+| `[url] public`, `[json.<KEY>] public`, `[hash] public` | the public URL parts; none; none | what a function result may show; see [Functions.md](./Functions.md#config) |
+| `[hosts]` | none | the pinned hosts of each key whose `@hosts` is computed; `check --pin-hosts` writes it |
 
 ### Values at rest
 
@@ -101,21 +103,21 @@ REPLICA_URL=penv(production/DATABASE_URL)
 LITERAL='${not expanded}'
 ```
 
-Functions: `ref`, `concat`, `fallback`, `if`, `match`, `eq`, `not`, `and`, `or`, `isEmpty`, `startsWith`, `endsWith`, `forEnv`, `penv`, `random`.
+Functions: `ref`, `concat`, `fallback`, `if`, `match`, `eq`, `not`, `and`, `or`, `isEmpty`, `startsWith`, `endsWith`, `forEnv`, `penv`, `random`, `url`, `json`, `hash`. The last four take named options; [Functions.md](./Functions.md) is their contract.
 
 ```dotenv
 API=match($APP_ENV, production: api.acme.com, staging: stg.acme.com, _: localhost:3000)
-DATABASE_URL=postgres://app:${DB_PASS | urlencode}@db/app     # filters: urlencode, base64, lower, upper, trim
-SESSION_SECRET=random(32)                                      # generated once per machine
+DATABASE_URL=postgres://app:${DB_PASS | urlencode}@db/app     # filters: urlencode, base64, b64d, lower, upper, trim
+SESSION_SECRET=random(length=32)                               # generated once per machine
 # @assert(if(forEnv(production), startsWith($STRIPE_KEY, sk_live_), true), "test key in production")
 ```
 
 - `match(subject, label: value, ..., _: value)`: the first label equal to the subject wins, `_` otherwise; no match and no `_` is a validation failure. A case needs a space after its `:`, so `localhost:3000` is a value, not a case.
 - `${KEY | filter | ...}` runs filters left to right. An unknown filter is a validation failure naming it. A default cannot hold a `|`.
-- `random(N)`, N from 8 to 512, letters and digits from the operating system's generator. `run` generates it once and keeps it in `.env.local` (`.env.test.local` for test); later runs read it back. `check`, `ls` and `scan` never write it; `check` notes it as pending. `push` never sends it.
+- `random`, `url`, `json` and `hash`: arguments, results, taint and config are in [Functions.md](./Functions.md). `run` generates a `random` value once and keeps it in `.env.local`; `push` never sends it.
 - `@assert(expression, "message")`, in any block, is checked by `run` (exit 3 before the child starts) and `check`. Only the message is shown; a check that cannot run says so without values.
 - **Taint.** A value computed from a sensitive key, directly or through other keys, filters or `penv()`, is masked like a sensitive one, whatever its own `@sensitive` says; `ls` shows it as sensitive and `check` notes it. A key read only to decide (an `if` condition, a `match` subject, `eq`, `startsWith` and the other true-or-false functions) does not taint the value chosen. `penv(env/KEY)` inherits KEY's sensitivity; an address penv cannot judge is sensitive.
-- `check` notes a schema that uses penv-only features (`@rotate`, `@assert`, `random()`, `match()`, `penv()`, filters): varlock will not load it. Any other `name(...)` value, a varlock plugin's `op(...)` included, is a validation failure naming the function rather than a literal string handed to the process; single-quote it to pass it as written. `exec` is refused by name: a schema never starts a process. A cycle, a chain deeper than 128 references, or a value that cannot be computed is a validation failure naming the key and never the value. A schema default may be computed the same way.
+- `check` notes a schema that uses penv-only features (`@rotate`, `@assert`, `random()`, `url()`, `json()`, `hash()`, `match()`, `penv()`, filters): varlock will not load it. Any other `name(...)` value, a varlock plugin's `op(...)` included, is a validation failure naming the function rather than a literal string handed to the process; single-quote it to pass it as written. `exec` is refused by name: a schema never starts a process. A cycle, a chain deeper than 128 references, or a value that cannot be computed is a validation failure naming the key and never the value. A schema default may be computed the same way.
 
 Precedence, highest first: the process environment (a key it already sets keeps that value, as dotenv and varlock do), then the value files, then the cloud, then the schema default. The key `@currentEnv` names always holds the environment the command is for, so `--env production` and `$APP_ENV` agree. A `$KEY` that nothing sets resolves empty and is reported by the key holding it, never by the referenced name, which in an unquoted password is part of the secret. `@required=forEnv(a, b)` and `@optional=forEnv(a, b)` settle per environment.
 
@@ -148,7 +150,7 @@ cloud   @penv header, credential in the keychain; value files present only when 
 | `login` / `logout` | Device-code sign in; credential in the OS keychain | `run`/`push` lack a credential and a human is at a TTY |
 | `set KEY` / `unset KEY` | Prompted or piped write, never echoed. Under a header it writes the cloud; without one it writes `.env` or `.env.<env>` and records the moment in `.penv/config.toml` when the key has `@rotate` | never |
 | `ls` | Names, types, presence; values masked; JSON when stdout is not a TTY | never |
-| `check [KEY] [--env E]` | Fails when a value file holding a sensitive value is tracked by git or not ignored (asked of git itself: nested `.gitignore`, `info/exclude` and global excludes count; a file holding no sensitive value may be committed, as Next.js and Vite projects do with `.env`). Schema validity and warnings, missing values, values that cannot be computed, why a key fails, `@rotate` reminders, guard status. Reads what `run` reads; when the cloud cannot be read (CI with no credential) it checks the local files and says so | `run` before exec; `init` after import |
+| `check [KEY] [--env E] [--pin-hosts]` | Fails when a value file holding a sensitive value is tracked by git or not ignored (asked of git itself: nested `.gitignore`, `info/exclude` and global excludes count; a file holding no sensitive value may be committed, as Next.js and Vite projects do with `.env`). Schema validity and warnings, missing values, values that cannot be computed, why a key fails, `@rotate` reminders, guard status. Reads what `run` reads; when the cloud cannot be read (CI with no credential) it checks the local files and says so. `--pin-hosts` writes the `[hosts]` pins for computed `@hosts`; nothing else writes them | `run` before exec; `init` after import |
 | `scan [PATH...] [--staged] [--install-hook] [--env E]` | Looks for the environment's sensitive values, in every form `run` masks, in what git would commit (or the staged blobs, or the paths named). Names file, line and key, never the value; exit 3 on a finding. `--install-hook` writes a pre-commit hook running `penv scan --staged` and leaves a hook it did not write alone | never |
 | `gen <target>` | Writes the typed file for a language target and prints how to import it. `--out <PATH>` says where; without it penv asks at a terminal and skips anywhere else. Either answer is remembered. `--options` prints what this target's options change and what they are set to. No target lists them with their options and the directories they were detected in | `init`/`push` when a directory holds a target's detect file |
 | `guard [--check]` | Writes every recognised harness config; `--check` reports coverage | `init`; any command that detects a new harness |
@@ -252,6 +254,7 @@ STRIPE_SECRET_KEY=
 - **WebSocket** through an allowed host: the handshake is a request, so the value goes into its line and headers; `Sec-WebSocket-Extensions` is removed so frames are not compressed. After the switch, the command's frames pass as they are (a placeholder in a message stays one, like a body), and the server's text, binary and continuation frames have every value swapped back to its placeholder, each frame on its own. Any other upgrade is refused.
 - **Node** follows the proxy variables from 22.21 and 24; `run --sealed` warns when the `node` on PATH is older.
 - **Refused before the run:** a wildcard over a domain where anyone can get a name (`*.co.uk`, `*.vercel.app`, `*.amazonaws.com`); `@hosts` on a key that signs requests (`AWS_SECRET_ACCESS_KEY`, names with `SIGNING`, `HMAC`, `WEBHOOK_SECRET`, `JWT_SECRET`), which `check` also fails. `check` notes a `@hosts` key with no shape rule.
+- **Computed `@hosts`:** `@hosts=url($DATABASE_URL, host)` is allowed. The computed hosts are pinned in `[hosts]`, and a run refuses until they match the pin ([Functions.md](./Functions.md#url)).
 - **Basic auth and echoes:** a placeholder inside `Authorization: Basic` is swapped after decoding it. A value in a response comes back as its placeholder as written, base64, percent-encoded or hex.
 - **Databases:** a `@type=url` key with `@hosts` naming its host gets a URL pointing at a loopback port penv listens on, with a placeholder password (`penvph…`).
   - **Postgres** (`postgres://`, `postgresql://`): penv answers the command's login itself, as a cleartext password over loopback, and accepts only the placeholder. It then logs in to the real server with SCRAM-SHA-256, MD5 or cleartext, whichever the server asks for, and checks the server's SCRAM signature. TLS to the server follows the URL's `sslmode`: `disable`; `prefer`/`allow` (TLS when offered, certificate unchecked, as libpq does); `require` (TLS, unchecked); `verify-ca`/`verify-full` (checked against the Mozilla roots and penv's `SSL_CERT_FILE` bundle; both check the server's host name as well, so `verify-ca` is as strict as `verify-full`). The login uses the URL's user, whatever user the command names. `require_auth` in the URL limits which of those methods penv answers, as libpq reads it, and `channel_binding=require` is refused (`cannot_seal`), since penv has no SCRAM-SHA-256-PLUS. A cancel request is passed to the server. After login, bytes pass both ways unread.
@@ -508,7 +511,7 @@ From 1.0.0, a minor or patch release keeps these as they are, and changing one i
 - Command names, their arguments and flags, and the environment variables that alias them, as `penv help --json` publishes them.
 - Exit codes and what they mean (§4), and the `error` codes the JSON carries.
 - The JSON each command prints, and the manifest, versioned by its `schemaVersion`. A field may be added; none is removed or changes type.
-- The `.env.schema` grammar: the @env-spec decorators, functions and types penv reads, and the ones it adds (`@assert`, `@rotate`, `@hosts`, `@penv`, `match()`, `random()`, `penv()`, filters).
+- The `.env.schema` grammar: the @env-spec decorators, functions and types penv reads, and the ones it adds (`@assert`, `@rotate`, `@hosts`, `@penv`, `match()`, `random()`, `url()`, `json()`, `hash()`, `penv()`, filters), versioned in [Functions.md](./Functions.md).
 - `.penv/config.toml` keys, and the order value files layer in.
 - The install paths, the release asset names and the three ways in (§10).
 

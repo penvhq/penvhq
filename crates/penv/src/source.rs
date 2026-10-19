@@ -5,7 +5,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use penv_cloud::api::Address;
-use penv_schema::resolve::{Raw, ResolveError, penv_addresses, resolve, resolve_full, tainted};
+use penv_schema::functions::Policy;
+use penv_schema::functions::random::{self, RandomKind, RandomSpec};
+use penv_schema::resolve::{
+    Raw, ResolveError, is_whole_call, penv_addresses, resolve, resolve_full, tainted,
+};
 use penv_schema::{Diagnostic, Schema, Values};
 
 use crate::commands::cloud::Fetcher;
@@ -438,7 +442,13 @@ pub fn finish(
     environment: &str,
 ) -> (Values, Vec<ResolveError>) {
     let raw = with_defaults(schema, raw);
-    resolve(&raw, env.as_map(), environment, &Values::new())
+    resolve(
+        &raw,
+        env.as_map(),
+        environment,
+        &Values::new(),
+        &Policy::default(),
+    )
 }
 
 /// Everything one environment resolves to, and where it came from.
@@ -470,6 +480,8 @@ pub struct Resolved {
     /// What `values` was computed from, so a sealed run can compute it again.
     pub raw: BTreeMap<String, Raw>,
     pub fetched: Values,
+    /// The `public` lists `values` was computed with.
+    pub policy: Policy,
 }
 
 /// Whether `random()` values are generated and kept, or only noted. `run`
@@ -607,7 +619,8 @@ pub fn values_with(
         )?;
         fetched.insert(written, value);
     }
-    let resolution = resolve_full(&raw, env.as_map(), environment, &fetched);
+    let policy = policy(&crate::config::Config::load(dir)?, &raw);
+    let resolution = resolve_full(&raw, env.as_map(), environment, &fetched, &policy);
     out.tainted = tainted(&resolution.deps, |name| {
         schema.get(name).is_none_or(|k| k.sensitive)
     });
@@ -616,7 +629,19 @@ pub fn values_with(
     out.failed_asserts = asserts(schema, &out.values, env, environment, &fetched);
     out.raw = raw;
     out.fetched = fetched;
+    out.policy = policy;
     Ok(out)
+}
+
+/// The config's `public` lists, keeping in `[hash] public` only keys whose value
+/// is a `hash()` call, as `check` requires.
+pub fn policy(config: &crate::config::Config, raw: &BTreeMap<String, Raw>) -> Policy {
+    let mut policy = config.policy();
+    policy.hash_public.retain(|key| {
+        raw.get(key)
+            .is_some_and(|r| r.computed && is_whole_call(&r.text, "hash"))
+    });
+    policy
 }
 
 /// The values again with each sealed key standing as its placeholder, so a key
@@ -627,7 +652,14 @@ pub fn sealed_values(resolved: &Resolved, env: &Env, placeholders: &[(String, St
     for (name, placeholder) in placeholders {
         raw.insert(name.clone(), Raw::literal(placeholder.clone()));
     }
-    resolve_full(&raw, env.as_map(), &resolved.environment, &resolved.fetched).values
+    resolve_full(
+        &raw,
+        env.as_map(),
+        &resolved.environment,
+        &resolved.fetched,
+        &resolved.policy,
+    )
+    .values
 }
 
 /// The refusal for keys a command would receive and cannot: penv.cloud holds
@@ -727,7 +759,7 @@ fn asserts(
         .collect();
     for check in &schema.asserts {
         raw.insert(slot.clone(), Raw::computed(check.expr.clone()));
-        let (out, errors) = resolve(&raw, env.as_map(), environment, fetched);
+        let (out, errors) = resolve(&raw, env.as_map(), environment, fetched, &Policy::default());
         let hard = errors.iter().find(|e| e.key == slot && !e.soft);
         match (out.get(&slot), hard) {
             (_, Some(error)) => failed.push((
@@ -747,7 +779,7 @@ fn asserts(
     failed
 }
 
-/// `random(N)` values: generated once and kept in this machine's `.env.local`
+/// `random()` values: generated once and kept in this machine's `.env.local`
 /// (`.env.test.local` for test, which skips `.env.local`), so the next run reads
 /// the same value and `push` never sends it.
 fn randoms(
@@ -757,11 +789,21 @@ fn randoms(
     generate: Generate,
     out: &mut Resolved,
 ) -> Result<(), CliError> {
-    let wanted: Vec<(String, Option<usize>)> = raw
-        .iter()
-        .filter(|(_, r)| r.computed && is_random(&r.text))
-        .map(|(k, r)| (k.clone(), random_len(&r.text)))
-        .collect();
+    let mut wanted: Vec<(String, RandomSpec)> = Vec::new();
+    for (key, r) in raw.iter().filter(|(_, r)| r.computed) {
+        match random::spec(&r.text) {
+            Ok(Some(spec)) => wanted.push((key.clone(), spec)),
+            Ok(None) => {}
+            Err(problem) => {
+                return Err(CliError::new(
+                    "invalid_value",
+                    format!("{key}: {problem}."),
+                    "Write random(length=32), for example.",
+                )
+                .with_exit(Exit::Validation));
+            }
+        }
+    }
     if wanted.is_empty() {
         return Ok(());
     }
@@ -770,21 +812,13 @@ fn randoms(
     } else {
         ".env.local"
     });
-    for (key, len) in wanted {
-        let Some(len) = len.filter(|n| (8..=512).contains(n)) else {
-            return Err(CliError::new(
-                "invalid_value",
-                format!("{key}: random() takes a length from 8 to 512."),
-                "Write random(32), for example.",
-            )
-            .with_exit(Exit::Validation));
-        };
+    for (key, spec) in wanted {
         if generate == Generate::No {
             raw.remove(&key);
             out.pending.push(key);
             continue;
         }
-        let value = random_text(len)?;
+        let value = random_text(spec)?;
         let existing = if file.is_file() {
             read_file(&file)?
         } else {
@@ -795,7 +829,7 @@ fn randoms(
             CliError::new(
                 "unwritable_value",
                 e.to_string(),
-                "Report this; generated values hold letters and digits only.",
+                "Report this; generated values hold letters, digits, `-` and `_` only.",
             )
         })?;
         write_private_file(&file, &written)?;
@@ -805,36 +839,55 @@ fn randoms(
     Ok(())
 }
 
-fn is_random(text: &str) -> bool {
-    let text = text.trim();
-    text.starts_with("random(") && text.ends_with(')')
+fn entropy(n: usize) -> Result<Vec<u8>, CliError> {
+    penv_cloud::random_bytes(n).map_err(|e| {
+        CliError::new(
+            "no_entropy",
+            format!("the system random source failed: {e}"),
+            "Try again.",
+        )
+    })
 }
 
-/// The length in `random(N)`.
-fn random_len(text: &str) -> Option<usize> {
-    text.trim()
-        .strip_prefix("random(")?
-        .strip_suffix(')')?
-        .trim()
-        .parse()
-        .ok()
-}
-
-/// Letters and digits from the operating system's generator, without modulo bias.
-fn random_text(len: usize) -> Result<String, CliError> {
-    const ALPHABET: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut out = String::with_capacity(len);
-    while out.len() < len {
-        let bytes = penv_cloud::random_bytes(len * 2).map_err(|e| {
-            CliError::new(
-                "no_entropy",
-                format!("the system random source failed: {e}"),
-                "Try again.",
-            )
-        })?;
-        for b in bytes {
-            if b < 248 && out.len() < len {
-                out.push(ALPHABET[usize::from(b % 62)] as char);
+/// A value of the asked kind from the operating system's generator, without modulo bias.
+fn random_text(spec: RandomSpec) -> Result<String, CliError> {
+    const ALNUM: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const URL64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let len = spec.length.unwrap_or(0);
+    let mut out = String::with_capacity(len.max(36));
+    match spec.kind {
+        RandomKind::Alnum => {
+            while out.len() < len {
+                for b in entropy(len * 2)? {
+                    if b < 248 && out.len() < len {
+                        out.push(ALNUM[usize::from(b % 62)] as char);
+                    }
+                }
+            }
+        }
+        RandomKind::Hex => {
+            for b in entropy(len.div_ceil(2))? {
+                out.push(HEX[usize::from(b >> 4)] as char);
+                out.push(HEX[usize::from(b & 15)] as char);
+            }
+            out.truncate(len);
+        }
+        RandomKind::Base64Url => {
+            for b in entropy(len)? {
+                out.push(URL64[usize::from(b & 63)] as char);
+            }
+        }
+        RandomKind::Uuid => {
+            let mut b = entropy(16)?;
+            b[6] = (b[6] & 0x0f) | 0x40;
+            b[8] = (b[8] & 0x3f) | 0x80;
+            for (i, byte) in b.iter().enumerate() {
+                if matches!(i, 4 | 6 | 8 | 10) {
+                    out.push('-');
+                }
+                out.push(HEX[usize::from(byte >> 4)] as char);
+                out.push(HEX[usize::from(byte & 15)] as char);
             }
         }
     }

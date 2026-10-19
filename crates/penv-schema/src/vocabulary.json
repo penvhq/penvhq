@@ -168,14 +168,54 @@
     { "name": "or", "origin": "penv", "form": "or(a, b, ...)", "insert": "or(${1})", "doc": "`true` when any argument is true." },
     { "name": "startsWith", "origin": "penv", "form": "startsWith(value, prefix)", "insert": "startsWith(${1:value}, ${2:prefix})", "doc": "`true` when the value starts with the prefix." },
     { "name": "endsWith", "origin": "penv", "form": "endsWith(value, suffix)", "insert": "endsWith(${1:value}, ${2:suffix})", "doc": "`true` when the value ends with the suffix." },
-    { "name": "random", "origin": "penv", "form": "random(N)", "insert": "random(${1:32})", "doc": "N random characters, generated once by `penv run` and kept in `.env.local`." }
+    { "name": "random", "origin": "penv", "form": "random(kind=alnum, length=N)", "insert": "random(length=${1:32})", "doc": "Random characters, generated once by `penv run` and kept in `.env.local`. `uuid` takes no length.", "subject": "none",
+      "args": [ { "name": "kind", "values_from": "random-kinds", "default": "alnum", "doc": "The characters to draw from." },
+                { "name": "length", "type": "integer", "doc": "How many characters, 8 to 512." } ] },
+    { "name": "url", "origin": "penv", "form": "url(subject, part) | url(subject, part=value, ...)", "insert": "url(\\$${1:KEY}, ${2:host})", "doc": "Reads one part of a URL, or writes parts and returns the whole URL. A call reads or writes, never both.", "subject": "required",
+      "address": { "values_from": "url-parts" }, "labels": { "values_from": "url-parts" } },
+    { "name": "json", "origin": "penv", "form": "json(subject, path) | json(subject?, path=value, ...)", "insert": "json(\\$${1:KEY}, ${2:path})", "doc": "Reads a field of a JSON document, or writes fields and returns compact JSON. With no subject it builds from `{}`.", "subject": "optional",
+      "address": {}, "labels": {} },
+    { "name": "hash", "origin": "penv", "form": "hash(subject, algo=sha256, encoding=hex, length=N, key=$K)", "insert": "hash(\\$${1:KEY}, algo=${2|sha256,sha512,hmac-sha256,hmac-sha512|})", "doc": "A digest or HMAC of the subject. The same inputs give the same result.", "subject": "required",
+      "args": [ { "name": "algo", "required": true, "values_from": "algorithms", "doc": "The digest or HMAC to compute." },
+                { "name": "encoding", "values_from": "encodings", "default": "hex", "doc": "How the result is written." },
+                { "name": "length", "type": "integer", "doc": "Keeps the first N characters of the encoded result." },
+                { "name": "key", "type": "value", "doc": "The secret an `hmac-*` algorithm signs with." } ] },
+    { "name": "raw", "origin": "penv", "form": "raw(subject)", "insert": "raw(\\$${1:KEY})", "doc": "Embeds JSON that already exists, as a `json()` option value: `json(db=raw($INNER))`." }
   ],
   "filters": [
     { "name": "urlencode", "origin": "penv", "form": "${KEY | urlencode}", "doc": "Percent-encodes the value for a URL." },
     { "name": "base64", "origin": "penv", "form": "${KEY | base64}", "doc": "The value in standard base64." },
     { "name": "lower", "origin": "penv", "form": "${KEY | lower}", "doc": "The value in lowercase." },
     { "name": "upper", "origin": "penv", "form": "${KEY | upper}", "doc": "The value in uppercase." },
-    { "name": "trim", "origin": "penv", "form": "${KEY | trim}", "doc": "The value without surrounding whitespace." }
+    { "name": "trim", "origin": "penv", "form": "${KEY | trim}", "doc": "The value without surrounding whitespace." },
+    { "name": "b64d", "origin": "penv", "form": "${KEY | b64d}", "doc": "Decodes standard base64. A value that is not base64 fails." }
+  ],
+  "algorithms": [
+    { "name": "sha256", "doc": "SHA-256." },
+    { "name": "sha512", "doc": "SHA-512." },
+    { "name": "hmac-sha256", "doc": "HMAC with SHA-256, signed with `key=`.", "needs": ["key"] },
+    { "name": "hmac-sha512", "doc": "HMAC with SHA-512, signed with `key=`.", "needs": ["key"] }
+  ],
+  "encodings": [
+    { "name": "hex", "doc": "Lowercase hexadecimal." },
+    { "name": "base64", "doc": "Standard base64 with padding." },
+    { "name": "base64url", "doc": "URL-safe base64 without padding." }
+  ],
+  "url-parts": [
+    { "name": "scheme", "doc": "The scheme, such as `postgres`.", "public": true },
+    { "name": "host", "doc": "The host. A URL that names several hosts fails.", "public": true },
+    { "name": "port", "doc": "The port, empty when the URL has none.", "public": true },
+    { "name": "origin", "doc": "Scheme, host and port. Read only.", "public": true, "read_only": true },
+    { "name": "path", "doc": "The path, such as `/orders`.", "public": false },
+    { "name": "user", "doc": "The user name." },
+    { "name": "password", "doc": "The password. Always sensitive; a written one is a reference to another key.", "sensitive": true },
+    { "name": "query.NAME", "doc": "One query parameter, such as `query.sslmode`." }
+  ],
+  "random-kinds": [
+    { "name": "alnum", "doc": "Letters and digits." },
+    { "name": "hex", "doc": "Lowercase hexadecimal." },
+    { "name": "base64url", "doc": "URL-safe base64 characters." },
+    { "name": "uuid", "doc": "A version-4 UUID; takes no length." }
   ],
   "types": [
     { "name": "string", "doc": "Any text. Constraints: `startsWith`, `endsWith`, `minLength`, `maxLength`, `matches`." },
