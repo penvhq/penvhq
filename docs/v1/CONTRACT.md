@@ -17,13 +17,15 @@ impl Default for Policy { /* ... */ }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg { Subject(Expr), Address(String), Named(String, Expr) }
 
-/// A call after its arguments are evaluated. `raw` holds option names given as raw().
+/// A call after its arguments are evaluated. `raw` holds option names given as raw(),
+/// `quoted` those whose value was a quoted literal (json() writes them as strings).
 pub struct Call<'a> {
     pub name: &'a str,
     pub subject: Option<String>,
     pub address: Option<&'a str>,
     pub options: Vec<(&'a str, String)>,
     pub raw: BTreeSet<&'a str>,
+    pub quoted: BTreeSet<&'a str>,
 }
 
 /// Shape checks before evaluation, read from vocabulary.json: unknown, repeated or missing

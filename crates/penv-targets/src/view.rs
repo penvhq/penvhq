@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use penv_schema::functions::Policy;
 use penv_schema::resolve::{Raw, resolve_full, tainted};
 use penv_schema::{Schema, Values};
 use serde_json::Value;
@@ -25,7 +26,13 @@ pub fn view(schema: &Schema, environment: &str) -> Value {
                 .then(|| (key.name.clone(), raw))
         })
         .collect();
-    let resolution = resolve_full(&raw, &Values::new(), environment, &Values::new());
+    let resolution = resolve_full(
+        &raw,
+        &Values::new(),
+        environment,
+        &Values::new(),
+        &Policy::default(),
+    );
     let hot = tainted(&resolution.deps, |name| {
         schema.get(name).is_none_or(|k| k.sensitive)
     });

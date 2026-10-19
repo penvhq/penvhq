@@ -3,12 +3,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::functions::{self, Arg, Call, Policy, Taint, check_args};
 use crate::ir::is_valid_key_name;
 use crate::validate::Values;
 
 /// The functions penv evaluates. `exec` is refused by name: a schema never
 /// starts a process.
-pub const FUNCTIONS: [&str; 15] = [
+pub const FUNCTIONS: [&str; 19] = [
     "ref",
     "concat",
     "fallback",
@@ -24,10 +25,17 @@ pub const FUNCTIONS: [&str; 15] = [
     "startsWith",
     "endsWith",
     "random",
+    "url",
+    "json",
+    "hash",
+    "raw",
 ];
 
 /// Filters a `${KEY | filter}` reference runs, left to right.
-pub const FILTERS: [&str; 5] = ["urlencode", "base64", "lower", "upper", "trim"];
+pub const FILTERS: [&str; 6] = ["urlencode", "base64", "lower", "upper", "trim", "b64d"];
+
+/// A dependency [`tainted`] always treats as sensitive: a URL's password, say.
+pub const ALWAYS_SENSITIVE: &str = "\0sensitive";
 
 /// How deep references may chain, and calls or defaults nest inside one value,
 /// before penv stops rather than exhaust the stack.
@@ -87,8 +95,9 @@ pub fn resolve(
     outside: &Values,
     environment: &str,
     fetched: &Values,
+    policy: &Policy,
 ) -> (Values, Vec<ResolveError>) {
-    let out = resolve_full(raw, outside, environment, fetched);
+    let out = resolve_full(raw, outside, environment, fetched, policy);
     (out.values, out.errors)
 }
 
@@ -106,12 +115,14 @@ pub fn resolve_full(
     outside: &Values,
     environment: &str,
     fetched: &Values,
+    policy: &Policy,
 ) -> Resolution {
     let mut run = Run {
         raw,
         outside,
         environment,
         fetched,
+        policy,
         done: Values::new(),
         failed: BTreeSet::new(),
         stack: Vec::new(),
@@ -146,7 +157,7 @@ pub fn tainted(
             address.split('/').count() > 2
                 || sensitive(address.rsplit('/').next().unwrap_or(address))
         }
-        None => sensitive(dep),
+        None => dep == ALWAYS_SENSITIVE || sensitive(dep),
     };
     let mut readers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut out: BTreeSet<String> = BTreeSet::new();
@@ -192,21 +203,38 @@ fn collect(expr: &Expr, key: &str, out: &mut Vec<String>) {
     match expr {
         Expr::Call(name, args) => {
             match (name == "penv", args.as_slice()) {
-                (true, [Expr::Text(address)]) => out.push(address.trim().to_string()),
+                (true, [Arg::Subject(Expr::Text(address))]) => {
+                    out.push(address.trim().to_string());
+                }
                 (true, []) => out.push(key.to_string()),
                 _ => {}
             }
-            args.iter().for_each(|a| collect(a, key, out));
+            collect_args(args, key, out);
         }
         Expr::Template(parts) => parts.iter().for_each(|p| collect(p, key, out)),
         Expr::Default { or, .. } => collect(or, key, out),
-        Expr::Filter { inner, .. } => collect(inner, key, out),
+        Expr::Filter { inner, filters } => {
+            collect(inner, key, out);
+            filters
+                .iter()
+                .for_each(|(_, args)| collect_args(args, key, out));
+        }
         Expr::Text(_) | Expr::Ref(_) => {}
     }
 }
 
+fn collect_args(args: &[Arg], key: &str, out: &mut Vec<String>) {
+    for arg in args {
+        match arg {
+            Arg::Subject(e) | Arg::Named(_, e) => collect(e, key, out),
+            Arg::Address(_) => {}
+        }
+    }
+}
+
+/// A parsed value.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Expr {
+pub enum Expr {
     Text(String),
     Ref(String),
     /// `${KEY:-or}` (empty or unset) and `${KEY-or}` (unset only).
@@ -215,13 +243,13 @@ enum Expr {
         or: Box<Expr>,
         when_empty: bool,
     },
-    /// `${KEY | urlencode | lower}`.
+    /// `${KEY | urlencode | json(path)}`; a filter with arguments has its subject implied.
     Filter {
         inner: Box<Expr>,
-        filters: Vec<String>,
+        filters: Vec<(String, Vec<Arg>)>,
     },
     Template(Vec<Expr>),
-    Call(String, Vec<Expr>),
+    Call(String, Vec<Arg>),
 }
 
 struct Run<'a> {
@@ -229,6 +257,7 @@ struct Run<'a> {
     outside: &'a Values,
     environment: &'a str,
     fetched: &'a Values,
+    policy: &'a Policy,
     done: Values,
     failed: BTreeSet<String>,
     stack: Vec<String>,
@@ -406,12 +435,39 @@ impl Run<'_> {
         }
     }
 
-    fn filter(&mut self, inner: &Expr, filters: &[String]) -> Result<String, String> {
-        let mut value = self.eval(inner)?;
-        for filter in filters {
-            value = apply_filter(filter, &value)?;
+    fn filter(&mut self, inner: &Expr, filters: &[(String, Vec<Arg>)]) -> Result<String, String> {
+        let key = self.stack.last().cloned().unwrap_or_default();
+        let mut subject_key = match inner {
+            Expr::Ref(k) => Some(k.as_str()),
+            _ => None,
+        };
+        let mut public = 0;
+        for (i, (name, args)) in filters.iter().enumerate() {
+            if word_takes_args(name) {
+                match functions::taint(name, address(args), subject_key, &key, self.policy) {
+                    Taint::Public => public = i + 1,
+                    Taint::Always => self.depend(ALWAYS_SENSITIVE),
+                    Taint::Inputs => {}
+                }
+            }
+            subject_key = None;
         }
-        Ok(value)
+        // A public step declassifies what it reads: everything up to it is control.
+        self.control += usize::from(public > 0);
+        let mut value = self.eval(inner);
+        for (i, (name, args)) in filters.iter().enumerate() {
+            value = value.and_then(|v| {
+                if word_takes_args(name) {
+                    self.function(name, args, Some(v))
+                } else {
+                    apply_filter(name, &v)
+                }
+            });
+            if i + 1 == public {
+                self.control -= 1;
+            }
+        }
+        value
     }
 
     fn join(&mut self, parts: &[Expr]) -> Result<String, String> {
@@ -422,7 +478,7 @@ impl Run<'_> {
         Ok(out)
     }
 
-    fn call(&mut self, name: &str, args: &[Expr]) -> Result<String, String> {
+    fn call(&mut self, name: &str, args: &[Arg]) -> Result<String, String> {
         // A function that answers true or false copies no value out of its
         // arguments: what it reads is control, not data.
         let decides = matches!(
@@ -446,10 +502,15 @@ impl Run<'_> {
         out
     }
 
-    fn call_inner(&mut self, name: &str, args: &[Expr]) -> Result<String, String> {
+    fn call_inner(&mut self, name: &str, args: &[Arg]) -> Result<String, String> {
+        if matches!(name, "url" | "json" | "hash") {
+            return self.tainting(name, args);
+        }
+        let args = plain(args)?;
+        let args = args.as_slice();
         match name {
             "ref" => self.ref_key(args),
-            "concat" => self.join(args),
+            "concat" => self.concat(args),
             "fallback" => self.fallback(args),
             "if" => self.branch(args),
             "eq" => self.equal(args),
@@ -468,15 +529,82 @@ impl Run<'_> {
         }
     }
 
-    fn ref_key(&mut self, args: &[Expr]) -> Result<String, String> {
+    /// `url`, `json` or `hash` written as a call, its taint decided first.
+    fn tainting(&mut self, name: &str, args: &[Arg]) -> Result<String, String> {
+        let subject_key = match args.first() {
+            Some(Arg::Subject(Expr::Ref(k))) => Some(k.as_str()),
+            _ => None,
+        };
+        let key = self.stack.last().cloned().unwrap_or_default();
+        let taint = functions::taint(name, address(args), subject_key, &key, self.policy);
+        match taint {
+            Taint::Always => self.depend(ALWAYS_SENSITIVE),
+            Taint::Public => self.control += 1,
+            Taint::Inputs => {}
+        }
+        let out = self.function(name, args, None);
+        if taint == Taint::Public {
+            self.control -= 1;
+        }
+        out
+    }
+
+    /// Evaluate the arguments, then the function. `piped` is a filter's implied subject.
+    fn function(
+        &mut self,
+        name: &str,
+        args: &[Arg],
+        piped: Option<String>,
+    ) -> Result<String, String> {
+        let mut call = Call {
+            name,
+            subject: piped,
+            address: address(args),
+            options: Vec::new(),
+            raw: BTreeSet::new(),
+            quoted: BTreeSet::new(),
+        };
+        for arg in args {
+            match arg {
+                Arg::Subject(e) => call.subject = Some(self.eval(e)?),
+                Arg::Named(label, Expr::Call(raw, inner)) if raw == "raw" => {
+                    let [Arg::Subject(e)] = inner.as_slice() else {
+                        return Err(RAW_TAKES_ONE.into());
+                    };
+                    call.options.push((label, self.eval(e)?));
+                    call.raw.insert(label);
+                }
+                Arg::Named(label, Expr::Call(q, inner)) if q == QUOTED => {
+                    let [Arg::Subject(e)] = inner.as_slice() else {
+                        unreachable!("a quoted option holds one value");
+                    };
+                    call.options.push((label, self.eval(e)?));
+                    call.quoted.insert(label);
+                }
+                Arg::Named(label, e) => call.options.push((label, self.eval(e)?)),
+                Arg::Address(_) => {}
+            }
+        }
+        functions::eval(&call)
+    }
+
+    fn ref_key(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("ref", args, 1, 1)?;
-        match &args[0] {
+        match args[0] {
             Expr::Text(key) | Expr::Ref(key) => self.reference(key),
             _ => Err("ref() takes a key name".into()),
         }
     }
 
-    fn fallback(&mut self, args: &[Expr]) -> Result<String, String> {
+    fn concat(&mut self, args: &[&Expr]) -> Result<String, String> {
+        let mut out = String::new();
+        for arg in args {
+            out.push_str(&self.eval(arg)?);
+        }
+        Ok(out)
+    }
+
+    fn fallback(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("fallback", args, 1, usize::MAX)?;
         for arg in args {
             let v = self.quietly(arg)?;
@@ -487,32 +615,32 @@ impl Run<'_> {
         Ok(String::new())
     }
 
-    fn branch(&mut self, args: &[Expr]) -> Result<String, String> {
+    fn branch(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("if", args, 2, 3)?;
-        if truthy(&self.deciding(&args[0])?) {
-            self.eval(&args[1])
+        if truthy(&self.deciding(args[0])?) {
+            self.eval(args[1])
         } else {
             args.get(2).map_or(Ok(String::new()), |a| self.eval(a))
         }
     }
 
-    fn equal(&mut self, args: &[Expr]) -> Result<String, String> {
+    fn equal(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("eq", args, 2, 2)?;
-        let left = self.eval(&args[0])?;
-        Ok(flag(left == self.eval(&args[1])?))
+        let left = self.eval(args[0])?;
+        Ok(flag(left == self.eval(args[1])?))
     }
 
-    fn negate(&mut self, args: &[Expr]) -> Result<String, String> {
+    fn negate(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("not", args, 1, 1)?;
-        Ok(flag(!truthy(&self.eval(&args[0])?)))
+        Ok(flag(!truthy(&self.eval(args[0])?)))
     }
 
-    fn empty(&mut self, args: &[Expr]) -> Result<String, String> {
+    fn empty(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("isEmpty", args, 1, 1)?;
-        Ok(flag(self.quietly(&args[0])?.is_empty()))
+        Ok(flag(self.quietly(args[0])?.is_empty()))
     }
 
-    fn penv(&mut self, args: &[Expr]) -> Result<String, String> {
+    fn penv(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("penv", args, 0, 1)?;
         // A computed address is a value, and the message below names it.
         let address = match args.first() {
@@ -531,7 +659,7 @@ impl Run<'_> {
         })
     }
 
-    fn for_env(&mut self, args: &[Expr]) -> Result<String, String> {
+    fn for_env(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("forEnv", args, 1, usize::MAX)?;
         let mut hit = false;
         for arg in args {
@@ -540,22 +668,24 @@ impl Run<'_> {
         Ok(flag(hit))
     }
 
-    fn match_case(&mut self, args: &[Expr]) -> Result<String, String> {
+    fn match_case(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("match", args, 2, usize::MAX)?;
-        let subject = self.deciding(&args[0])?;
+        let subject = self.deciding(args[0])?;
         let mut fallback = None;
         for arm in &args[1..] {
             let Expr::Call(kind, parts) = arm else {
                 return Err("match() takes cases written label: value".into());
             };
-            if kind != ":" {
+            let (":", [Arg::Subject(label), Arg::Subject(value)]) =
+                (kind.as_str(), parts.as_slice())
+            else {
                 return Err("match() takes cases written label: value".into());
-            }
-            let label = self.deciding(&parts[0])?;
+            };
+            let label = self.deciding(label)?;
             if label == "_" {
-                fallback = Some(&parts[1]);
+                fallback = Some(value);
             } else if label == subject {
-                return self.eval(&parts[1]);
+                return self.eval(value);
             }
         }
         match fallback {
@@ -564,7 +694,7 @@ impl Run<'_> {
         }
     }
 
-    fn all_or_any(&mut self, want: bool, args: &[Expr]) -> Result<String, String> {
+    fn all_or_any(&mut self, want: bool, args: &[&Expr]) -> Result<String, String> {
         arity(if want { "and" } else { "or" }, args, 1, usize::MAX)?;
         for arg in args {
             if truthy(&self.quietly(arg)?) != want {
@@ -574,10 +704,10 @@ impl Run<'_> {
         Ok(flag(want))
     }
 
-    fn affix(&mut self, starts: bool, args: &[Expr]) -> Result<String, String> {
+    fn affix(&mut self, starts: bool, args: &[&Expr]) -> Result<String, String> {
         arity(if starts { "startsWith" } else { "endsWith" }, args, 2, 2)?;
-        let value = self.eval(&args[0])?;
-        let part = self.eval(&args[1])?;
+        let value = self.eval(args[0])?;
+        let part = self.eval(args[1])?;
         Ok(flag(if starts {
             value.starts_with(&part)
         } else {
@@ -586,7 +716,7 @@ impl Run<'_> {
     }
 }
 
-fn arity(name: &str, args: &[Expr], min: usize, max: usize) -> Result<(), String> {
+fn arity(name: &str, args: &[&Expr], min: usize, max: usize) -> Result<(), String> {
     if (min..=max).contains(&args.len()) {
         return Ok(());
     }
@@ -600,6 +730,34 @@ fn arity(name: &str, args: &[Expr], min: usize, max: usize) -> Result<(), String
         args.len()
     ))
 }
+
+/// The arguments of a function that takes them by position.
+fn plain(args: &[Arg]) -> Result<Vec<&Expr>, String> {
+    args.iter()
+        .map(|a| match a {
+            Arg::Subject(e) => Ok(e),
+            Arg::Address(_) | Arg::Named(..) => {
+                Err("this function takes its arguments by position".to_string())
+            }
+        })
+        .collect()
+}
+
+/// Whether `name` takes the argument form: subject, address, `name=value`.
+fn word_takes_args(name: &str) -> bool {
+    functions::args::word(name).is_some()
+}
+
+fn address(args: &[Arg]) -> Option<&str> {
+    args.iter().find_map(|a| match a {
+        Arg::Address(at) => Some(at.as_str()),
+        _ => None,
+    })
+}
+
+/// Wraps a quoted json() option value, so writing keeps it a string.
+const QUOTED: &str = "'";
+const RAW_TAKES_ONE: &str = "raw() takes the one value to embed, such as raw($INNER)";
 
 fn truthy(v: &str) -> bool {
     !v.is_empty() && v != "false" && v != "0"
@@ -664,21 +822,95 @@ fn parse_at(text: &str, depth: usize) -> Result<Expr, String> {
                 "{name}() is not a function penv runs (a varlock plugin or builtin resolves it); single-quote the value to pass it as written"
             ));
         }
+        if name == "raw" {
+            return Err(
+                "raw() embeds JSON only as a json() option value, such as json(db=raw($INNER))"
+                    .into(),
+            );
+        }
         let inner = &text[name.len() + 1..text.len() - 1];
-        let args = split(inner)?
-            .iter()
-            .map(|a| arg(a, depth + 1))
-            .collect::<Result<Vec<_>, _>>()?;
-        if name != "match"
-            && args
-                .iter()
-                .any(|a| matches!(a, Expr::Call(c, _) if c == ":"))
-        {
-            return Err(CASE_OUTSIDE_MATCH.into());
+        let args = call_args(name, inner, depth)?;
+        if functions::args::word(name).is_some() {
+            check_args(name, &args)?;
         }
         return Ok(Expr::Call(name.to_string(), args));
     }
     template(text, depth)
+}
+
+/// A call's arguments. The argument-form functions read `name=value`, a subject
+/// and an address; the others take theirs by position.
+fn call_args(name: &str, inner: &str, depth: usize) -> Result<Vec<Arg>, String> {
+    let named_form = functions::args::word(name);
+    let mut args = Vec::new();
+    for text in split(inner)? {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(format!(
+                "{name}() has an empty argument; remove the extra comma"
+            ));
+        }
+        let Some(word) = named_form else {
+            args.push(Arg::Subject(arg(text, depth + 1)?));
+            continue;
+        };
+        if let Some((label, value)) = functions::args::named(text) {
+            if !functions::args::is_label(label) {
+                return Err(format!(
+                    "{name}() argument names are letters, digits, dots and [index]; quote text that holds an ="
+                ));
+            }
+            let value = match call_name(value) {
+                Some("raw") if name == "json" => {
+                    let inner = &value[4..value.len() - 1];
+                    let raw = call_args("raw", inner, depth + 1)?;
+                    if !matches!(raw.as_slice(), [Arg::Subject(_)]) {
+                        return Err(RAW_TAKES_ONE.into());
+                    }
+                    Expr::Call("raw".into(), raw)
+                }
+                _ if name == "json" && value.starts_with(['"', '\'']) => {
+                    Expr::Call(QUOTED.into(), vec![Arg::Subject(arg(value, depth + 1)?)])
+                }
+                _ => arg(value, depth + 1)?,
+            };
+            args.push(Arg::Named(label.to_string(), value));
+            continue;
+        }
+        let bare = !text.starts_with(['$', '"', '\'']) && call_name(text).is_none();
+        if bare && word.address.is_some() {
+            args.push(Arg::Address(text.to_string()));
+        } else {
+            args.push(Arg::Subject(arg(text, depth + 1)?));
+        }
+    }
+    let case = |e: &Expr| matches!(e, Expr::Call(c, _) if c == ":");
+    let stray_case = args.iter().any(|a| match a {
+        Arg::Subject(e) | Arg::Named(_, e) => case(e),
+        Arg::Address(_) => false,
+    });
+    if name != "match" && stray_case {
+        return Err(CASE_OUTSIDE_MATCH.into());
+    }
+    Ok(args)
+}
+
+/// One `| step` of a braced reference: a filter, or a function with its subject implied.
+fn filter_step(text: &str, depth: usize) -> Result<(String, Vec<Arg>), String> {
+    let text = text.trim();
+    if FILTERS.contains(&text) {
+        return Ok((text.to_string(), Vec::new()));
+    }
+    let name = call_name(text).ok_or_else(|| unknown_filter(text))?;
+    let piped = functions::args::word(name).is_some_and(|w| w.subject != "none");
+    if !piped {
+        return Err(unknown_filter(name));
+    }
+    let args = call_args(name, &text[name.len() + 1..text.len() - 1], depth)?;
+    let mut implied = vec![Arg::Subject(Expr::Text(String::new()))];
+    implied.extend(args.iter().cloned());
+    check_args(name, &implied)?;
+    Ok((name.to_string(), args))
 }
 
 fn arg(text: &str, depth: usize) -> Result<Expr, String> {
@@ -688,7 +920,10 @@ fn arg(text: &str, depth: usize) -> Result<Expr, String> {
     if let Some(colon) = case_colon(text) {
         let label = arg(&text[..colon], depth + 1)?;
         let value = arg(&text[colon + 1..], depth + 1)?;
-        return Ok(Expr::Call(":".into(), vec![label, value]));
+        return Ok(Expr::Call(
+            ":".into(),
+            vec![Arg::Subject(label), Arg::Subject(value)],
+        ));
     }
     if let Some(q) = text.chars().next().filter(|c| *c == '"' || *c == '\'') {
         if text.len() >= 2 && text.ends_with(q) {
@@ -742,6 +977,7 @@ fn apply_filter(filter: &str, value: &str) -> Result<String, String> {
         "lower" => value.to_lowercase(),
         "upper" => value.to_uppercase(),
         "trim" => value.trim().to_string(),
+        "b64d" => base64_decode(value)?,
         other => return Err(unknown_filter(other)),
     })
 }
@@ -770,6 +1006,35 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Standard base64, padded or not. The failure never quotes the value.
+fn base64_decode(text: &str) -> Result<String, String> {
+    const BAD: &str = "b64d: the value is not standard base64";
+    let text = text.trim().trim_end_matches('=');
+    let mut bytes = Vec::with_capacity(text.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in text.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err(BAD.into()),
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    if bits >= 6 {
+        return Err(BAD.into());
+    }
+    String::from_utf8(bytes).map_err(|_| "b64d: the decoded value is not text".into())
 }
 
 /// `${KEY}` and `$KEY` inside text. `\$` is a literal dollar, as in
@@ -811,10 +1076,9 @@ fn template(text: &str, depth: usize) -> Result<Expr, String> {
             let whole: String = chars[i + 2..end].iter().collect();
             let mut pieces = top_level_pipes(&whole).into_iter();
             let inner = pieces.next().unwrap_or_default().trim().to_string();
-            let filters: Vec<String> = pieces.map(|f| f.trim().to_string()).collect();
-            if let Some(unknown) = filters.iter().find(|f| !FILTERS.contains(&f.as_str())) {
-                return Err(unknown_filter(unknown));
-            }
+            let filters = pieces
+                .map(|f| filter_step(&f, depth + 1))
+                .collect::<Result<Vec<_>, _>>()?;
             // A key name holds no `-`, so the first one is the operator.
             let split = inner
                 .find('-')
@@ -958,7 +1222,13 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect();
-        resolve(&raw, &Values::new(), env, &Values::new())
+        resolve(
+            &raw,
+            &Values::new(),
+            env,
+            &Values::new(),
+            &Policy::default(),
+        )
     }
 
     #[test]
@@ -1025,7 +1295,13 @@ mod tests {
     fn the_process_environment_fills_a_reference_nothing_else_does() {
         let raw = [("URL".to_string(), Raw::computed("http://${HOSTNAME}"))].into();
         let outside = [("HOSTNAME".to_string(), "box".to_string())].into();
-        let (v, _) = resolve(&raw, &outside, "development", &Values::new());
+        let (v, _) = resolve(
+            &raw,
+            &outside,
+            "development",
+            &Values::new(),
+            &Policy::default(),
+        );
         assert_eq!(v["URL"], "http://box");
     }
 
@@ -1074,7 +1350,13 @@ mod tests {
             ("STRIPE_KEY".to_string(), String::new()),
         ]
         .into();
-        let (v, e) = resolve(&raw, &Values::new(), "development", &fetched);
+        let (v, e) = resolve(
+            &raw,
+            &Values::new(),
+            "development",
+            &fetched,
+            &Policy::default(),
+        );
         assert!(e.is_empty(), "{e:?}");
         assert_eq!(v["A"], "postgres://prod.test");
         assert_eq!(v["B"], "none");
@@ -1105,7 +1387,13 @@ mod tests {
             .collect();
         pairs.push(("K1000".into(), Raw::literal("end")));
         let raw = pairs.into_iter().collect();
-        let (_, e) = resolve(&raw, &Values::new(), "development", &Values::new());
+        let (_, e) = resolve(
+            &raw,
+            &Values::new(),
+            "development",
+            &Values::new(),
+            &Policy::default(),
+        );
         assert!(
             e.iter().any(|e| e.message.contains("nest more than")),
             "{e:?}"
@@ -1207,7 +1495,13 @@ mod tests {
             ("production/OTHER".to_string(), "y".to_string()),
         ]
         .into();
-        let out = resolve_full(&raw, &Values::new(), "development", &fetched);
+        let out = resolve_full(
+            &raw,
+            &Values::new(),
+            "development",
+            &fetched,
+            &Policy::default(),
+        );
         assert_eq!(out.values["DATABASE_URL"], "postgres://x");
         assert_eq!(out.values["OTHER"], "y");
     }
@@ -1223,7 +1517,13 @@ mod tests {
         ]
         .into();
         let outside: Values = [("TOKEN".to_string(), "sk_live_1".to_string())].into();
-        let out = resolve_full(&raw, &outside, "development", &Values::new());
+        let out = resolve_full(
+            &raw,
+            &outside,
+            "development",
+            &Values::new(),
+            &Policy::default(),
+        );
         let hot = tainted(&out.deps, |k| k == "AWS_REGION" || k == "TOKEN");
         assert_eq!(out.values["REGION"], "us-east-1");
         assert_eq!(
@@ -1251,7 +1551,13 @@ mod tests {
         ]
         .into();
         let fetched: Values = [("production/STRIPE_KEY".to_string(), "sk".to_string())].into();
-        let out = resolve_full(&raw, &Values::new(), "development", &fetched);
+        let out = resolve_full(
+            &raw,
+            &Values::new(),
+            "development",
+            &fetched,
+            &Policy::default(),
+        );
         let hot = tainted(&out.deps, |k| k == "DB_PASS" || k == "STRIPE_KEY");
         assert_eq!(
             hot.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -1269,7 +1575,13 @@ mod tests {
             ("COPY".to_string(), Raw::computed("if(true, $KEY, x)")),
         ]
         .into();
-        let out = resolve_full(&raw, &Values::new(), "development", &Values::new());
+        let out = resolve_full(
+            &raw,
+            &Values::new(),
+            "development",
+            &Values::new(),
+            &Policy::default(),
+        );
         let hot = tainted(&out.deps, |k| k == "KEY");
         assert_eq!(hot.iter().map(String::as_str).collect::<Vec<_>>(), ["COPY"]);
 
@@ -1283,7 +1595,13 @@ mod tests {
             ("URL".to_string(), Raw::computed("https://x/${KEY}")),
         ]
         .into();
-        let out = resolve_full(&raw, &Values::new(), "development", &Values::new());
+        let out = resolve_full(
+            &raw,
+            &Values::new(),
+            "development",
+            &Values::new(),
+            &Policy::default(),
+        );
         let hot = tainted(&out.deps, |k| k == "KEY");
         assert_eq!(hot.iter().map(String::as_str).collect::<Vec<_>>(), ["URL"]);
     }
@@ -1351,7 +1669,13 @@ mod tests {
         ]
         .into();
         assert!(penv_addresses(&raw).is_empty());
-        let (v, e) = resolve(&raw, &Values::new(), "development", &Values::new());
+        let (v, e) = resolve(
+            &raw,
+            &Values::new(),
+            "development",
+            &Values::new(),
+            &Policy::default(),
+        );
         assert!(!v.contains_key("COPY"));
         let error = e.iter().find(|e| e.key == "COPY").expect("COPY fails");
         assert!(!error.message.contains("fake-secret-value"), "{error:?}");
@@ -1401,7 +1725,15 @@ mod tests {
         let raw = pairs.into_iter().collect();
         let (_, e) = std::thread::Builder::new()
             .stack_size(STACK)
-            .spawn(move || resolve(&raw, &Values::new(), "development", &Values::new()))
+            .spawn(move || {
+                resolve(
+                    &raw,
+                    &Values::new(),
+                    "development",
+                    &Values::new(),
+                    &Policy::default(),
+                )
+            })
             .unwrap()
             .join()
             .expect("no stack overflow");
@@ -1427,7 +1759,13 @@ mod tests {
         }));
         pairs.push(("B100".into(), Raw::literal("end")));
         let raw = pairs.into_iter().collect();
-        let (v, e) = resolve(&raw, &Values::new(), "development", &Values::new());
+        let (v, e) = resolve(
+            &raw,
+            &Values::new(),
+            "development",
+            &Values::new(),
+            &Policy::default(),
+        );
         assert_eq!(v.get("B001").map(String::as_str), Some("end"), "{e:?}");
         assert!(!e.iter().any(|e| e.key.starts_with('B')), "{e:?}");
         assert!(e.iter().any(|e| e.key == "A00"), "{e:?}");
@@ -1499,5 +1837,247 @@ mod tests {
         assert!(!is_expression("price is $5"));
         assert!(is_expression("concat(a,b)"));
         assert!(is_expression("${A}"));
+    }
+
+    fn text(t: &str) -> Expr {
+        Expr::Text(t.into())
+    }
+
+    fn key(k: &str) -> Expr {
+        Expr::Ref(k.into())
+    }
+
+    fn named(label: &str, value: Expr) -> Arg {
+        Arg::Named(label.into(), value)
+    }
+
+    #[test]
+    fn calls_take_a_subject_an_address_and_named_options() {
+        let call = |name: &str, args: Vec<Arg>| Expr::Call(name.into(), args);
+        assert_eq!(
+            parse("url($X, host)").unwrap(),
+            call(
+                "url",
+                vec![Arg::Subject(key("X")), Arg::Address("host".into())]
+            )
+        );
+        assert_eq!(
+            parse("url($X, host=h, port=5433)").unwrap(),
+            call(
+                "url",
+                vec![
+                    Arg::Subject(key("X")),
+                    named("host", text("h")),
+                    named("port", text("5433")),
+                ]
+            )
+        );
+        assert_eq!(
+            parse("json(a.b=1, c=raw($I))").unwrap(),
+            call(
+                "json",
+                vec![
+                    named("a.b", text("1")),
+                    named("c", call("raw", vec![Arg::Subject(key("I"))])),
+                ]
+            )
+        );
+        assert_eq!(
+            parse("hash($K, algo=sha256)").unwrap(),
+            call(
+                "hash",
+                vec![Arg::Subject(key("K")), named("algo", text("sha256"))]
+            )
+        );
+        assert_eq!(
+            parse(r#"json($S, ["a.b"]=x)"#).unwrap(),
+            call(
+                "json",
+                vec![Arg::Subject(key("S")), named(r#"["a.b"]"#, text("x"))]
+            )
+        );
+        assert_eq!(
+            parse("concat(a=b, c)").unwrap(),
+            call(
+                "concat",
+                vec![Arg::Subject(text("a=b")), Arg::Subject(text("c"))]
+            )
+        );
+    }
+
+    #[test]
+    fn a_filter_with_arguments_implies_its_subject() {
+        assert_eq!(
+            parse("${K | json(a) | url(host)}").unwrap(),
+            Expr::Template(vec![Expr::Filter {
+                inner: Box::new(key("K")),
+                filters: vec![
+                    ("json".into(), vec![Arg::Address("a".into())]),
+                    ("url".into(), vec![Arg::Address("host".into())]),
+                ],
+            }])
+        );
+        assert!(
+            parse("${K | url(nope)}")
+                .unwrap_err()
+                .contains("no part named by the bare argument")
+        );
+        assert!(parse("${K | random(length=8)}").is_err());
+    }
+
+    #[test]
+    fn a_repeated_or_unknown_option_fails_naming_option_and_key() {
+        let fake = Raw::literal("fake_api_key_123");
+        for (value, says) in [
+            ("hash($K, algo=sha256, algo=sha512)", "algo twice"),
+            ("hash($K, algoo=sha256)", "no option algoo"),
+            ("hash($K)", "needs algo="),
+            ("hash($K, algo=md5)", "option algo takes one of"),
+            ("url($K, host, port=1)", "never both"),
+            ("url($K, origin=x)", "cannot write"),
+            ("url(host)", "needs a subject"),
+            ("random(32)", "name=value"),
+            ("raw($K)", "json() option value"),
+        ] {
+            let (_, errors) = run(&[("K", fake.clone()), ("OUT", Raw::computed(value))], "dev");
+            let error = errors.iter().find(|e| e.key == "OUT").expect(value);
+            assert!(error.message.starts_with("OUT: "), "{}", error.message);
+            assert!(error.message.contains(says), "{value}: {}", error.message);
+            assert!(!error.message.contains("fake_api_key"), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn argument_shape_fails_at_parse_without_naming_a_value() {
+        let fake = Raw::literal("fake_api_key_123");
+        for (value, says) in [
+            (
+                r#"json({"password":"fakepw"})"#,
+                "reads the bare argument from a subject",
+            ),
+            (
+                "url($K, fakepw)",
+                "no part named by the bare argument; parts are",
+            ),
+            (
+                "json($K, )",
+                "json() has an empty argument; remove the extra comma",
+            ),
+            ("url($K, )", "url() has an empty argument"),
+            ("json(, a=1)", "json() has an empty argument"),
+            (
+                "hash($K, algo=hmac-sha256)",
+                "hash() algo hmac-sha256 needs key=",
+            ),
+            ("json(a=raw())", RAW_TAKES_ONE),
+            ("json(a=raw($K, $K))", RAW_TAKES_ONE),
+        ] {
+            let (_, errors) = run(&[("K", fake.clone()), ("OUT", Raw::computed(value))], "dev");
+            let error = errors.iter().find(|e| e.key == "OUT").expect(value);
+            assert!(error.message.contains(says), "{value}: {}", error.message);
+            assert!(!error.message.contains("fakepw"), "{}", error.message);
+            assert!(!error.message.contains("fake_api_key"), "{}", error.message);
+        }
+        assert!(parse("hash($K, algo=hmac-sha256, key=$K)").is_ok());
+    }
+
+    #[test]
+    fn a_quoted_json_option_is_marked_quoted() {
+        assert_eq!(
+            parse("json(a='25')").unwrap(),
+            Expr::Call(
+                "json".into(),
+                vec![named(
+                    "a",
+                    Expr::Call(QUOTED.into(), vec![Arg::Subject(text("25"))])
+                )]
+            )
+        );
+        assert_eq!(
+            parse("json(a=25)").unwrap(),
+            Expr::Call("json".into(), vec![named("a", text("25"))])
+        );
+    }
+
+    #[test]
+    fn the_functions_not_built_yet_say_so() {
+        let (_, errors) = run(
+            &[
+                ("K", Raw::literal("x")),
+                ("H", Raw::computed("hash($K, algo=sha256)")),
+            ],
+            "dev",
+        );
+        assert!(errors[0].message.contains("hash() is not built yet"));
+    }
+
+    #[test]
+    fn b64d_decodes_and_names_the_key_when_it_cannot() {
+        let (v, e) = run(
+            &[
+                ("A", Raw::literal("ZmFrZS12YWx1ZQ==")),
+                ("B", Raw::computed("${A | b64d}")),
+                ("C", Raw::literal("not base64!")),
+                ("D", Raw::computed("${C | b64d}")),
+            ],
+            "dev",
+        );
+        assert_eq!(v["B"], "fake-value");
+        assert_eq!(e.len(), 1);
+        assert!(e[0].message.starts_with("D: b64d"), "{}", e[0].message);
+        assert_eq!(
+            base64_decode(&base64(b"fake")).as_deref(),
+            Ok("fake"),
+            "round trip"
+        );
+    }
+
+    #[test]
+    fn always_sensitive_taints_and_a_public_read_does_not() {
+        let deps = BTreeMap::from([
+            (
+                "PASS".to_string(),
+                BTreeSet::from([ALWAYS_SENSITIVE.to_string()]),
+            ),
+            ("PLAIN".to_string(), BTreeSet::from(["OTHER".to_string()])),
+        ]);
+        let hot = tainted(&deps, |_| false);
+        assert_eq!(hot, BTreeSet::from(["PASS".to_string()]));
+
+        let policy = Policy::default();
+        assert_eq!(
+            functions::taint("url", Some("host"), Some("U"), "H", &policy),
+            Taint::Public
+        );
+        assert_eq!(
+            functions::taint("url", Some("password"), Some("U"), "P", &policy),
+            Taint::Always
+        );
+        assert_eq!(
+            functions::taint("url", Some("user"), Some("U"), "N", &policy),
+            Taint::Inputs
+        );
+        let raw = BTreeMap::from([
+            (
+                "U".to_string(),
+                Raw::literal("postgres://app:fakepass@db.test/x"),
+            ),
+            ("H".to_string(), Raw::computed("url($U, host)")),
+            ("P".to_string(), Raw::computed("url($U, password)")),
+            ("F".to_string(), Raw::computed("${U | url(host)}")),
+        ]);
+        let out = resolve_full(&raw, &Values::new(), "dev", &Values::new(), &policy);
+        assert!(
+            out.deps.get("H").is_none_or(BTreeSet::is_empty),
+            "{:?}",
+            out.deps
+        );
+        assert!(
+            out.deps.get("F").is_none_or(BTreeSet::is_empty),
+            "{:?}",
+            out.deps
+        );
+        assert!(out.deps["P"].contains(ALWAYS_SENSITIVE));
+        assert!(out.deps["P"].contains("U"));
     }
 }

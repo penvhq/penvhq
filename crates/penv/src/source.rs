@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use penv_cloud::api::Address;
+use penv_schema::functions::Policy;
 use penv_schema::resolve::{Raw, ResolveError, penv_addresses, resolve, resolve_full, tainted};
 use penv_schema::{Diagnostic, Schema, Values};
 
@@ -438,7 +439,13 @@ pub fn finish(
     environment: &str,
 ) -> (Values, Vec<ResolveError>) {
     let raw = with_defaults(schema, raw);
-    resolve(&raw, env.as_map(), environment, &Values::new())
+    resolve(
+        &raw,
+        env.as_map(),
+        environment,
+        &Values::new(),
+        &Policy::default(),
+    )
 }
 
 /// Everything one environment resolves to, and where it came from.
@@ -607,7 +614,13 @@ pub fn values_with(
         )?;
         fetched.insert(written, value);
     }
-    let resolution = resolve_full(&raw, env.as_map(), environment, &fetched);
+    let resolution = resolve_full(
+        &raw,
+        env.as_map(),
+        environment,
+        &fetched,
+        &Policy::default(),
+    );
     out.tainted = tainted(&resolution.deps, |name| {
         schema.get(name).is_none_or(|k| k.sensitive)
     });
@@ -627,7 +640,14 @@ pub fn sealed_values(resolved: &Resolved, env: &Env, placeholders: &[(String, St
     for (name, placeholder) in placeholders {
         raw.insert(name.clone(), Raw::literal(placeholder.clone()));
     }
-    resolve_full(&raw, env.as_map(), &resolved.environment, &resolved.fetched).values
+    resolve_full(
+        &raw,
+        env.as_map(),
+        &resolved.environment,
+        &resolved.fetched,
+        &Policy::default(),
+    )
+    .values
 }
 
 /// The refusal for keys a command would receive and cannot: penv.cloud holds
@@ -727,7 +747,7 @@ fn asserts(
         .collect();
     for check in &schema.asserts {
         raw.insert(slot.clone(), Raw::computed(check.expr.clone()));
-        let (out, errors) = resolve(&raw, env.as_map(), environment, fetched);
+        let (out, errors) = resolve(&raw, env.as_map(), environment, fetched, &Policy::default());
         let hard = errors.iter().find(|e| e.key == slot && !e.soft);
         match (out.get(&slot), hard) {
             (_, Some(error)) => failed.push((
