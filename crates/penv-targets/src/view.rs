@@ -10,8 +10,9 @@ use serde_json::Value;
 /// A computed default is dropped and its key required, because a literal
 /// fallback like `"random(48)"` would be a wrong value outside `penv run`; a key
 /// computed from a secret is sensitive; each key says whether it is public.
-/// `environment` is the one the computed defaults are read in.
-pub fn view(schema: &Schema, environment: &str) -> Value {
+/// `environment` is the one the computed defaults are read in, and `policy` the
+/// `public` lists `penv run` reads them under.
+pub fn view(schema: &Schema, environment: &str, policy: &Policy) -> Value {
     let raw: BTreeMap<String, Raw> = schema
         .keys
         .iter()
@@ -26,13 +27,7 @@ pub fn view(schema: &Schema, environment: &str) -> Value {
                 .then(|| (key.name.clone(), raw))
         })
         .collect();
-    let resolution = resolve_full(
-        &raw,
-        &Values::new(),
-        environment,
-        &Values::new(),
-        &Policy::default(),
-    );
+    let resolution = resolve_full(&raw, &Values::new(), environment, &Values::new(), policy);
     let hot = tainted(&resolution.deps, |name| {
         schema.get(name).is_none_or(|k| k.sensitive)
     });
@@ -72,7 +67,7 @@ mod tests {
             "# @type=string\nSTRIPE_SECRET_KEY=\n\n# @type=string @sensitive=false\nNEXT_PUBLIC_TOKEN=${STRIPE_SECRET_KEY}\n\n# @type=string\nSESSION=random(32)\n\n# @type=port @sensitive=false\nPORT=3000\n",
         )
         .unwrap();
-        let json = view(&schema, "development");
+        let json = view(&schema, "development", &Policy::default());
         let token = keyed(&json, "NEXT_PUBLIC_TOKEN");
         assert_eq!(token["default"], Value::Null);
         assert_eq!(token["required"], true);
@@ -83,5 +78,19 @@ mod tests {
         assert_eq!(port["default"], "3000");
         assert_eq!(port["sensitive"], false);
         assert_eq!(port["public"], false);
+    }
+
+    #[test]
+    fn the_policy_decides_whether_a_computed_key_is_sensitive() {
+        let schema = penv_schema::parse(
+            "# @type=url\nDATABASE_URL=\n\n# @type=string @sensitive=false\nDB_USER=url($DATABASE_URL, user)\n",
+        )
+        .unwrap();
+        let masked = view(&schema, "development", &Policy::default());
+        assert_eq!(keyed(&masked, "DB_USER")["sensitive"], true);
+        let mut policy = Policy::default();
+        policy.url_public.insert("user".into());
+        let shown = view(&schema, "development", &policy);
+        assert_eq!(keyed(&shown, "DB_USER")["sensitive"], false);
     }
 }

@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use penv_cloud::api::Address;
 use penv_schema::functions::Policy;
 use penv_schema::functions::random::{self, RandomKind, RandomSpec};
-use penv_schema::resolve::{Raw, ResolveError, penv_addresses, resolve, resolve_full, tainted};
+use penv_schema::resolve::{
+    Raw, ResolveError, is_whole_call, penv_addresses, resolve, resolve_full, tainted,
+};
 use penv_schema::{Diagnostic, Schema, Values};
 
 use crate::commands::cloud::Fetcher;
@@ -478,6 +480,8 @@ pub struct Resolved {
     /// What `values` was computed from, so a sealed run can compute it again.
     pub raw: BTreeMap<String, Raw>,
     pub fetched: Values,
+    /// The `public` lists `values` was computed with.
+    pub policy: Policy,
 }
 
 /// Whether `random()` values are generated and kept, or only noted. `run`
@@ -615,13 +619,8 @@ pub fn values_with(
         )?;
         fetched.insert(written, value);
     }
-    let resolution = resolve_full(
-        &raw,
-        env.as_map(),
-        environment,
-        &fetched,
-        &Policy::default(),
-    );
+    let policy = policy(&crate::config::Config::load(dir)?, &raw);
+    let resolution = resolve_full(&raw, env.as_map(), environment, &fetched, &policy);
     out.tainted = tainted(&resolution.deps, |name| {
         schema.get(name).is_none_or(|k| k.sensitive)
     });
@@ -630,7 +629,19 @@ pub fn values_with(
     out.failed_asserts = asserts(schema, &out.values, env, environment, &fetched);
     out.raw = raw;
     out.fetched = fetched;
+    out.policy = policy;
     Ok(out)
+}
+
+/// The config's `public` lists, keeping in `[hash] public` only keys whose value
+/// is a `hash()` call, as `check` requires.
+pub fn policy(config: &crate::config::Config, raw: &BTreeMap<String, Raw>) -> Policy {
+    let mut policy = config.policy();
+    policy.hash_public.retain(|key| {
+        raw.get(key)
+            .is_some_and(|r| r.computed && is_whole_call(&r.text, "hash"))
+    });
+    policy
 }
 
 /// The values again with each sealed key standing as its placeholder, so a key
@@ -646,7 +657,7 @@ pub fn sealed_values(resolved: &Resolved, env: &Env, placeholders: &[(String, St
         env.as_map(),
         &resolved.environment,
         &resolved.fetched,
-        &Policy::default(),
+        &resolved.policy,
     )
     .values
 }
