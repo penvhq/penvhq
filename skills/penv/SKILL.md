@@ -52,7 +52,7 @@ Output is JSON under an agent or when stdout is not a terminal. A failure prints
 2. Ask the user to run [`penv set WEBHOOK_URL`](https://penv.cloud/docs/cli/set).
 3. Run `penv check`.
 
-For a generated local secret, write `SESSION_SECRET=random(48)`; penv keeps it in `.env.local` (`.env.test.local` for `test`).
+For a generated local secret, write `SESSION_SECRET=random(length=48)`; penv keeps it in `.env.local` (`.env.test.local` for `test`).
 
 ## Fix `penv check` failures
 
