@@ -87,6 +87,11 @@ pub fn is_expression(text: &str) -> bool {
     call_name(text).is_some() || has_reference(text)
 }
 
+/// The error parsing `text` as an expression finds, with no value read.
+pub fn check_expression(text: &str) -> Result<(), String> {
+    parse(text).map(|_| ())
+}
+
 /// Compute every value. `outside` is the process environment, read only when a
 /// reference names a key that no file or default supplies. `fetched` holds each
 /// `penv(address)` the caller looked up, keyed by the address as written.

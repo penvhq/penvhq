@@ -145,7 +145,8 @@ fn address(name: &str, word: &Word, at: &str, count: usize, subject: bool) -> Re
     }
     match &slot.values_from {
         Some(section) if !names(section, at) => Err(format!(
-            "{name}() has no part named by the bare argument; parts are {}",
+            "{name}() has no part named by the bare argument;{} parts are {}",
+            did_you_mean(section, at),
             listed(section)
         )),
         _ => Ok(()),
@@ -163,7 +164,8 @@ fn option(name: &str, word: &Word, label: &str, value: &Expr) -> Result<(), Stri
             .find(|e| e.names(label));
         return match entry {
             None => Err(format!(
-                "{name}() has no part {label}; parts are {}",
+                "{name}() has no part {label};{} parts are {}",
+                did_you_mean(section, label),
                 listed(section)
             )),
             Some(e) if e.read_only => Err(format!("{name}() reads {label} but cannot write it")),
@@ -172,8 +174,11 @@ fn option(name: &str, word: &Word, label: &str, value: &Expr) -> Result<(), Stri
     }
     let Some(opt) = word.args.iter().find(|o| o.name == label) else {
         let known: Vec<&str> = word.args.iter().map(|o| o.name.as_str()).collect();
+        let near = nearest(known.iter().copied(), label)
+            .map(|k| format!(" did you mean {k}?"))
+            .unwrap_or_default();
         return Err(format!(
-            "{name}() has no option {label}; options are {}",
+            "{name}() has no option {label};{near} options are {}",
             known.join(", ")
         ));
     };
@@ -205,4 +210,39 @@ fn listed(section: &str) -> String {
         .map(|e: &Entry| e.name.as_str())
         .collect();
     all.join(", ")
+}
+
+/// The closest candidate within two edits.
+fn nearest<'a>(candidates: impl Iterator<Item = &'a str>, text: &str) -> Option<&'a str> {
+    candidates
+        .map(|c| (edits(c, text), c))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, c)| c)
+}
+
+fn did_you_mean(section: &str, text: &str) -> String {
+    let all = vocabulary()
+        .section(section)
+        .iter()
+        .map(|e| e.name.as_str());
+    nearest(all, text)
+        .map(|c| format!(" did you mean {c}?"))
+        .unwrap_or_default()
+}
+
+/// Levenshtein distance.
+fn edits(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
 }

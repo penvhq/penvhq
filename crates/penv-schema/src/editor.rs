@@ -588,14 +588,98 @@ fn decorators(chars: &[char]) -> Vec<Dec> {
 
 /// What the parser alone finds in the text: its errors, else its warnings.
 pub fn problems(text: &str) -> Vec<(Diagnostic, Severity)> {
-    match parse(text) {
+    let mut out: Vec<(Diagnostic, Severity)> = match parse(text) {
         Ok(schema) => schema
             .warnings
             .into_iter()
             .map(|d| (d, Severity::Warning))
             .collect(),
         Err(errors) => errors.into_iter().map(|d| (d, Severity::Error)).collect(),
+    };
+    out.extend(
+        call_problems(text)
+            .into_iter()
+            .map(|d| (d, Severity::Error)),
+    );
+    out
+}
+
+/// What the expression parser, and so `check`, says about each key's value.
+fn call_problems(text: &str) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for (row, line) in lines(text).iter().enumerate() {
+        let Kind::Key { eq, .. } = line.kind else {
+            continue;
+        };
+        let value: String = line.chars[eq + 1..].iter().collect();
+        if !crate::resolve::is_expression(value.trim()) {
+            continue;
+        }
+        if let Err(message) = crate::resolve::check_expression(&value) {
+            let column = problem_token(&line.chars, eq + 1, &message)
+                .map_or(1, |at| (at - line.shift) as u32 + 1);
+            out.push(Diagnostic::new(
+                row as u32 + 1,
+                column,
+                "bad-expression",
+                message,
+            ));
+        }
     }
+    out
+}
+
+/// Where in the value the label, part or option the message names starts.
+fn problem_token(chars: &[char], from: usize, message: &str) -> Option<usize> {
+    let words: Vec<&str> = message
+        .split(|c: char| c.is_whitespace() || c == ';')
+        .collect();
+    let named = ["option", "part", "has", "reads"].iter().find_map(|key| {
+        let i = words.iter().position(|w| w == key)?;
+        words.get(i + 1).copied().filter(|w| is_token_str(w))
+    });
+    if let Some(label) = named {
+        let want: Vec<char> = label.chars().collect();
+        let mut i = from;
+        while i + want.len() <= chars.len() {
+            let before = i == 0 || !is_token(chars[i - 1]);
+            let after = chars.get(i + want.len()).is_none_or(|c| !is_token(*c));
+            if before && after && chars[i..i + want.len()] == want[..] {
+                return Some(i);
+            }
+            i += 1;
+        }
+    }
+    if message.contains("bare argument") {
+        let open = chars[from..].iter().position(|c| *c == '(')? + from;
+        let mut depth = 0;
+        let mut start = open + 1;
+        for i in open..chars.len() {
+            let c = chars[i];
+            if c == '(' {
+                depth += 1;
+            }
+            if depth == 1 && (c == ',' || c == ')') || (c == ')' && depth == 1) {
+                let arg = &chars[start..i];
+                let first = arg.iter().position(|c| !c.is_whitespace());
+                if let Some(f) = first
+                    && !arg.contains(&'=')
+                    && arg[f] != '$'
+                {
+                    return Some(start + f);
+                }
+                start = i + 1;
+            }
+            if c == ')' {
+                depth -= 1;
+            }
+        }
+    }
+    None
+}
+
+fn is_token_str(w: &str) -> bool {
+    !w.is_empty() && w.chars().all(is_token)
 }
 
 /// The parser's problems and the binary's notes, placed on the text.
@@ -911,11 +995,187 @@ fn complete_value(
             };
         }
     }
+    if let Some(items) = complete_call(lines, row, c) {
+        return items;
+    }
     let lead = before[..before.len() - (c - ws).min(before.len())].trim_end();
     if lead.is_empty() || lead.ends_with(['(', ',']) {
         return function_items(here);
     }
     Vec::new()
+}
+
+// ---------------------------------------------------------------- call arguments
+
+fn is_token(c: char) -> bool {
+    is_word(c) || c == '-' || c == '.'
+}
+
+/// The argument-form function whose parentheses hold `at`, and where its arguments start.
+fn enclosing_call(chars: &[char], at: usize) -> Option<(&'static Word, usize)> {
+    let mut depth = 0usize;
+    for i in (0..at.min(chars.len())).rev() {
+        match chars[i] {
+            ')' => depth += 1,
+            '(' if depth > 0 => depth -= 1,
+            '(' => {
+                let mut s = i;
+                while s > 0 && is_word(chars[s - 1]) {
+                    s -= 1;
+                }
+                let name: String = chars[s..i].iter().collect();
+                return crate::functions::args::word(&name).map(|w| (w, i + 1));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Start of each top-level argument in `chars[from..to]`.
+fn arg_starts(chars: &[char], from: usize, to: usize) -> Vec<usize> {
+    let mut starts = vec![from];
+    let mut depth = 0i32;
+    for (i, ch) in chars.iter().enumerate().take(to).skip(from) {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => starts.push(i + 1),
+            _ => {}
+        }
+    }
+    starts
+}
+
+/// The option or part name an argument written so far gives, if it has an `=`.
+fn arg_label(chars: &[char], from: usize, to: usize) -> Option<String> {
+    let text: String = chars[from..to.min(chars.len())].iter().collect();
+    let (label, _) = text.split_once('=')?;
+    Some(label.trim().to_string())
+}
+
+/// `query.NAME` offers `query.`.
+fn entry_insert(e: &Entry) -> String {
+    e.name.strip_suffix("NAME").unwrap_or(&e.name).to_string()
+}
+
+fn entry_items(section: &str, taken: &[String], replace: Range) -> Vec<Completion> {
+    vocabulary()
+        .section(section)
+        .iter()
+        .filter(|e| !taken.iter().any(|t| e.names(t)))
+        .map(|e| Completion {
+            insert: entry_insert(e),
+            ..plain(&e.name, KIND_VALUE, section, &e.doc, replace)
+        })
+        .collect()
+}
+
+/// Option names, parts and option values inside `hash(`, `url(`, `random(`, `json(`.
+fn complete_call(lines: &[Line], row: usize, c: usize) -> Option<Vec<Completion>> {
+    let chars = &lines[row].chars;
+    let (word, open) = enclosing_call(chars, c)?;
+    let mut ts = c;
+    while ts > open && is_token(chars[ts - 1]) {
+        ts -= 1;
+    }
+    let mut te = c;
+    while te < chars.len() && is_token(chars[te]) {
+        te += 1;
+    }
+    let replace = span(lines, row, ts, te);
+    let starts = arg_starts(chars, open, c);
+    let index = starts.len() - 1;
+    let cur = starts[index];
+    if let Some(label) = arg_label(chars, cur, ts) {
+        let section = word
+            .args
+            .iter()
+            .find(|o| o.name == label)
+            .and_then(|o| o.values_from.as_deref())?;
+        return Some(entry_items(section, &[], replace));
+    }
+    if chars[cur..ts].iter().any(|ch| !ch.is_whitespace()) {
+        return None;
+    }
+    if index == 0 && word.subject != "none" {
+        return None;
+    }
+    let given: Vec<String> = starts[..index]
+        .iter()
+        .zip(starts[1..].iter())
+        .filter_map(|(a, b)| arg_label(chars, *a, *b - 1))
+        .collect();
+    let followed_by_eq = chars[te..].iter().find(|c| !c.is_whitespace()) == Some(&'=');
+    let mut items: Vec<Completion> = word
+        .args
+        .iter()
+        .filter(|o| !given.contains(&o.name))
+        .map(|o| Completion {
+            insert: if followed_by_eq {
+                o.name.clone()
+            } else {
+                format!("{}=", o.name)
+            },
+            ..plain(&o.name, KIND_PROPERTY, "option", &o.doc, replace)
+        })
+        .collect();
+    let slot = word.address.as_ref().or(word.labels.as_ref());
+    if let Some(section) = slot.and_then(|s| s.values_from.as_deref()) {
+        items.extend(entry_items(section, &given, replace));
+    }
+    Some(items)
+}
+
+/// The doc of the option, value or part under the cursor inside a call.
+fn hover_call(chars: &[char], row: usize, lines: &[Line], c: usize) -> Option<Tip> {
+    let mut ts = c;
+    while ts > 0 && is_token(chars[ts - 1]) {
+        ts -= 1;
+    }
+    let mut te = c;
+    while te < chars.len() && is_token(chars[te]) {
+        te += 1;
+    }
+    if ts == te {
+        return None;
+    }
+    let (word, open) = enclosing_call(chars, ts)?;
+    let text: String = chars[ts..te].iter().collect();
+    let range = span(lines, row, ts, te);
+    let starts = arg_starts(chars, open, ts);
+    let cur = *starts.last()?;
+    let tip = |name: &str, doc: &str| Tip {
+        range,
+        markdown: format!("`{name}`\n\n{doc}"),
+    };
+    let entry = |section: &str| {
+        vocabulary()
+            .section(section)
+            .iter()
+            .find(|e| e.names(&text))
+            .map(|e| tip(&text, &e.doc))
+    };
+    if let Some(label) = arg_label(chars, cur, ts) {
+        let section = word
+            .args
+            .iter()
+            .find(|o| o.name == label)
+            .and_then(|o| o.values_from.as_deref())?;
+        return entry(section);
+    }
+    let rest: String = chars[te..].iter().take_while(|ch| **ch != ',').collect();
+    if rest.trim_start().starts_with('=')
+        && let Some(o) = word.args.iter().find(|o| o.name == text)
+    {
+        return Some(tip(&o.name, &o.doc));
+    }
+    let slot = if rest.trim_start().starts_with('=') {
+        word.labels.as_ref()
+    } else {
+        word.address.as_ref()
+    };
+    entry(slot?.values_from.as_deref()?)
 }
 
 // ---------------------------------------------------------------- hover
@@ -997,6 +1257,9 @@ fn hover_expression(
             range,
             markdown: w.markdown(),
         });
+    }
+    if let Some(tip) = hover_call(chars, row, lines, c) {
+        return Some(tip);
     }
     let before: String = chars[..ws].iter().collect();
     if before.trim_end().ends_with('|')

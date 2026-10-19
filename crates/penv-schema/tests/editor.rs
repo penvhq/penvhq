@@ -472,3 +472,133 @@ fn the_outline_lists_keys_spanning_their_blocks() {
     assert_eq!(got[0].detail, "port");
     assert_eq!(got[2].detail, "string(startsWith=sk_)");
 }
+
+fn call_schema(expr: &str) -> String {
+    format!("# @penv=acme/api\n# ---\n\nK=abc\nV={expr}\n")
+}
+
+fn complete_in(expr: &str, needle: &str) -> Vec<String> {
+    let text = call_schema(expr);
+    labels(&text, after(&text, 4, needle))
+}
+
+#[test]
+fn option_names_follow_the_open_paren_and_comma_without_repeats() {
+    let got = complete_in("hash($K, ", "hash($K, ");
+    for want in ["algo", "encoding", "length", "key"] {
+        assert!(got.contains(&want.to_string()), "{want} missing: {got:?}");
+    }
+    let got = complete_in("hash($K, algo=sha256, ", "sha256, ");
+    assert!(!got.contains(&"algo".to_string()));
+    assert!(got.contains(&"encoding".to_string()));
+    let got = complete_in("random(", "random(");
+    assert!(got.contains(&"kind".to_string()) && got.contains(&"length".to_string()));
+}
+
+#[test]
+fn option_values_come_from_their_section() {
+    let names = |s: &str| -> Vec<String> {
+        vocabulary()
+            .section(s)
+            .iter()
+            .map(|e| e.name.clone())
+            .collect()
+    };
+    assert_eq!(complete_in("hash($K, algo=)", "algo="), names("algorithms"));
+    assert_eq!(
+        complete_in("hash($K, encoding=)", "encoding="),
+        names("encodings")
+    );
+    assert_eq!(complete_in("random(kind=)", "kind="), names("random-kinds"));
+}
+
+#[test]
+fn url_parts_follow_the_subject_and_skip_given_ones() {
+    let got = complete_in("url($K, ", "url($K, ");
+    assert!(got.contains(&"host".to_string()) && got.contains(&"scheme".to_string()));
+    let got = complete_in("url($K, host=x, ", "host=x, ");
+    assert!(!got.contains(&"host".to_string()) && got.contains(&"port".to_string()));
+}
+
+#[test]
+fn hover_on_a_value_or_part_shows_its_doc() {
+    let text = call_schema("hash($K, algo=sha256) url($K, host)");
+    let doc = |e: &str| {
+        vocabulary()
+            .section(e)
+            .iter()
+            .find(|x| x.name == "sha256" || x.name == "host")
+            .unwrap()
+            .doc
+            .clone()
+    };
+    let tip = hover(&text, after(&text, 4, "algo=sha2"), &[]).unwrap();
+    assert!(tip.markdown.contains(&doc("algorithms")));
+    let tip = hover(&text, after(&text, 4, "url($K, ho"), &[]).unwrap();
+    assert!(tip.markdown.contains(&doc("url-parts")));
+}
+
+#[test]
+fn diagnostics_suggest_the_nearest_part_and_name_a_missing_option() {
+    let text = call_schema("url($K, hots)");
+    let notes = diagnostics(&text, &[]);
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.message.contains("did you mean host?")),
+        "{notes:?}"
+    );
+    let text = call_schema("hash($K)");
+    let notes = diagnostics(&text, &[]);
+    assert!(
+        notes.iter().any(|n| n.message.contains("needs algo=")),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn every_values_from_names_an_existing_section() {
+    let v = vocabulary();
+    for w in &v.functions {
+        let slots = [&w.address, &w.labels]
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s.values_from.as_deref());
+        let opts = w.args.iter().filter_map(|o| o.values_from.as_deref());
+        for section in slots.chain(opts) {
+            assert!(!v.section(section).is_empty(), "{}: {section}", w.name);
+        }
+    }
+}
+
+#[test]
+fn an_option_name_already_followed_by_eq_inserts_bare() {
+    let text = call_schema("hash($K, al=sha256)");
+    let items = complete(&text, after(&text, 4, "hash($K, al"));
+    let algo = items.iter().find(|c| c.label == "algo").unwrap();
+    assert_eq!(algo.insert, "algo");
+    let text = call_schema("hash($K, al)");
+    let items = complete(&text, after(&text, 4, "hash($K, al"));
+    assert_eq!(
+        items.iter().find(|c| c.label == "algo").unwrap().insert,
+        "algo="
+    );
+}
+
+#[test]
+fn bad_call_diagnostics_sit_on_the_offending_token() {
+    let text = call_schema("url($K, hots)");
+    let notes = diagnostics(&text, &[]);
+    let n = notes
+        .iter()
+        .find(|n| n.message.contains("did you mean"))
+        .unwrap();
+    assert_eq!(n.range.start, at(4, 10));
+    let text = call_schema("hash($K, algo=sha256, lenth=4)");
+    let notes = diagnostics(&text, &[]);
+    let n = notes
+        .iter()
+        .find(|n| n.message.contains("no option"))
+        .unwrap();
+    assert_eq!(n.range.start, at(4, 24));
+}
