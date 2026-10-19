@@ -148,10 +148,6 @@ DATABASE_URL = ["db.internal.test"]                      # pin for a computed @h
 - **Editor:** option names after `(`, values after `=`, parts after `url(`, hover from each entry's `doc`, and diagnostics for an unknown, repeated or missing option (`hots` gets "did you mean host?").
 - **Drop-in:** a new algorithm, encoding or part is a new entry. `hash` and `url` are not edited.
 
-## Not read
-
-varlock's `domainFromUrl()`, `randomUuid()`, `randomHex()`, `randomString()` and `randomNum()` are validation failures naming the function (Design §2). `url($X, host)` and `random(kind=...)` cover the same ground under penv's names.
-
 ## Changes
 
 | Version | Change |
