@@ -12,12 +12,17 @@
 - Report <=10 lines. Append one line per task to Log: `T<n> <sha> <pass|fail> <note>`.
 
 ## Conventions
-(T1 fills: <=6 lines, e.g. module layout, error text shape, test file naming.)
+- `functions/<name>.rs` exposes `pub fn eval(call: &Call) -> Result<String, String>`; `functions::eval` dispatches.
+- Errors: `"<fn>() <problem>; <fix>"`, naming option, part or path, never a value; resolve prefixes `KEY: `.
+- Argument shape lives in vocabulary.json (`subject`, `address`, `labels`, `args`); `check_args` runs at parse.
+- `editor::Vocabulary::section(name)` returns entries; `Entry::names` matches `query.NAME` patterns.
+- Parser tests go in resolve.rs `mod tests`; per-function tests in `penv-schema/tests/<name>.rs`.
+- `random(N)` already fails at parse (check_args); penv's `randoms()` still reads `random(N)` text (T5).
 
 ## Tasks
 | # | Slug | Goal | Spec | Paths | Deps | Model | Group |
 |---|---|---|---|---|---|---|---|
-| T1 | args-core | Argument form, dispatch, Policy, vocabulary args, stubs | Functions.md:7-19,133-149 | penv-schema/src/{resolve.rs,functions/mod.rs,functions/args.rs,vocabulary.json,editor.rs (Vocabulary only)}, penv/src/source.rs (call sites), penv-dotenv/tests/dotenv.rs | - | opus | A |
+| T1 ✓ | args-core | Argument form, dispatch, Policy, vocabulary args, stubs | Functions.md:7-19,133-149 | penv-schema/src/{resolve.rs,functions/mod.rs,functions/args.rs,vocabulary.json,editor.rs (Vocabulary only)}, penv/src/source.rs (call sites), penv-dotenv/tests/dotenv.rs | - | opus | A |
 | T2 | url | `url()` read/write, parts, multi-host, taint | Functions.md:21-49 | penv-schema/src/functions/url.rs, penv-schema/tests/url.rs | T1 | sonnet | B |
 | T3 | json | `json()` read/write/build, paths, raw(), dup warn | Functions.md:51-75 | penv-schema/src/functions/json.rs, penv-schema/tests/json.rs | T1 | sonnet | B |
 | T4 | hash | `hash()` sha/hmac, encodings, length | Functions.md:77-95 | penv-schema/src/functions/hash.rs, penv-schema/tests/hash.rs, Cargo.toml, penv-schema/Cargo.toml, penv-cloud/Cargo.toml | T1 | sonnet | B |
@@ -31,3 +36,4 @@ Groups run in order A, B, C, D, E. Tasks inside group B touch disjoint files and
 parallel. T5 and T6 both touch source.rs (different functions), so T6 waits for T5.
 
 ## Log
+T1 c63897c pass also touched penv-targets/src/view.rs (resolve_full call site); 19 penv tests fail before and after (agent-session env)
