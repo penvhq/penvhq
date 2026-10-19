@@ -590,7 +590,33 @@ impl Run<'_> {
                 Arg::Address(_) => {}
             }
         }
+        if name == "json" {
+            self.warn_duplicate_keys(call.subject.as_deref());
+        }
         functions::eval(&call)
+    }
+
+    fn warn_duplicate_keys(&mut self, subject: Option<&str>) {
+        let key = self.stack.last().cloned().unwrap_or_default();
+        for dup in subject
+            .map(functions::json::duplicate_keys)
+            .unwrap_or_default()
+        {
+            let message = format!(
+                "json() reads a document that repeats the key \"{dup}\"; the last value is used"
+            );
+            if !self
+                .errors
+                .iter()
+                .any(|e| e.key == key && e.message == message)
+            {
+                self.errors.push(ResolveError {
+                    key: key.clone(),
+                    message,
+                    soft: true,
+                });
+            }
+        }
     }
 
     fn ref_key(&mut self, args: &[&Expr]) -> Result<String, String> {
@@ -611,13 +637,16 @@ impl Run<'_> {
 
     fn fallback(&mut self, args: &[&Expr]) -> Result<String, String> {
         arity("fallback", args, 1, usize::MAX)?;
+        // An arm that errors falls through; only the last arm's error is reported.
+        let mut last_err = None;
         for arg in args {
-            let v = self.quietly(arg)?;
-            if !v.is_empty() {
-                return Ok(v);
+            match self.quietly(arg) {
+                Ok(v) if !v.is_empty() => return Ok(v),
+                Ok(_) => last_err = None,
+                Err(e) => last_err = Some(e),
             }
         }
-        Ok(String::new())
+        last_err.map_or(Ok(String::new()), Err)
     }
 
     fn branch(&mut self, args: &[&Expr]) -> Result<String, String> {

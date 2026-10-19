@@ -130,7 +130,6 @@ fn missing_null_and_invalid_fail_without_values() {
 }
 
 #[test]
-#[ignore = "resolve.rs fallback() propagates errors; needs a T1-path change"]
 fn fallback_supplies_a_default() {
     assert_eq!(eval("fallback(json($DB_SECRET, nope), d)").unwrap(), "d");
 }
@@ -226,4 +225,19 @@ fn many_duplicate_keys_keep_first_position_last_value() {
     );
     let out = eval_doc(&doc);
     assert!(out.starts_with(r#"{"k0":1000,"k1":1001,"#));
+}
+
+#[test]
+fn a_duplicate_key_warns_naming_the_key_not_the_value() {
+    let (v, e) = run(
+        &[
+            ("J", Raw::literal(r#"{"a":"fakeone","a":"faketwo"}"#)),
+            ("D", Raw::computed("json($J, a)")),
+        ],
+        &Policy::default(),
+    );
+    assert_eq!(v["D"], "faketwo");
+    assert!(e.iter().all(|x| x.soft), "{e:?}");
+    assert!(e.iter().any(|x| x.message.contains("\"a\"")));
+    assert!(e.iter().all(|x| !x.message.contains("fake")));
 }
