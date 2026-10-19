@@ -1,6 +1,7 @@
 //! `url()`, docs/Functions.md. A hand-written parser: the schema crate takes no URL dependency.
 
-use super::{Arg, Call};
+use super::{Arg, Call, Policy, Taint};
+use crate::editor::vocabulary;
 use crate::resolve::Expr;
 
 #[derive(Debug, Default)]
@@ -14,6 +15,24 @@ struct Url {
     /// Raw `name=value` pairs, still encoded.
     query: Vec<(String, Option<String>)>,
     fragment: Option<String>,
+}
+
+/// A sensitive part is always sensitive; a `public` part of a stored key is declassified.
+pub fn taint(address: Option<&str>, subject_key: Option<&str>, _: &str, policy: &Policy) -> Taint {
+    let Some(part) = address else {
+        return Taint::Inputs;
+    };
+    let always = vocabulary()
+        .url_parts
+        .iter()
+        .any(|p| p.sensitive && p.names(part));
+    if always {
+        Taint::Always
+    } else if subject_key.is_some() && policy.url_public.contains(part) {
+        Taint::Public
+    } else {
+        Taint::Inputs
+    }
 }
 
 /// `password=` takes a `$KEY` reference. Called by `check_args` on the url arguments.

@@ -1,6 +1,6 @@
 //! `json()`, docs/Functions.md. Order-keeping values, so output keeps document order.
 
-use super::Call;
+use super::{Call, Policy, Taint};
 
 #[derive(Debug, Clone, PartialEq)]
 enum J {
@@ -281,6 +281,28 @@ fn parse_doc(text: &str) -> Result<(J, Vec<String>), String> {
 /// text is not JSON. The resolver reports each as a soft error naming the key.
 pub fn duplicate_keys(text: &str) -> Vec<String> {
     parse_doc(text).map(|(_, d)| d).unwrap_or_default()
+}
+
+/// The soft warnings a read of `text` gives: one per repeated key.
+pub fn warnings(text: &str) -> Vec<String> {
+    duplicate_keys(text)
+        .into_iter()
+        .map(|dup| {
+            format!(
+                "json() reads a document that repeats the key \"{dup}\"; the last value is used"
+            )
+        })
+        .collect()
+}
+
+/// A path is declassified only when the stored key's `public` list names it.
+pub fn taint(address: Option<&str>, subject_key: Option<&str>, _: &str, policy: &Policy) -> Taint {
+    let listed = address.is_some_and(|path| {
+        subject_key
+            .and_then(|k| policy.json_public.get(k))
+            .is_some_and(|paths| paths.contains(path))
+    });
+    if listed { Taint::Public } else { Taint::Inputs }
 }
 
 fn write(v: &J, out: &mut String) {
