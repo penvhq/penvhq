@@ -23,7 +23,7 @@ penv validates your `.env` files against a committed `.env.schema`, starts your 
 ```bash
 curl -fsSL 'https://penv.cloud/install?ref=gh' | sh     # macOS, Linux
 irm 'https://penv.cloud/install.ps1?ref=gh' | iex       # Windows (PowerShell)
-npm i -g @penvhq/cli@next                               # npm; `next` while 1.0 is in prerelease
+npm i -g @penvhq/cli                                    # npm; `latest` is 1.0.0
 ```
 
 <details>
@@ -98,7 +98,7 @@ The format is [`@env-spec`](https://varlock.dev/env-spec/overview/), the same on
 | `@sensitive` | key | nothing, `true`, `false` |
 | `@type` | key | one of the types below |
 | `@example`, `@docs`, `@deprecated` | key | a value / a note |
-| `@hosts` | key | one host, or `(a.com, "*.b.com")`: at most 32, no scheme, port, path or bare `*`. Enables [sealed runs](#sealed-runs). |
+| `@hosts` | key | one host, `(a.com, "*.b.com")` (at most 32, no scheme, port, path or bare `*`), or a computed value such as `url($DATABASE_URL, host)`. Enables [sealed runs](#sealed-runs). |
 | `@rotate` | key | A duration (`90d`, `1y6m`, `12h`, `30min`), largest unit first. `penv check` prints a reminder counted from the last write; it never changes the exit code. |
 
 `@dynamic` and `@static` are parsed and kept; penv acts on neither. Anything else is ignored with a warning (`unknown_decorator`, or `varlock_only` for varlock's `@plugin` and similar).
@@ -127,7 +127,7 @@ A value that contains `${KEY}`, or is a single function call, is computed. Singl
 ```sh
 DATABASE_URL=postgres://app:${DB_PASSWORD | urlencode}@db:5432/app
 LOG_LEVEL=${LEVEL:-info}
-SESSION_SECRET=random(32)
+SESSION_SECRET=random(length=32)
 SHARED_KEY=penv(production/SHARED_KEY)
 LITERAL='${NOT_EXPANDED}'
 ```
@@ -135,10 +135,13 @@ LITERAL='${NOT_EXPANDED}'
 | Form | What it does |
 |---|---|
 | `${KEY}` · `${KEY:-or}` · `${KEY-or}` | Reference; default when empty-or-unset; default when unset only. |
-| `${KEY \| urlencode}` · `base64` · `lower` · `upper` · `trim` | **Filters**, applied left to right. |
+| `${KEY \| urlencode}` · `base64` · `b64d` · `lower` · `upper` · `trim` | **Filters**, applied left to right. |
 | `ref` `concat` `fallback` `if` `eq` `not` `isEmpty` `forEnv` | `@env-spec` functions. |
 | `match(subject, label: value, _: value)` · `and` · `or` · `startsWith` · `endsWith` | penv additions. `_` is the default branch. |
-| `random(N)` | Generated once by `penv run` (N from 8 to 512), kept in `.env.local`, never sent by `penv push`. |
+| `random(kind=, length=)` | Generated once by `penv run`, kept in `.env.local`, never sent by `penv push`. Kinds `alnum` (default), `hex`, `base64url`, `uuid`; `length` 8 to 512. `random(32)` fails: write `length=32`. |
+| `url(KEY, part)` | Read a part of a URL: `url($DATABASE_URL, host)`. Write one: `url($DATABASE_URL, host=replica.internal.test)`. `host`, `port`, `scheme` and `origin` are public; `path`, `user`, `password` and `query.NAME` are sensitive. |
+| `json(KEY, path)` | Read, write or build JSON: `json($X, db.hosts[0])`, `json($X, project_id=acme)`, `json(username=$U, password=$P)`. |
+| `hash(KEY, algo=)` | `sha256`, `sha512`, `hmac-sha256` or `hmac-sha512` (the last two need `key=`); `encoding=`, `length=`. Details for all three in [`docs/Functions.md`](docs/Functions.md). |
 | `penv(KEY)` · `penv(env/KEY)` · `penv(project/env/KEY)` · `penv(org/project/env/KEY)` | Read a value from another environment, project or org. `penv()` alone reads the key it sits on. |
 | `exec()` and plugin functions | **Refused.** A schema never starts a process. |
 
@@ -183,6 +186,8 @@ The command sees a **placeholder shaped like the real value** (it honors `starts
 | `AWS_SECRET_ACCESS_KEY` | The SDK signs with a placeholder; the proxy re-signs each request (SigV4) with the real key, which never goes on the wire. |
 
 A type with no room for a placeholder is `cannot_seal`.
+
+A computed `@hosts` is pinned under `[hosts]` in `.penv/config.toml`. `check` and sealed runs refuse a key whose hosts differ from the pin; `penv check --pin-hosts` writes the pins. A key with a computed `@hosts` is not yet published as sealed to penv.cloud; sealed runs and the pins enforce it locally.
 
 ## Coding agents
 
@@ -279,7 +284,7 @@ A teammate clones the repo and runs `penv run -- pnpm dev`. That's the whole onb
 
 ## Editor support
 
-`penv lsp` serves `.env.schema` over the Language Server Protocol: diagnostics (what `penv check` reports for the schema), completion, hover on every decorator, function and filter (marked *penv*, *@env-spec* or *varlock*), go-to-definition for key references, and an outline. It only ever reads files named `.env.schema`, never value files, and makes no network requests.
+`penv lsp` serves `.env.schema` over the Language Server Protocol: diagnostics (what `penv check` reports for the schema), completion (including function arguments, with the closest option suggested on a typo), hover on every decorator, function and filter (marked *penv*, *@env-spec* or *varlock*), go-to-definition for key references, and an outline. It only ever reads files named `.env.schema`, never value files, and makes no network requests.
 
 - **VS Code:** install *penv* from the Marketplace or Open VSX (needs penv 1.0.0-beta.3 or newer).
 - **Neovim 0.11:**
@@ -299,7 +304,7 @@ Run `penv help --json` for the machine-readable manifest (completions are genera
 | `penv` | Project state and the one next command |
 | `init` | `.env` → `.env.schema`; picks harnesses to guard; generates typed files |
 | `run -- cmd` | Validate, inject, mask. `--sealed` for sealed runs |
-| `check [KEY]` | Schema, values, drift, guard coverage, git exposure, unused/undeclared keys |
+| `check [KEY]` | Schema, values, drift, guard coverage, git exposure, unused/undeclared keys. `--pin-hosts` writes `[hosts]` pins for computed `@hosts` |
 | `why KEY` | Where a value comes from and how it's treated, never the value |
 | `ls` | Names and types, values masked |
 | `scan` | Find secret values committed to other files |
@@ -322,7 +327,7 @@ Run `penv help --json` for the machine-readable manifest (completions are genera
 
 **Output and exit codes.** Output is JSON when stdout isn't a terminal, and under agents. Exit codes: `0` ok · `1` error · `2` auth · `3` validation · `4` confirmation required · `5` no credential · `6` environment refused.
 
-**Configuration** lives in `.penv/config.toml`, written by `penv init` with every setting at its default and a comment saying what each value does: `[schema] version`, `[run] preload`, `[local] encrypt`, `[public] prefixes`, `[targets.<name>]`, `[providers.<slug>]`.
+**Configuration** lives in `.penv/config.toml`, written by `penv init` with every setting at its default and a comment saying what each value does: `[schema] version`, `[run] preload`, `[local] encrypt`, `[public] prefixes`, `[targets.<name>]`, `[providers.<slug>]`, `[hosts]` (pins for a computed `@hosts`), and the public lists `[url] public`, `[hash] public` and `[json.KEY] public`. A public list declassifies only a stored value's parts, hash keys or JSON paths you name; `penv check` rejects an entry that would expose a secret. See [`docs/Functions.md`](docs/Functions.md#config).
 
 <details>
 <summary><b>Environment variables penv reads</b></summary>
@@ -337,7 +342,7 @@ penv reads varlock's schema format and exists alongside it. The honest differenc
 
 | | **penv** | **varlock** |
 |---|---|---|
-| Schema format | `@env-spec`, plus penv extensions (`@hosts`, `@rotate`, `@assert`, filters, `match`, `random`, `penv()`) | `@env-spec` |
+| Schema format | `@env-spec`, plus penv extensions (`@hosts`, `@rotate`, `@assert`, filters, `match`, `random`, `url()`, `json()`, `hash()`, `penv()`) | `@env-spec` |
 | Reads the other's schema | A varlock schema parses; unknown parts warn | penv-specific parts are outside its vocabulary |
 | `exec()` and plugin functions | Refused by design | Supported, with a large plugin ecosystem |
 | Secrets backends | penv.cloud, local encrypted files, bundles | Plugins for 1Password, AWS, Vault, Infisical and more |
@@ -348,7 +353,7 @@ Maintainer benchmark (Linux x86_64, varlock 1.20.0 from npm): `run -- true` 5.7 
 
 ## Status
 
-`1.0.0-rc.3`. Behavior has been frozen since `rc.1`; only fixes land before `1.0.0`. penv.cloud is the hosted service; the CLI is the open-source part and works without it.
+`1.0.0` is the current release. Install from `latest`; `next` carries prereleases. penv.cloud is the hosted service; the CLI is the open-source part and works without it.
 
 - Docs: [penv.cloud/docs](https://penv.cloud/docs)
 - Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Security: [`SECURITY.md`](SECURITY.md) · [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
