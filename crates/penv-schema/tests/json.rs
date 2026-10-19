@@ -179,3 +179,51 @@ fn taint_listed_path_is_public() {
         Taint::Inputs
     );
 }
+
+fn doc_result(doc: &str, expr: &str) -> Result<String, ()> {
+    let (v, e) = run(
+        &[("J", Raw::literal(doc)), ("D", Raw::computed(expr))],
+        &Policy::default(),
+    );
+    match v.get("D") {
+        Some(x) if e.is_empty() => Ok(x.clone()),
+        _ => Err(()),
+    }
+}
+
+#[test]
+fn unicode_escape_needs_four_hex_digits() {
+    assert!(doc_result(r#"{"a":"\u+041"}"#, "json($J)").is_err());
+    assert!(doc_result(r#"{"a":"A"}"#, "json($J)").is_ok());
+}
+
+#[test]
+fn form_feed_is_not_json_whitespace() {
+    assert!(doc_result("{\"a\":1,\u{c}\"b\":2}", "json($J)").is_err());
+    assert!(doc_result("{\"a\":1,\t\"b\":2}", "json($J)").is_ok());
+}
+
+#[test]
+fn path_index_and_separator_are_strict() {
+    let doc = r#"{"a":[10,20]}"#;
+    assert_eq!(doc_result(doc, "json($J, a[1])").unwrap(), "20");
+    assert!(doc_result(doc, "json($J, a[+1])").is_err());
+    assert!(doc_result(r#"{"a":[{"b":1}]}"#, "json($J, a[0]b)").is_err());
+    assert_eq!(
+        doc_result(r#"{"a":[{"b":1}]}"#, "json($J, a[0].b)").unwrap(),
+        "1"
+    );
+}
+
+#[test]
+fn many_duplicate_keys_keep_first_position_last_value() {
+    let doc = format!(
+        "{{{}}}",
+        (0..2000)
+            .map(|i| format!("\"k{}\":{}", i % 1000, i))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let out = eval_doc(&doc);
+    assert!(out.starts_with(r#"{"k0":1000,"k1":1001,"#));
+}

@@ -29,7 +29,11 @@ struct Parser<'a> {
 
 impl Parser<'_> {
     fn ws(&mut self) {
-        while self.b.get(self.i).is_some_and(|c| c.is_ascii_whitespace()) {
+        while self
+            .b
+            .get(self.i)
+            .is_some_and(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r'))
+        {
             self.i += 1;
         }
     }
@@ -56,6 +60,7 @@ impl Parser<'_> {
             Some(b'{') => {
                 self.i += 1;
                 let mut obj: Vec<(String, J)> = Vec::new();
+                let mut seen: std::collections::HashMap<String, usize> = Default::default();
                 if self.eat(b'}') {
                     return Ok(J::Obj(obj));
                 }
@@ -69,14 +74,17 @@ impl Parser<'_> {
                         return self.fail("expected ':'");
                     }
                     let v = self.value(depth + 1)?;
-                    match obj.iter_mut().find(|(n, _)| *n == k) {
-                        Some(slot) => {
-                            slot.1 = v;
+                    match seen.get(&k) {
+                        Some(&at) => {
+                            obj[at].1 = v;
                             if !self.dups.contains(&k) {
                                 self.dups.push(k);
                             }
                         }
-                        None => obj.push((k, v)),
+                        None => {
+                            seen.insert(k.clone(), obj.len());
+                            obj.push((k, v));
+                        }
                     }
                     if self.eat(b',') {
                         continue;
@@ -140,6 +148,7 @@ impl Parser<'_> {
         let h = self
             .s
             .get(self.i..self.i + 4)
+            .filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit()))
             .and_then(|h| u32::from_str_radix(h, 16).ok());
         match h {
             Some(n) => {
@@ -349,9 +358,16 @@ fn parse_path(path: &str) -> Result<Vec<Seg>, String> {
                     i = end + 2;
                 } else {
                     let end = path[i..].find(']').ok_or_else(bad)? + i;
-                    let n = path[i..end].parse::<usize>().map_err(|_| bad())?;
+                    let digits = &path[i..end];
+                    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+                        return Err(bad());
+                    }
+                    let n = digits.parse::<usize>().map_err(|_| bad())?;
                     segs.push(Seg::Idx(n));
                     i = end + 1;
+                }
+                if i < b.len() && !matches!(b[i], b'.' | b'[') {
+                    return Err(bad());
                 }
             }
             b'.' if !segs.is_empty() && i + 1 < b.len() && b[i + 1] != b'.' && b[i + 1] != b'[' => {
