@@ -47,6 +47,9 @@ Bare `penv` shows the project state and the one next command to run.
 # @type=enum(development,staging,production)
 APP_ENV=development
 
+# @type=string @sensitive
+DB_PASSWORD=
+
 # @type=url
 DATABASE_URL=postgres://app:${DB_PASSWORD | urlencode}@db:5432/app
 
@@ -54,7 +57,7 @@ DATABASE_URL=postgres://app:${DB_PASSWORD | urlencode}@db:5432/app
 STRIPE_SECRET_KEY=
 ```
 
-The format is [`@env-spec`](https://varlock.dev/env-spec/overview/): its decorators (`@currentEnv`, `@defaultRequired`, `@defaultSensitive`, `@import`, `@required`, `@optional`, `@sensitive`, `@type`, `@example`, `@docs`, `@deprecated`), types and functions (`ref`, `concat`, `fallback`, `if`, `eq`, `not`, `isEmpty`, `forEnv`) are documented there. A varlock schema parses; what penv does not know is ignored with a warning. Below is only what penv adds.
+The format is [`@env-spec`](https://varlock.dev/env-spec/overview/): its decorators (`@currentEnv`, `@defaultRequired`, `@defaultSensitive`, `@import`, `@required`, `@optional`, `@sensitive`, `@type`, `@example`, `@docs`, `@deprecated`), types and functions (`ref`, `concat`, `fallback`, `if`, `eq`, `not`, `isEmpty`, `forEnv`) are documented there. A varlock schema parses; what penv does not know is ignored with a warning. penv parses the `matches` and `precision` type options and passes them to generated types and penv.cloud, but does not enforce them: a failing `matches` does not fail `penv check`. Below is only what penv adds.
 
 ### Decorators
 
@@ -62,7 +65,7 @@ The format is [`@env-spec`](https://varlock.dev/env-spec/overview/): its decorat
 |---|---|---|
 | `@penv` | Header. Links the schema to a cloud project; absent means local mode. `<provider>:org/project` uses [another provider](docs/PROVIDERS.md). | `# @penv=acme/web` |
 | `@assert` | Header or key. `penv check` and `penv run` fail with the message when the expression is false. | `# @assert(not(eq($PORT, $ADMIN_PORT)), "ports must differ")` |
-| `@hosts` | Key. Seals the value: under an agent or `penv run --sealed` the command gets a placeholder, and the real value goes only to these hosts (at most 32). | `# @hosts(api.stripe.com, "*.stripe.com")` |
+| `@hosts` | Key. Seals the value: under an agent or `penv run --sealed` the command gets a placeholder, and the real value goes only to these hosts (at most 32). A computed `@hosts=url($DATABASE_URL, host)` must be pinned with `penv check --pin-hosts` ([Config](docs/Functions.md#config)). | `# @hosts(api.stripe.com, "*.stripe.com")` |
 | `@rotate` | Key. `penv check` reminds you once the value is older than this. Units `y m w d h min s`, largest first. | `# @rotate=90d` |
 
 ### Functions
@@ -79,7 +82,7 @@ The format is [`@env-spec`](https://varlock.dev/env-spec/overview/): its decorat
 | `hash` | Digest or HMAC: `sha256`, `sha512`, `hmac-sha256`, `hmac-sha512` (`key=`); `encoding=`, `length=`. | `hash($TOKEN, algo=sha256)` |
 | `penv` | A value from another environment, project or org; `penv()` reads this key. | `penv(production/SHARED_KEY)` |
 
-`exec()` and plugin functions are refused: a schema never starts a process. A value computed from a sensitive key stays sensitive. Full reference: [`docs/Functions.md`](docs/Functions.md).
+`exec()` and plugin functions are refused: a schema never starts a process. A value computed from a sensitive key stays sensitive unless a `public` list declassifies it; `url()` scheme, host, port and origin are public by default ([Config](docs/Functions.md#config)). Full reference: [`docs/Functions.md`](docs/Functions.md).
 
 ### Filters
 
@@ -94,7 +97,7 @@ Applied left to right inside `${…}`: `${KEY | trim | urlencode}`.
 
 ## Benchmark
 
-Maintainer benchmark (Linux x86_64, varlock 1.20.0 from npm): `run -- true` 5.7 ms vs 374 ms, validate 5.0 ms vs 329 ms, scan 3.8 ms vs 349 ms, peak memory 11 MB vs 95 MB.
+Maintainer benchmark of penv 1.0.0-rc.1 against varlock 1.21.0 from npm (Linux x86_64, median of 30 runs): `run -- true` 9.4 ms vs 296.2 ms, validate 10.2 ms vs 302.9 ms, scan 6.5 ms vs 319.6 ms, peak memory 10 MB vs 83 MB.
 
 Method and results: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); run it yourself with `bench/run.sh`.
 

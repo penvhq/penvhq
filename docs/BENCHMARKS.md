@@ -62,11 +62,12 @@ From `bench/run.sh`:
 | Node.js server returning a secret in a response (`run -- node server.js`) | masked in the response bytes | sent unmasked |
 | Python server returning a secret in a response (`run -- python3 server.py`) | masked in the response bytes | sent unmasked |
 | `.env` holding a secret, not in `.gitignore` | `penv check` fails, exit 3 | `varlock load` passes |
-| `url($DATABASE_URL, host)` | resolves to the host | no such function |
-| `json($DB_SECRET, database)` | resolves to the field | no such function |
-| `hash($KEY, algo=sha256, length=8)` | resolves to the 8-character digest | no such function |
+| `url()`, `json()`, `hash()` in one schema: validate | not yet measured | not yet measured |
+| `url($DATABASE_URL, host)` | not yet measured | not yet measured |
+| `json($DB_SECRET, database)` | not yet measured | not yet measured |
+| `hash($KEY, algo=sha256, length=8)` | not yet measured | not yet measured |
 
-The last three rows are penv only: varlock has no `url()`, `json()` or `hash()`, so the varlock column is whether it loads a schema that uses them. Run `bench/run.sh` to fill in its exit code.
+The last four rows were added after the rc.1 run. varlock has no `url()`, `json()` or `hash()`, so its column is whether it loads a schema that uses them: `bench/run.sh` writes `accepted` or `unsupported (exit N)`, and for penv `valid` or the resolved value.
 
 Each row is a block in [`bench/run.sh`](../bench/run.sh) that builds a fresh project and runs both tools: [`penv scan`](https://penv.cloud/docs/cli/scan), [`penv run`](https://penv.cloud/docs/cli/run).
 

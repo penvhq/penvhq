@@ -286,60 +286,87 @@ pub fn key_schema(key: &Key) -> Value {
 }
 
 /// Refuse, before anything is sent, every key penv.cloud would refuse: a name
-/// or path outside its grammar, a value over 256 KiB. Never shows a value.
+/// or path outside its grammar, a value over 256 KiB, a computed @hosts over
+/// 1024 characters. Never shows a value.
 pub fn writable(keys: &[penv_cloud::api::CloudKey]) -> Result<(), CliError> {
+    use penv_cloud::write::Refusal;
     let refused = penv_cloud::write::check_all(keys);
     let Some(first) = refused.first() else {
         return Ok(());
     };
-    let too_large = matches!(first, penv_cloud::write::Refusal::TooLarge { .. });
+    let (code, fix) = match first {
+        Refusal::TooLarge { .. } => (
+            "value_too_large",
+            "Store a large file elsewhere and keep its location in the key, then run this again.",
+        ),
+        Refusal::HostsExpr { .. } => (
+            "schema_invalid",
+            "Shorten the @hosts expression in .env.schema, or list the hosts by name, then run this again.",
+        ),
+        Refusal::Name { .. } | Refusal::Path { .. } => (
+            "name_invalid",
+            "Rename the key in .env.schema and your code: letters, digits, _, . and -, starting with a letter, a digit or _. Then run this again.",
+        ),
+    };
     let listed: Vec<String> = refused.iter().map(ToString::to_string).collect();
     Err(CliError::new(
-        if too_large { "value_too_large" } else { "name_invalid" },
+        code,
         format!("{}. Nothing was sent.", listed.join("; ")),
-        if too_large {
-            "Store a large file elsewhere and keep its location in the key, then run this again."
-        } else {
-            "Rename the key in .env.schema and your code: letters, digits, _, . and -, starting with a letter, a digit or _. Then run this again."
-        },
+        fix,
     )
     .with_exit(Exit::Validation))
 }
 
-const HOST_FIELDS: [&str; 2] = ["hosts", "hostsExpr"];
+fn strip_field(keys: &mut [penv_cloud::api::CloudKey], field: &str) -> bool {
+    let mut stripped = false;
+    for key in keys.iter_mut() {
+        if let Some(schema) = key.schema.as_mut().and_then(|s| s.as_object_mut()) {
+            stripped |= schema.remove(field).is_some();
+        }
+    }
+    stripped
+}
 
-/// Write with every key's schema as written, and when penv.cloud refuses a
-/// schema field it does not store yet (`hosts`, `hostsExpr`, docs/Cloud-API.md),
-/// write once more without them. The committed .env.schema keeps @hosts either
-/// way; the warning says the cloud copy lacks it.
+fn refused_schema(result: &Result<impl Sized, penv_cloud::CloudError>) -> bool {
+    matches!(result, Err(penv_cloud::CloudError::Api(e)) if e.status == 400 && e.code == "schema_invalid")
+}
+
+/// Write every key's schema as written. When penv.cloud answers
+/// `400 schema_invalid`, retry without the computed `hostsExpr` (a cloud that
+/// stores `hosts` but not yet its computed form), and only if that is refused
+/// too, without `hosts` (a cloud that stores neither, docs/Cloud-API.md). The
+/// committed .env.schema keeps @hosts either way; the warning names what the
+/// cloud copy lacks.
 pub fn with_hosts_fallback<T>(
     keys: &mut [penv_cloud::api::CloudKey],
     mut write: impl FnMut(&[penv_cloud::api::CloudKey]) -> Result<T, penv_cloud::CloudError>,
 ) -> Result<T, penv_cloud::CloudError> {
-    let carries_hosts = keys.iter().any(|k| {
-        k.schema
-            .as_ref()
-            .is_some_and(|s| HOST_FIELDS.iter().any(|f| s.get(f).is_some()))
-    });
-    match write(keys) {
-        Err(penv_cloud::CloudError::Api(e))
-            if carries_hosts && e.status == 400 && e.code == "schema_invalid" =>
-        {
-            for key in keys.iter_mut() {
-                if let Some(schema) = key.schema.as_mut().and_then(|s| s.as_object_mut()) {
-                    for field in HOST_FIELDS {
-                        schema.remove(field);
-                    }
-                }
-            }
-            let written = write(keys)?;
-            crate::ui::warn(
-                "penv.cloud does not store @hosts or its computed form yet, so the cloud copy of the schema lacks it; .env.schema keeps it.",
-            );
-            Ok(written)
-        }
-        other => other,
+    let mut result = write(keys);
+    if !refused_schema(&result) {
+        return result;
     }
+    let dropped_expr = strip_field(keys, "hostsExpr");
+    if dropped_expr {
+        result = write(keys);
+        if !refused_schema(&result) {
+            if result.is_ok() {
+                crate::ui::warn(
+                    "penv.cloud does not store a computed @hosts yet, so the cloud copy of the schema lacks each computed @hosts; static @hosts lists were kept, and .env.schema keeps both.",
+                );
+            }
+            return result;
+        }
+    }
+    if !strip_field(keys, "hosts") {
+        return result;
+    }
+    let written = write(keys)?;
+    crate::ui::warn(if dropped_expr {
+        "penv.cloud does not store @hosts yet, static or computed, so the cloud copy of the schema lacks both; .env.schema keeps them."
+    } else {
+        "penv.cloud does not store @hosts yet, so the cloud copy of the schema lacks it; .env.schema keeps it."
+    });
+    Ok(written)
 }
 
 /// Why a `penv login` ends, so the fix says it plainly.
@@ -1301,32 +1328,74 @@ mod tests {
         assert_eq!(project_name(Path::new("")), "app");
     }
 
-    #[test]
-    fn an_older_cloud_refusing_hosts_expr_gets_one_retry_without_it() {
-        let mut keys = vec![penv_cloud::api::CloudKey {
-            name: "DB".into(),
-            schema: Some(serde_json::json!({ "sensitive": true, "hostsExpr": "url($X, host)" })),
-            ..Default::default()
-        }];
+    fn host_keys() -> Vec<penv_cloud::api::CloudKey> {
+        vec![
+            penv_cloud::api::CloudKey {
+                name: "STRIPE".into(),
+                schema: Some(serde_json::json!({ "sensitive": true, "hosts": ["api.stripe.com"] })),
+                ..Default::default()
+            },
+            penv_cloud::api::CloudKey {
+                name: "DB".into(),
+                schema: Some(
+                    serde_json::json!({ "sensitive": true, "hostsExpr": "url($X, host)" }),
+                ),
+                ..Default::default()
+            },
+        ]
+    }
+
+    /// A cloud that refuses any schema holding one of `refused`; returns each write's schemas.
+    fn push_against(refused: &[&str]) -> (bool, Vec<[Value; 2]>) {
+        let mut keys = host_keys();
         let mut sent = Vec::new();
-        let refused = ApiError {
-            status: 400,
-            code: "schema_invalid".into(),
-            retry_after: None,
-            message: None,
-            detail: None,
-            exchange: None,
-        };
         let result = with_hosts_fallback(&mut keys, |k| {
-            sent.push(k[0].schema.clone().unwrap());
-            if sent.len() == 1 {
-                Err(penv_cloud::CloudError::Api(refused.clone()))
+            sent.push([k[0].schema.clone().unwrap(), k[1].schema.clone().unwrap()]);
+            let holds = k.iter().any(|key| {
+                refused
+                    .iter()
+                    .any(|f| key.schema.as_ref().unwrap().get(f).is_some())
+            });
+            if holds {
+                Err(penv_cloud::CloudError::Api(ApiError {
+                    status: 400,
+                    code: "schema_invalid".into(),
+                    retry_after: None,
+                    message: None,
+                    detail: None,
+                    exchange: None,
+                }))
             } else {
                 Ok(())
             }
         });
-        assert!(result.is_ok());
-        assert_eq!(sent[0]["hostsExpr"], "url($X, host)");
-        assert_eq!(sent[1], serde_json::json!({ "sensitive": true }));
+        (result.is_ok(), sent)
+    }
+
+    #[test]
+    fn a_cloud_storing_both_host_forms_gets_one_write() {
+        let (ok, sent) = push_against(&[]);
+        assert!(ok);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0][0]["hosts"], serde_json::json!(["api.stripe.com"]));
+        assert_eq!(sent[0][1]["hostsExpr"], "url($X, host)");
+    }
+
+    #[test]
+    fn a_cloud_refusing_only_hosts_expr_keeps_the_static_hosts() {
+        let (ok, sent) = push_against(&["hostsExpr"]);
+        assert!(ok);
+        assert_eq!(sent.len(), 2, "one retry, no more");
+        assert_eq!(sent[1][0]["hosts"], serde_json::json!(["api.stripe.com"]));
+        assert_eq!(sent[1][1], serde_json::json!({ "sensitive": true }));
+    }
+
+    #[test]
+    fn a_cloud_refusing_both_host_forms_gets_neither() {
+        let (ok, sent) = push_against(&["hosts", "hostsExpr"]);
+        assert!(ok);
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[2][0], serde_json::json!({ "sensitive": true }));
+        assert_eq!(sent[2][1], serde_json::json!({ "sensitive": true }));
     }
 }
