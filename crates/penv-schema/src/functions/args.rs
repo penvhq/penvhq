@@ -98,13 +98,40 @@ pub fn check_args(name: &str, args: &[Arg]) -> Result<(), String> {
         if let Some(o) = missing {
             return Err(format!("{name}() needs {}=", o.name));
         }
+        needs(name, word, args, &seen)?;
+    }
+    Ok(())
+}
+
+/// An option value whose vocabulary entry lists `needs` requires those options too.
+fn needs(name: &str, word: &Word, args: &[Arg], seen: &BTreeSet<&str>) -> Result<(), String> {
+    for arg in args {
+        let Arg::Named(label, Expr::Text(text)) = arg else {
+            continue;
+        };
+        let Some(section) = word
+            .args
+            .iter()
+            .find(|o| &o.name == label)
+            .and_then(|o| o.values_from.as_ref())
+        else {
+            continue;
+        };
+        let Some(entry) = vocabulary().section(section).iter().find(|e| e.names(text)) else {
+            continue;
+        };
+        if let Some(need) = entry.needs.iter().find(|n| !seen.contains(n.as_str())) {
+            return Err(format!("{name}() {label} {} needs {need}=", entry.name));
+        }
     }
     Ok(())
 }
 
 fn address(name: &str, word: &Word, at: &str, count: usize, subject: bool) -> Result<(), String> {
     let Some(slot) = &word.address else {
-        return Err(format!("{name}() takes {at} as name=value; write {at}=..."));
+        return Err(format!(
+            "{name}() takes the bare argument as name=value; write the option's name before ="
+        ));
     };
     if count > 1 {
         return Err(format!(
@@ -113,12 +140,12 @@ fn address(name: &str, word: &Word, at: &str, count: usize, subject: bool) -> Re
     }
     if !subject {
         return Err(format!(
-            "{name}() reads {at} from a subject; write it first, such as {name}($KEY, {at})"
+            "{name}() reads the bare argument from a subject; write the subject first, such as {name}($KEY, ...)"
         ));
     }
     match &slot.values_from {
         Some(section) if !names(section, at) => Err(format!(
-            "{name}() has no part {at}; parts are {}",
+            "{name}() has no part named by the bare argument; parts are {}",
             listed(section)
         )),
         _ => Ok(()),

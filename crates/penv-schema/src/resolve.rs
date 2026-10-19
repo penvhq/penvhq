@@ -562,6 +562,7 @@ impl Run<'_> {
             address: address(args),
             options: Vec::new(),
             raw: BTreeSet::new(),
+            quoted: BTreeSet::new(),
         };
         for arg in args {
             match arg {
@@ -572,6 +573,13 @@ impl Run<'_> {
                     };
                     call.options.push((label, self.eval(e)?));
                     call.raw.insert(label);
+                }
+                Arg::Named(label, Expr::Call(q, inner)) if q == QUOTED => {
+                    let [Arg::Subject(e)] = inner.as_slice() else {
+                        unreachable!("a quoted option holds one value");
+                    };
+                    call.options.push((label, self.eval(e)?));
+                    call.quoted.insert(label);
                 }
                 Arg::Named(label, e) => call.options.push((label, self.eval(e)?)),
                 Arg::Address(_) => {}
@@ -747,6 +755,8 @@ fn address(args: &[Arg]) -> Option<&str> {
     })
 }
 
+/// Wraps a quoted json() option value, so writing keeps it a string.
+const QUOTED: &str = "'";
 const RAW_TAKES_ONE: &str = "raw() takes the one value to embed, such as raw($INNER)";
 
 fn truthy(v: &str) -> bool {
@@ -835,6 +845,11 @@ fn call_args(name: &str, inner: &str, depth: usize) -> Result<Vec<Arg>, String> 
     let mut args = Vec::new();
     for text in split(inner)? {
         let text = text.trim();
+        if text.is_empty() {
+            return Err(format!(
+                "{name}() has an empty argument; remove the extra comma"
+            ));
+        }
         let Some(word) = named_form else {
             args.push(Arg::Subject(arg(text, depth + 1)?));
             continue;
@@ -848,7 +863,14 @@ fn call_args(name: &str, inner: &str, depth: usize) -> Result<Vec<Arg>, String> 
             let value = match call_name(value) {
                 Some("raw") if name == "json" => {
                     let inner = &value[4..value.len() - 1];
-                    Expr::Call("raw".into(), call_args("raw", inner, depth + 1)?)
+                    let raw = call_args("raw", inner, depth + 1)?;
+                    if !matches!(raw.as_slice(), [Arg::Subject(_)]) {
+                        return Err(RAW_TAKES_ONE.into());
+                    }
+                    Expr::Call("raw".into(), raw)
+                }
+                _ if name == "json" && value.starts_with(['"', '\'']) => {
+                    Expr::Call(QUOTED.into(), vec![Arg::Subject(arg(value, depth + 1)?)])
                 }
                 _ => arg(value, depth + 1)?,
             };
@@ -1898,7 +1920,7 @@ mod tests {
         assert!(
             parse("${K | url(nope)}")
                 .unwrap_err()
-                .contains("no part nope")
+                .contains("no part named by the bare argument")
         );
         assert!(parse("${K | random(length=8)}").is_err());
     }
@@ -1923,6 +1945,58 @@ mod tests {
             assert!(error.message.contains(says), "{value}: {}", error.message);
             assert!(!error.message.contains("fake_api_key"), "{}", error.message);
         }
+    }
+
+    #[test]
+    fn argument_shape_fails_at_parse_without_naming_a_value() {
+        let fake = Raw::literal("fake_api_key_123");
+        for (value, says) in [
+            (
+                r#"json({"password":"fakepw"})"#,
+                "reads the bare argument from a subject",
+            ),
+            (
+                "url($K, fakepw)",
+                "no part named by the bare argument; parts are",
+            ),
+            (
+                "json($K, )",
+                "json() has an empty argument; remove the extra comma",
+            ),
+            ("url($K, )", "url() has an empty argument"),
+            ("json(, a=1)", "json() has an empty argument"),
+            (
+                "hash($K, algo=hmac-sha256)",
+                "hash() algo hmac-sha256 needs key=",
+            ),
+            ("json(a=raw())", RAW_TAKES_ONE),
+            ("json(a=raw($K, $K))", RAW_TAKES_ONE),
+        ] {
+            let (_, errors) = run(&[("K", fake.clone()), ("OUT", Raw::computed(value))], "dev");
+            let error = errors.iter().find(|e| e.key == "OUT").expect(value);
+            assert!(error.message.contains(says), "{value}: {}", error.message);
+            assert!(!error.message.contains("fakepw"), "{}", error.message);
+            assert!(!error.message.contains("fake_api_key"), "{}", error.message);
+        }
+        assert!(parse("hash($K, algo=hmac-sha256, key=$K)").is_ok());
+    }
+
+    #[test]
+    fn a_quoted_json_option_is_marked_quoted() {
+        assert_eq!(
+            parse("json(a='25')").unwrap(),
+            Expr::Call(
+                "json".into(),
+                vec![named(
+                    "a",
+                    Expr::Call(QUOTED.into(), vec![Arg::Subject(text("25"))])
+                )]
+            )
+        );
+        assert_eq!(
+            parse("json(a=25)").unwrap(),
+            Expr::Call("json".into(), vec![named("a", text("25"))])
+        );
     }
 
     #[test]

@@ -47,7 +47,8 @@ pub enum Arg {
     Named(String, Expr),
 }
 
-/// A call after its arguments are evaluated. `raw` holds option names given as `raw()`.
+/// A call after its arguments are evaluated. `raw` holds option names given as `raw()`,
+/// `quoted` those whose value was a quoted literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call<'a> {
     pub name: &'a str,
@@ -55,6 +56,7 @@ pub struct Call<'a> {
     pub address: Option<&'a str>,
     pub options: Vec<(&'a str, String)>,
     pub raw: BTreeSet<&'a str>,
+    pub quoted: BTreeSet<&'a str>,
 }
 
 /// How a result's taint is decided, before evaluating.
