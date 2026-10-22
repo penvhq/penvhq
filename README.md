@@ -97,7 +97,7 @@ Applied left to right inside `${…}`: `${KEY | trim | urlencode}`.
 
 ## Benchmark
 
-Maintainer benchmark of penv 1.0.0-rc.1 against varlock 1.21.0 from npm (Linux x86_64, median of 30 runs): `run -- true` 9.4 ms vs 296.2 ms, validate 10.2 ms vs 302.9 ms, scan 6.5 ms vs 319.6 ms, peak memory 10 MB vs 83 MB.
+Maintainer benchmark of penv 1.0.0 against varlock 1.23.0 from npm (Linux x86_64, median of 30 runs): `run -- true` 10.6 ms vs 166.8 ms, validate 12.1 ms vs 168.7 ms, scan 6.9 ms vs 180.9 ms, peak memory 11 MB vs 74 MB.
 
 Method and results: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); run it yourself with `bench/run.sh`.
 
