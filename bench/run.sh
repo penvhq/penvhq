@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # penv vs varlock on the same files: speed, memory, and behaviour.
 #
-#   bench/run.sh                     # penv from PATH, varlock 1.21.0 from npm
+#   bench/run.sh                     # penv from PATH, varlock 1.23.0 from npm
 #   PENV=./target/release/penv bench/run.sh
 #   VARLOCK_VERSION=latest RUNS=50 bench/run.sh
 #   VARLOCK=~/.config/varlock/bin/varlock bench/run.sh   # varlock's standalone binary
@@ -13,7 +13,7 @@ set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
 PENV=${PENV:-$(command -v penv || true)}
-VARLOCK_VERSION=${VARLOCK_VERSION:-1.21.0}
+VARLOCK_VERSION=${VARLOCK_VERSION:-1.23.0}
 RUNS=${RUNS:-30}
 OUT=${OUT:-$PWD/bench-results.json}
 [ -x "$PENV" ] || die "no penv binary: install it or set PENV=<path>"
