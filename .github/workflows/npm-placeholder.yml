@@ -18,7 +18,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Publish and deprecate each placeholder
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PLACEHOLDER }}
           # The scoped name needs the @penv-cloud npm org to exist and the token to reach them.
           NAMES: >-
             penv-cli penv-cloud penvhq penvcli create-penv penv-sh penv-dotenv penv-secrets
