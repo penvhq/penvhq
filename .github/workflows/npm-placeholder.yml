@@ -29,6 +29,8 @@ jobs:
           claimed=""; skipped=""; failed=""
           for name in $NAMES; do
             if npm view "$name" name >/dev/null 2>&1; then
+              # Ours from an earlier run: make sure the deprecation stuck. Someone else's: refused, harmless.
+              npm deprecate "$name@*" "$message" >/dev/null 2>&1 || true
               skipped="$skipped $name"
               continue
             fi
