@@ -270,7 +270,8 @@ const META: &[Meta] = &[
     Meta {
         path: "app revoke",
         implemented: true,
-        exit_codes: &[0, 1, 2, 5],
+        requires_approval: true,
+        exit_codes: &[0, 1, 2, 4, 5],
         ..DEFAULT_META
     },
     Meta {

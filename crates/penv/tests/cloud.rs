@@ -1454,6 +1454,13 @@ fn app_ls_lists_connections() {
             "keys": ["DB_URL", "API_KEY"],
             "createdAt": "2026-10-01T09:00:00.000Z",
             "lastUsedAt": "2026-10-27T08:15:00.000Z"
+        }, {
+            "id": "conn_2",
+            "app": { "clientId": "rekord", "name": "Rekord" },
+            "org": "acme", "project": "billing", "environment": "dev",
+            "keys": ["DB_URL"],
+            "createdAt": "2026-10-02T09:00:00.000Z",
+            "lastUsedAt": null
         }] })
         .to_string(),
     );
@@ -1466,31 +1473,56 @@ fn app_ls_lists_connections() {
     assert_eq!(report["connections"][0]["app"]["name"], "Rekord");
     assert_eq!(report["connections"][0]["keys"][1], "API_KEY");
     assert_eq!(report["connections"][0]["environment"], "staging");
+    assert_eq!(
+        report["connections"][0]["createdAt"],
+        "2026-10-01T09:00:00.000Z"
+    );
+    assert_eq!(report["connections"][0]["app"]["clientId"], "rekord");
+    assert_eq!(report["connections"][1]["lastUsedAt"], Value::Null);
+
+    let text = workspace.run(&mock, &["--format", "text", "app", "ls"]);
+    assert!(stdout(&text).contains("2026-10-27"), "{}", stdout(&text));
+    assert!(stdout(&text).contains("never"), "{}", stdout(&text));
 }
 
 #[test]
-fn app_revoke_deletes_the_connection_and_a_missing_one_is_not_found() {
+fn app_ls_with_no_connections_says_so() {
     let mock = Mock::new();
-    mock.on("DELETE", "/api/v1/app-connections/conn_1", 204, "");
     mock.on(
-        "DELETE",
-        "/api/v1/app-connections/gone",
-        404,
-        &json!({ "error": "not_found" }).to_string(),
+        "GET",
+        CONNECTIONS,
+        200,
+        &json!({ "connections": [] }).to_string(),
     );
     let workspace = Workspace::new(&[]);
 
-    let done = workspace.run(&mock, &["--json", "app", "revoke", "conn_1"]);
-    assert_eq!(done.status.code(), Some(0), "{}", stderr(&done));
-    assert_eq!(json_of(&stdout(&done))["revoked"], "conn_1");
-    assert_eq!(
-        mock.hits("DELETE", "/api/v1/app-connections/conn_1").len(),
-        1
-    );
+    let output = workspace.run(&mock, &["--json", "app", "ls"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(json_of(&stdout(&output))["connections"], json!([]));
 
-    let missing = workspace.run(&mock, &["--json", "app", "revoke", "gone"]);
-    assert_eq!(missing.status.code(), Some(1), "{}", stderr(&missing));
-    assert_eq!(json_of(&stderr(&missing))["error"], "not_found");
+    let text = workspace.run(&mock, &["--format", "text", "app", "ls"]);
+    assert!(
+        stdout(&text).contains("No apps are connected"),
+        "{}",
+        stdout(&text)
+    );
+}
+
+#[test]
+fn app_revoke_is_a_person_s_to_run_and_deletes_nothing_without_one() {
+    let mock = Mock::new();
+    mock.on("DELETE", "/api/v1/app-connections/conn_1", 204, "");
+    let workspace = Workspace::new(&[]);
+
+    let output = workspace.run(&mock, &["--json", "app", "revoke", "conn_1"]);
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "confirmation_required");
+    assert_eq!(error["replay"], "penv app revoke conn_1");
+    assert!(
+        mock.hits("DELETE", "/api/v1/app-connections/conn_1")
+            .is_empty()
+    );
 }
 
 #[test]

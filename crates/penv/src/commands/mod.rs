@@ -142,7 +142,7 @@ pub fn dispatch(cli: &Cli, out: &Output, cwd: &Path, env: &Env) -> Result<Report
             bundle::run(out, cwd, name.as_deref(), env, cli.agent)
         }
         Some(Command::Decrypt) => crypt::run(out, cwd, false, env, cli.agent),
-        Some(Command::App { command }) => app::run(out, command, env),
+        Some(Command::App { command }) => app::run(out, command, env, cli.agent),
         Some(Command::Project { command }) => project::run(out, cwd, command, env, cli.agent),
         Some(Command::Env { project, command }) => {
             environment::run(out, cwd, project.as_deref(), command, env, cli.agent)

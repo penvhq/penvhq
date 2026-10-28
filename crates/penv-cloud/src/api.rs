@@ -263,7 +263,7 @@ pub struct Project {
 }
 
 /// The app a connection was granted to.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectedApp {
     #[serde(rename = "clientId", default)]
     pub client_id: String,
@@ -271,7 +271,7 @@ pub struct ConnectedApp {
 }
 
 /// One live grant of an app to a project environment's keys.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConnection {
     pub id: String,
     pub app: ConnectedApp,
@@ -1015,7 +1015,7 @@ impl Api {
         let url = self.url(&format!("/app-connections/{}", checked_segment("id", id)?));
         let mut response =
             self.attempt(&url, || self.authed(self.http.delete(&url), bearer).call())?;
-        expect(&mut response, &[StatusCode::NO_CONTENT, StatusCode::OK])
+        expect(&mut response, &[StatusCode::NO_CONTENT])
     }
 
     // --- credential exchanges ------------------------------------------------
