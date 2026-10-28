@@ -1438,6 +1438,61 @@ fn project_ls_lists_every_project_with_its_environments() {
     assert_eq!(report["projects"][0]["org"], "acme");
 }
 
+const CONNECTIONS: &str = "/api/v1/app-connections";
+
+#[test]
+fn app_ls_lists_connections() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        CONNECTIONS,
+        200,
+        &json!({ "connections": [{
+            "id": "conn_1",
+            "app": { "clientId": "rekord", "name": "Rekord" },
+            "org": "acme", "project": "billing", "environment": "staging",
+            "keys": ["DB_URL", "API_KEY"],
+            "createdAt": "2026-10-01T09:00:00.000Z",
+            "lastUsedAt": "2026-10-27T08:15:00.000Z"
+        }] })
+        .to_string(),
+    );
+    let workspace = Workspace::new(&[]);
+    let output = workspace.run(&mock, &["--json", "app", "ls"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json_of(&stdout(&output));
+    assert_eq!(report["connections"][0]["id"], "conn_1");
+    assert_eq!(report["connections"][0]["app"]["name"], "Rekord");
+    assert_eq!(report["connections"][0]["keys"][1], "API_KEY");
+    assert_eq!(report["connections"][0]["environment"], "staging");
+}
+
+#[test]
+fn app_revoke_deletes_the_connection_and_a_missing_one_is_not_found() {
+    let mock = Mock::new();
+    mock.on("DELETE", "/api/v1/app-connections/conn_1", 204, "");
+    mock.on(
+        "DELETE",
+        "/api/v1/app-connections/gone",
+        404,
+        &json!({ "error": "not_found" }).to_string(),
+    );
+    let workspace = Workspace::new(&[]);
+
+    let done = workspace.run(&mock, &["--json", "app", "revoke", "conn_1"]);
+    assert_eq!(done.status.code(), Some(0), "{}", stderr(&done));
+    assert_eq!(json_of(&stdout(&done))["revoked"], "conn_1");
+    assert_eq!(
+        mock.hits("DELETE", "/api/v1/app-connections/conn_1").len(),
+        1
+    );
+
+    let missing = workspace.run(&mock, &["--json", "app", "revoke", "gone"]);
+    assert_eq!(missing.status.code(), Some(1), "{}", stderr(&missing));
+    assert_eq!(json_of(&stderr(&missing))["error"], "not_found");
+}
+
 #[test]
 fn renaming_the_project_this_folder_is_linked_to_rewrites_the_header() {
     let mock = Mock::new();

@@ -262,6 +262,30 @@ pub struct Project {
     pub environments: Vec<String>,
 }
 
+/// The app a connection was granted to.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ConnectedApp {
+    #[serde(rename = "clientId", default)]
+    pub client_id: String,
+    pub name: String,
+}
+
+/// One live grant of an app to a project environment's keys.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct AppConnection {
+    pub id: String,
+    pub app: ConnectedApp,
+    pub org: String,
+    pub project: String,
+    pub environment: String,
+    #[serde(default)]
+    pub keys: Vec<String>,
+    #[serde(rename = "createdAt", default)]
+    pub created_at: String,
+    #[serde(rename = "lastUsedAt", default)]
+    pub last_used_at: Option<String>,
+}
+
 /// What a delete erased, so the report can say how much is gone.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Deleted {
@@ -970,6 +994,28 @@ impl Api {
             self.attempt(&url, || self.authed(self.http.delete(&url), bearer).call())?;
         expect(&mut response, &[StatusCode::OK])?;
         read_json(&url, &mut response)
+    }
+
+    // --- app connections -----------------------------------------------------
+
+    pub fn app_connections(&self, bearer: &Bearer) -> Result<Vec<AppConnection>> {
+        #[derive(Deserialize)]
+        struct Body {
+            #[serde(default)]
+            connections: Vec<AppConnection>,
+        }
+        let url = self.url("/app-connections");
+        let mut response =
+            self.attempt(&url, || self.authed(self.http.get(&url), bearer).call())?;
+        expect(&mut response, &[StatusCode::OK])?;
+        Ok(read_json::<Body>(&url, &mut response)?.connections)
+    }
+
+    pub fn revoke_app_connection(&self, bearer: &Bearer, id: &str) -> Result<()> {
+        let url = self.url(&format!("/app-connections/{}", checked_segment("id", id)?));
+        let mut response =
+            self.attempt(&url, || self.authed(self.http.delete(&url), bearer).call())?;
+        expect(&mut response, &[StatusCode::NO_CONTENT, StatusCode::OK])
     }
 
     // --- credential exchanges ------------------------------------------------

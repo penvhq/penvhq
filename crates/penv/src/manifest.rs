@@ -256,6 +256,24 @@ const META: &[Meta] = &[
         ..DEFAULT_META
     },
     Meta {
+        path: "app",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "app ls",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "app revoke",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 5],
+        ..DEFAULT_META
+    },
+    Meta {
         path: "upgrade",
         implemented: true,
         ..DEFAULT_META

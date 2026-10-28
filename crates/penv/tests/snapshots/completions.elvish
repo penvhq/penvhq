@@ -44,6 +44,7 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand 'project' 'Your projects: ls, new, rename, rm'
             cand 'env' 'A project''s environments: ls, new, rename, copy, rm'
             cand 'machine' 'Identities for servers and CI'
+            cand 'app' 'Apps you have connected to your environments'
             cand 'upgrade' 'Replace penv with the latest release'
             cand 'completions' 'Print the shell completion script'
             cand 'hook' 'Run as a harness hook; a payload it cannot read is refused'
@@ -282,6 +283,26 @@ set edit:completion:arg-completer[penv] = {|@words|
             cand '--provider' 'Read values from this provider instead of the one @penv= names'
         }
         if (eq $command 'penv;machine;enroll') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
+        if (eq $command 'penv;app') {
+            cand 'ls' 'List the apps connected to your environments'
+            cand 'revoke' 'Cut an app off from the keys it was given'
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
+        if (eq $command 'penv;app;ls') {
+            cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
+            cand '--format' 'Pick the output format: json or text'
+            cand '--agent' 'Treat this session as an agent: JSON out, values masked'
+            cand '--provider' 'Read values from this provider instead of the one @penv= names'
+        }
+        if (eq $command 'penv;app;revoke') {
             cand '--json' 'Emit JSON on stdout, whatever stdout is attached to'
             cand '--format' 'Pick the output format: json or text'
             cand '--agent' 'Treat this session as an agent: JSON out, values masked'
