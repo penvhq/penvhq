@@ -182,6 +182,15 @@ The routes behind [`penv project`](https://penv.cloud/docs/cli/project) and [`pe
 
 The new slug comes back in the answer; `penv push` writes it into the `@penv=` header. `from` copies another environment's keys and their decorators, never its values.
 
+## App connections
+
+The routes behind `penv app ls` and `penv app revoke`. A `pcu_` only.
+
+| Route | Command | Answers |
+|---|---|---|
+| `GET /app-connections` | `penv app ls` | `{ connections: [{ id, app: { clientId, name }, org, project, environment, keys, createdAt, lastUsedAt \| null }] }`, live ones only |
+| `DELETE /app-connections/{id}` | `penv app revoke` | `204`; `404 { error: "not_found" }` |
+
 ## Errors
 
 The CLI turns each refusal into an [exit code](https://penv.cloud/docs/reference/errors):
