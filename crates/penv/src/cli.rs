@@ -20,7 +20,10 @@ const GROUPS: &[(&str, &[&str])] = &[
     ),
     ("Move values", &["pull", "push"]),
     ("Set up a folder", &["init", "gen", "guard"]),
-    ("Cloud", &["login", "logout", "project", "env", "machine"]),
+    (
+        "Cloud",
+        &["login", "logout", "project", "env", "machine", "app"],
+    ),
     ("This tool", &["upgrade", "help"]),
 ];
 
@@ -304,6 +307,12 @@ pub enum Command {
         command: MachineCommand,
     },
 
+    /// Apps you have connected to your environments
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
+    },
+
     /// Replace penv with the latest release
     Upgrade {
         /// latest (the default), next for prereleases too, or a version such as 1.2.0
@@ -403,6 +412,17 @@ pub enum EnvCommand {
     Rm {
         /// The environment name
         name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AppCommand {
+    /// List the apps connected to your environments
+    Ls,
+    /// Cut an app off from the keys it was given
+    Revoke {
+        /// The connection id, from penv app ls
+        id: String,
     },
 }
 
