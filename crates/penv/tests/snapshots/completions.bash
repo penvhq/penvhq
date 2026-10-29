@@ -13,7 +13,7 @@ _penv() {
             -*) continue ;;
         esac
         case "${cmd:+$cmd }$word" in
-            init|run|push|pull|login|logout|set|unset|ls|bundle|encrypt|decrypt|why|check|gen|scan|guard|reveal|project|"project ls"|"project new"|"project rename"|"project rm"|env|"env ls"|"env new"|"env rename"|"env copy"|"env rm"|machine|"machine enroll"|upgrade|completions|hook|schema|lsp|help) cmd="${cmd:+$cmd }$word" ;;
+            init|run|push|pull|login|logout|set|unset|ls|bundle|encrypt|decrypt|why|check|gen|scan|guard|reveal|project|"project ls"|"project new"|"project rename"|"project rm"|env|"env ls"|"env new"|"env rename"|"env copy"|"env rm"|machine|"machine enroll"|app|"app ls"|"app revoke"|upgrade|completions|hook|schema|lsp|help) cmd="${cmd:+$cmd }$word" ;;
             *) break ;;
         esac
     done
@@ -33,7 +33,7 @@ _penv() {
     words=""
     system=""
     case "$cmd" in
-        "") words="init run push pull login logout set unset ls bundle encrypt decrypt why check gen scan guard reveal project env machine upgrade completions hook schema lsp help --json --format --agent --provider" ;;
+        "") words="init run push pull login logout set unset ls bundle encrypt decrypt why check gen scan guard reveal project env machine app upgrade completions hook schema lsp help --json --format --agent --provider" ;;
         init) words="--force --guards --no-guards --output --json --format --agent --provider" ;;
         run) words="--env --no-mask --no-preload --sealed --json --format --agent --provider"; system=-c ;;
         push) words="--env --org --prune --json --format --agent --provider" ;;
@@ -65,6 +65,9 @@ _penv() {
         "env rm") words="--json --format --agent --provider" ;;
         machine) words="enroll --json --format --agent --provider" ;;
         "machine enroll") words="--json --format --agent --provider" ;;
+        app) words="ls revoke --json --format --agent --provider" ;;
+        "app ls") words="--json --format --agent --provider" ;;
+        "app revoke") words="--json --format --agent --provider" ;;
         upgrade) words="--check --json --format --agent --provider" ;;
         completions) words="bash zsh fish powershell elvish --json --format --agent --provider" ;;
         hook) words="--json --format --agent --provider" ;;

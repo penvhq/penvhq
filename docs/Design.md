@@ -156,6 +156,7 @@ cloud   @penv header, credential in the keychain; value files present only when 
 | `guard [--check]` | Writes every recognised harness config; `--check` reports coverage | `init`; any command that detects a new harness |
 | `reveal KEY` | Prints one value. A person reads it straight; an agent session gets an approval id and exit 4 instead, and `--approval <ID>` prints the value once a person has approved it in the console | never |
 | `machine enroll <secret>` | Binds a server keypair from a one-time secret | never |
+| `app ls` / `app revoke <id>` | Lists the apps a person connected to environments (id, app, environment, keys, last used) and cuts one off. Needs a person's login; `revoke` is destructive, so an agent session or a non-terminal gets exit 4 and a person runs it | never |
 | `upgrade` | Replaces this binary with the raw asset for its target from a release, after checking its signature and digest. The one argument is the channel: `latest` (default, the newest plain release), `next` (the highest version published, prereleases included) or a version. `latest` and `next` only move forward; a version is installed whichever way it lies. `--check` reports what the channel holds and changes nothing | never on its own; a schema this build cannot read names the command in its refusal |
 | `completions <shell>` | Writes the completion script for bash, zsh, fish, powershell or elvish, generated from the manifest | never |
 | `help --json` | The command manifest | never |

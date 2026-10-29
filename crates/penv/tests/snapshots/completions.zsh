@@ -25,6 +25,7 @@ _penv() {
         'project:Your projects: ls, new, rename, rm'
         'env:A project'\''s environments: ls, new, rename, copy, rm'
         'machine:Identities for servers and CI'
+        'app:Apps you have connected to your environments'
         'upgrade:Replace penv with the latest release'
         'completions:Print the shell completion script'
         'hook:Run as a harness hook; a payload it cannot read is refused'
@@ -66,6 +67,7 @@ _penv() {
                 project) _penv_project ;;
                 env) _penv_env ;;
                 machine) _penv_machine ;;
+                app) _penv_app ;;
                 upgrade) _arguments '--check[Only report what that release is]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 completions) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' '1: :(bash zsh fish powershell elvish)' ;;
                 hook) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
@@ -158,6 +160,32 @@ _penv_machine() {
         args)
             case $words[1] in
                 enroll) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                *) ;;
+            esac ;;
+    esac
+}
+
+_penv_app() {
+    local -a commands
+    commands=(
+        'ls:List the apps connected to your environments'
+        'revoke:Cut an app off from the keys it was given'
+    )
+    local curcontext="$curcontext" state line
+    _arguments -C \
+        '--json[Emit JSON on stdout, whatever stdout is attached to]' \
+        '--format[Pick the output format: json or text]:value:(json text)' \
+        '--agent[Treat this session as an agent: JSON out, values masked]' \
+        '--provider[Read values from this provider instead of the one @penv= names]:value:' \
+        '1: :->command' \
+        '*:: :->args' && return 0
+
+    case $state in
+        command) _describe -t commands 'app command' commands ;;
+        args)
+            case $words[1] in
+                ls) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                revoke) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 *) ;;
             esac ;;
     esac
