@@ -5,9 +5,10 @@ name: sealed
 # Linux and on Windows (where penv writes the trust bundle from its own roots).
 on:
   pull_request:
+    branches: [main]
     paths: ["crates/penv/**", "crates/penv-schema/**", ".github/workflows/sealed.yml"]
   push:
-    branches: [main]
+    branches: [development, main]
     paths: ["crates/penv/**", "crates/penv-schema/**", ".github/workflows/sealed.yml"]
 
 permissions:

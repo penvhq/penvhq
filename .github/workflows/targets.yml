@@ -5,9 +5,10 @@ name: targets
 # refused with each problem named.
 on:
   pull_request:
+    branches: [main]
     paths: ["crates/penv-targets/**", ".github/workflows/targets.yml"]
   push:
-    branches: [main]
+    branches: [development, main]
     paths: ["crates/penv-targets/**", ".github/workflows/targets.yml"]
 
 permissions:

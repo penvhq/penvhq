@@ -2,6 +2,7 @@ name: vscode extension
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - "packages/vscode/**"
       - "crates/penv-schema/**"
@@ -9,7 +10,7 @@ on:
       - "crates/penv/src/source.rs"
       - ".github/workflows/vscode.yml"
   push:
-    branches: [main]
+    branches: [development, main]
     paths:
       - "packages/vscode/**"
       - "crates/penv-schema/**"
