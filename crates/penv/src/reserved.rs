@@ -134,7 +134,6 @@ mod tests {
             "YARN_NPM_REGISTRY_SERVER",
             "CARGO_REGISTRIES_X_INDEX",
             "PYTHONSTARTUP",
-            "PENV_TOKEN",
         ] {
             assert_eq!(refused(name), Some(Refused::Reserved), "{name}");
         }
@@ -159,6 +158,8 @@ mod tests {
             "SSH_AUTH_SOCK",
             "GH_ENTERPRISE_TOKEN",
             "GITHUB_API_URL",
+            "GITHUB_ENV",
+            "PENV_TOKEN",
         ] {
             for name in cases(sample) {
                 assert_eq!(refused(&name), Some(Refused::Reserved), "{name}");
@@ -179,6 +180,10 @@ mod tests {
             "HOMEPAGE_URL",
             "PERSONAL_TOKEN",
             "GITLAB_TOKEN",
+            "GITHUB_APP_ID",
+            "GITHUB_APP_PRIVATE_KEY",
+            "PENV_FREE_TIER_KEY_ROOT_SEALED",
+            "PENV_DEK_CACHE_TTL_SECONDS",
         ] {
             assert_eq!(refused(name), None, "{name}");
         }
