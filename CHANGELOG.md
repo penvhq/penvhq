@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0
+
+### Added
+- **`penv app ls` lists the apps you connected to environments.** It shows each connection's id, app, environment, keys and last use; it needs a person's login.
+- **`penv app revoke <id>` cuts a connected app off.** It is destructive, so an agent session or a non-terminal is refused with exit 4 and a person runs it; a missing id is named with the fix.
+
 ## 1.0.0
 
 ### Added
