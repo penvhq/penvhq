@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1
+
+### Fixed
+- **A provider can set your own `GITHUB_*` and `PENV_*` keys again.** `penv run` refuses only the names GitHub Actions and penv read, such as `GITHUB_TOKEN` and `PENV_TOKEN`, rather than every name with those prefixes.
+
+### Security
+- **A second release key.** This release is still signed with the current key and trusts both it and a new one. The release after it is signed with the new key only. `penv upgrade` from 1.1.0 or older straight to that later release refuses with `signature_invalid` and nothing is replaced; upgrade to this release first, or reinstall with `curl -fsSL https://penv.cloud/install | sh`. npm installs are unaffected.
+
 ## 1.1.0
 
 ### Added

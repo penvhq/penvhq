@@ -119,6 +119,9 @@ jobs:
   sign:
     needs: build
     runs-on: ubuntu-latest
+    # Key handover: outside the release environment this job reads the repository's
+    # (old) PENV_SIGNING_KEY, so installed penv verifies the release that adds the new key.
+    # Put `environment: release` back once that release is published.
     permissions:
       contents: write
     steps:
@@ -133,7 +136,7 @@ jobs:
           HAS_KEY: ${{ secrets.PENV_SIGNING_KEY != '' }}
         run: |
           if [ "$HAS_KEY" != true ]; then
-            echo "::error::no PENV_SIGNING_KEY secret, and an unsigned release is never published. Run cargo run -p penv-release -- keygen, put the private line in the PENV_SIGNING_KEY secret, and tag again."
+            echo "::error::no PENV_SIGNING_KEY secret, and an unsigned release is never published. Run cargo run -p penv-release -- keygen, put the private line in the release environment's PENV_SIGNING_KEY secret, and tag again."
             exit 1
           fi
       # Building is a step of its own, so the key is in the environment of nothing
@@ -198,9 +201,10 @@ jobs:
   npm:
     needs: [build, sign]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read
-      # Provenance is signed with this workflow's OIDC token.
+      # Trusted publishing trades this OIDC token for the npm publish token; provenance is signed with it too.
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -215,15 +219,11 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: node --test npm/launcher.test.mjs
       - run: node npm/pack.mjs --version "$GITHUB_REF_NAME" --binaries dist --out npm/build
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - run: npm install -g npm@11.21.2
       - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "no NPM_TOKEN secret, so the packages were built and nothing was published"
-            exit 0
-          fi
           version=${GITHUB_REF_NAME#v}
           # A prerelease never becomes what npm i -g installs by default.
           case "$version" in
