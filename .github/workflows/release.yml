@@ -119,6 +119,7 @@ jobs:
   sign:
     needs: build
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     steps:
@@ -133,7 +134,7 @@ jobs:
           HAS_KEY: ${{ secrets.PENV_SIGNING_KEY != '' }}
         run: |
           if [ "$HAS_KEY" != true ]; then
-            echo "::error::no PENV_SIGNING_KEY secret, and an unsigned release is never published. Run cargo run -p penv-release -- keygen, put the private line in the PENV_SIGNING_KEY secret, and tag again."
+            echo "::error::no PENV_SIGNING_KEY secret, and an unsigned release is never published. Run cargo run -p penv-release -- keygen, put the private line in the release environment's PENV_SIGNING_KEY secret, and tag again."
             exit 1
           fi
       # Building is a step of its own, so the key is in the environment of nothing
@@ -198,6 +199,7 @@ jobs:
   npm:
     needs: [build, sign]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read
       # Provenance is signed with this workflow's OIDC token.
