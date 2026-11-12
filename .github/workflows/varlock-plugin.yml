@@ -61,15 +61,11 @@ jobs:
           fi
       - run: npm ci
       - run: npm run build
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - run: npm install -g npm@11.21.2
       - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::no NPM_TOKEN secret"
-            exit 1
-          fi
           version=$(node -p "require('./package.json').version")
           case "$version" in *-*) tag=next ;; *) tag=latest ;; esac
           npm publish --provenance --access public --tag "$tag"
