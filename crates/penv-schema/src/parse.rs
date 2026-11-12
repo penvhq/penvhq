@@ -907,7 +907,7 @@ fn text_value(d: &Decorator) -> Option<String> {
 /// A schema default, read the way penv-dotenv reads a value: a quoted one up to
 /// its closing quote, a bare one up to a `#` after a space. Single quotes and
 /// backticks make it literal, which the second item says.
-fn read_default(written: &str) -> (String, bool) {
+pub(crate) fn read_default(written: &str) -> (String, bool) {
     if let Some(q) = written
         .chars()
         .next()

@@ -23,8 +23,9 @@ All of it comes from the installed `penv`, served by [`penv lsp`](https://penv.c
 | Completion | Decorators, `@type` values and constraints, `@rotate` periods, `$KEY`, `${KEY \| filter}`, `penv(env/KEY)`, functions |
 | Hover | Each decorator and function, marked penv extension, `@env-spec` or varlock; each key's type, required, sensitive, `@hosts` and rotation |
 | Definition | `$KEY`, `${KEY}`, `ref(KEY)`, `@currentEnv=$KEY` |
+| `.penv/config.toml` | Completion of sections, settings, URL parts and declared keys; hover for each setting; problems for TOML errors, unknown settings, wrong types and `public` entries naming an undeclared key (unchecked when the schema has `@import`) or a URL part `penv check` refuses; `penv check` alone checks that a `[hash]` entry is a `hash()` call |
 
-`penv lsp` serves only files named `.env.schema`, never reads `.env` or `.env.*`, and sends no network request.
+`penv lsp` serves only `.env.schema` and `.penv/config.toml`, never reads `.env` or `.env.*`, and sends no network request.
 
 ## Syntax highlighting
 
