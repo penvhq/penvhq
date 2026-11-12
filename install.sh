@@ -16,7 +16,7 @@ targets="x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwi
 
 # The release keys, base64 Ed25519 public keys separated by spaces, that a checksum file
 # may be signed with. Minted by: cargo run -p penv-release -- keygen
-public_keys="VRJ90W7uzjrwQKeD6KCGQj1dih6z6/4QVeat0M5qL/0="
+public_keys="VRJ90W7uzjrwQKeD6KCGQj1dih6z6/4QVeat0M5qL/0= DRvkwcausj52ZwhAuBc6bm3Xi5bt/5dt2yA9EfLtXlQ="
 
 say() { printf '%s\n' "$*"; }
 dim() { if [ -t 1 ]; then printf '\033[2m%s\033[0m\n' "$*"; else printf '%s\n' "$*"; fi; }

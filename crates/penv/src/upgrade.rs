@@ -21,10 +21,12 @@ pub const TARGETS: [(&str, &str, &str); 6] = [
 ];
 
 /// The Ed25519 public keys, base64, a release checksum file may be signed with.
-/// Empty until the owner runs `cargo run -p penv-release -- keygen` and pastes
-/// the public half here. A rotation adds the new key, ships a release signed by
+/// Minted by `cargo run -p penv-release -- keygen`. A rotation adds the new key, ships a release signed by
 /// the old one carrying both, and drops the old key the release after that.
-pub const PUBLIC_KEYS: &[&str] = &["VRJ90W7uzjrwQKeD6KCGQj1dih6z6/4QVeat0M5qL/0="];
+pub const PUBLIC_KEYS: &[&str] = &[
+    "VRJ90W7uzjrwQKeD6KCGQj1dih6z6/4QVeat0M5qL/0=",
+    "DRvkwcausj52ZwhAuBc6bm3Xi5bt/5dt2yA9EfLtXlQ=",
+];
 
 /// One release, narrowed to what this host would install.
 #[derive(Debug, Clone, PartialEq, Eq)]
