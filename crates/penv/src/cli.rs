@@ -20,7 +20,10 @@ const GROUPS: &[(&str, &[&str])] = &[
     ),
     ("Move values", &["pull", "push"]),
     ("Set up a folder", &["init", "gen", "guard"]),
-    ("Cloud", &["login", "logout", "project", "env", "machine"]),
+    (
+        "Cloud",
+        &["login", "logout", "project", "env", "machine", "app"],
+    ),
     ("This tool", &["upgrade", "help"]),
 ];
 
@@ -224,6 +227,9 @@ pub enum Command {
         /// Fail when code reads a variable .env.schema does not declare
         #[arg(long)]
         strict: bool,
+        /// Pin the hosts each computed @hosts reaches in [hosts], printing the ones that changed
+        #[arg(long, conflicts_with_all = ["key", "strict"])]
+        pin_hosts: bool,
     },
 
     /// Write the typed file for your language (ts, py, go, rust, php, java, csharp)
@@ -299,6 +305,12 @@ pub enum Command {
     Machine {
         #[command(subcommand)]
         command: MachineCommand,
+    },
+
+    /// Apps you have connected to your environments
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
     },
 
     /// Replace penv with the latest release
@@ -400,6 +412,17 @@ pub enum EnvCommand {
     Rm {
         /// The environment name
         name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AppCommand {
+    /// List the apps connected to your environments
+    Ls,
+    /// Cut an app off from the keys it was given
+    Revoke {
+        /// The connection id, from penv app ls
+        id: String,
     },
 }
 

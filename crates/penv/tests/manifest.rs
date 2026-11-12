@@ -146,6 +146,20 @@ fn the_policy_flags_say_what_the_design_says() {
 }
 
 #[test]
+fn check_publishes_the_pin_hosts_refusal() {
+    let manifest = manifest();
+    let check = find(&manifest, "check");
+    assert_eq!(check["exitCodes"], serde_json::json!([0, 1, 2, 3, 6]));
+    let pin = check["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "pin-hosts")
+        .unwrap();
+    assert_eq!(pin["human"], true, "an agent may not pin hosts");
+}
+
+#[test]
 fn the_run_row_says_what_run_does() {
     let manifest = manifest();
     let run = find(&manifest, "run");

@@ -155,6 +155,7 @@ fn a_console_export_reads_back_as_the_values_it_holds() {
         &Default::default(),
         "development",
         &Default::default(),
+        &penv_schema::functions::Policy::default(),
     );
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(values["SINGLE"], "p@$$w\"rd`x");

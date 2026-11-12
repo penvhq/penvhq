@@ -335,6 +335,87 @@ fn a_key_computed_from_a_sealed_one_holds_the_placeholder_too() {
 }
 
 #[test]
+fn a_computed_host_seals_only_once_its_pin_matches() {
+    let dir = scratch("computed");
+    std::fs::write(
+        dir.join(".env.schema"),
+        "# @type=string(startsWith=sk_test_, minLength=40) @hosts=url($API_BASE, host)\nSTRIPE_SECRET_KEY=\n\n# @type=url @sensitive=false\nAPI_BASE=\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".env"),
+        format!("STRIPE_SECRET_KEY={REAL}\nAPI_BASE=https://api.example.com/v1\n"),
+    )
+    .unwrap();
+    let run = |dir: &PathBuf| {
+        Command::new(env!("CARGO_BIN_EXE_penv"))
+            .env(
+                "PENV_LOCAL_KEY",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            )
+            .current_dir(dir)
+            .env_remove("SSL_CERT_FILE")
+            .env_remove("PENV_ENV")
+            .args([
+                "run",
+                "--sealed",
+                "--",
+                "sh",
+                "-c",
+                "printf '%s' \"$STRIPE_SECRET_KEY\" > seen.txt",
+            ])
+            .output()
+            .unwrap()
+    };
+    let out = run(&dir);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(3), "{said}");
+    assert!(said.contains("hosts_unpinned"), "{said}");
+    assert!(
+        said.contains(
+            "STRIPE_SECRET_KEY: @hosts computes api.example.com and [hosts] pins nothing"
+        ),
+        "{said}"
+    );
+    assert!(!dir.join("seen.txt").exists(), "the command started");
+
+    std::fs::create_dir_all(dir.join(".penv")).unwrap();
+    std::fs::write(
+        dir.join(".penv/config.toml"),
+        "[hosts]\nSTRIPE_SECRET_KEY = [\"elsewhere.example.com\"]\n",
+    )
+    .unwrap();
+    let out = run(&dir);
+    let said = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(3), "{said}");
+    assert!(said.contains("pins elsewhere.example.com"), "{said}");
+
+    std::fs::write(
+        dir.join(".penv/config.toml"),
+        "[hosts]\nSTRIPE_SECRET_KEY = [\"api.example.com\"]\n",
+    )
+    .unwrap();
+    let out = run(&dir);
+    let said = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(0), "{said}");
+    assert!(
+        said.contains("STRIPE_SECRET_KEY (only to api.example.com)"),
+        "{said}"
+    );
+    assert!(!said.contains(REAL));
+    let seen = std::fs::read_to_string(dir.join("seen.txt")).unwrap();
+    assert!(
+        seen.starts_with("sk_test_") && seen != REAL,
+        "the command took the value"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_key_whose_type_leaves_no_room_is_refused_before_the_command_starts() {
     let dir = scratch("room");
     std::fs::write(

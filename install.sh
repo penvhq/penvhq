@@ -15,7 +15,7 @@ base=${base%/}
 targets="x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc"
 
 # The release keys, base64 Ed25519 public keys one per line, that a checksum file
-# may be signed with. Empty until the owner runs: cargo run -p penv-release -- keygen
+# may be signed with. Minted by: cargo run -p penv-release -- keygen
 public_keys="VRJ90W7uzjrwQKeD6KCGQj1dih6z6/4QVeat0M5qL/0="
 
 say() { printf '%s\n' "$*"; }

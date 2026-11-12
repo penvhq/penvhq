@@ -147,7 +147,11 @@ A redacted key has a value: the CLI never reports it missing and exits 6 where i
 | No scheme, port, path, query or user | | `https://a.com`, `a.com:443`, `a.com/v1`, `u@a.com` |
 | No duplicates | | `["a.com", "a.com"]` |
 
-A `PUT` or `PATCH` whose schema has no `hosts` removes it. When a server answers `400 schema_invalid` to a write that carried `hosts`, the CLI retries once without it and warns that the cloud copy lacks it.
+A `PUT` or `PATCH` whose schema has no `hosts` removes it.
+
+`hostsExpr` is the computed form (`@hosts=url($X, host)`), sent instead of `hosts`: a non-empty string of at most 1024 characters, stored unparsed (`400 schema_invalid`, `"field": "hostsExpr"`). The CLI refuses a longer one before sending.
+
+When a server answers `400 schema_invalid` to a write, the CLI retries once without `hostsExpr`, keeping `hosts`. Only if that is refused too does it retry without `hosts`. Each retry warns which form the cloud copy lacks.
 
 ## Reveal approvals
 
@@ -177,6 +181,15 @@ The routes behind [`penv project`](https://penv.cloud/docs/cli/project) and [`pe
 | `DELETE .../environments/{environment}` | [`penv env rm`](https://penv.cloud/docs/cli/env-rm) | none | `200 { name, parameters }` |
 
 The new slug comes back in the answer; `penv push` writes it into the `@penv=` header. `from` copies another environment's keys and their decorators, never its values.
+
+## App connections
+
+The routes behind `penv app ls` and `penv app revoke`. A `pcu_` only.
+
+| Route | Command | Answers |
+|---|---|---|
+| `GET /app-connections` | `penv app ls` | `{ connections: [{ id, app: { clientId, name }, org, project, environment, keys, createdAt, lastUsedAt \| null }] }`, live ones only |
+| `DELETE /app-connections/{id}` | `penv app revoke` | `204`; `404 { error: "not_found" }` |
 
 ## Errors
 

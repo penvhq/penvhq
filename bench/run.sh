@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # penv vs varlock on the same files: speed, memory, and behaviour.
 #
-#   bench/run.sh                     # penv from PATH, varlock 1.21.0 from npm
+#   bench/run.sh                     # penv from PATH, varlock 1.23.0 from npm
 #   PENV=./target/release/penv bench/run.sh
 #   VARLOCK_VERSION=latest RUNS=50 bench/run.sh
 #   VARLOCK=~/.config/varlock/bin/varlock bench/run.sh   # varlock's standalone binary
@@ -13,7 +13,7 @@ set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
 PENV=${PENV:-$(command -v penv || true)}
-VARLOCK_VERSION=${VARLOCK_VERSION:-1.21.0}
+VARLOCK_VERSION=${VARLOCK_VERSION:-1.23.0}
 RUNS=${RUNS:-30}
 OUT=${OUT:-$PWD/bench-results.json}
 [ -x "$PENV" ] || die "no penv binary: install it or set PENV=<path>"
@@ -138,6 +138,44 @@ rm .gitignore
 "$VARLOCK" load >/dev/null 2>&1; v=$?
 row ".env with a secret, not gitignored" "$([ $p -ne 0 ] && echo "check fails (exit $p)" || echo "passes")" \
   "$([ $v -ne 0 ] && echo "load fails (exit $v)" || echo "passes")"
+
+# --- url(), json(), hash(): penv-only, varlock has no equivalent ---------------------------
+# Each key is derived from a fake value in .env; penv resolves it, varlock is asked to load the same schema.
+project functions; common_schema
+cat >> .env.schema <<'EOF'
+
+# @type=url @sensitive
+DATABASE_URL=
+
+# @type=string @sensitive
+DB_SECRET=
+
+# @type=string @sensitive=false
+DB_HOST=url($DATABASE_URL, host)
+
+# @type=string @sensitive=false
+DB_NAME=json($DB_SECRET, database)
+
+# @type=string @sensitive=false
+KEY_FP=hash($STRIPE_SECRET_KEY, algo=sha256, length=8)
+EOF
+printf 'DATABASE_URL=postgres://app:fakepass@db.internal.test:5432/orders\nDB_SECRET=%s\n' \
+  '{"database":"orders"}' >> .env
+# Only a public list declassifies a derived value (docs/Functions.md#config); url host is public by default.
+mkdir -p .penv
+printf '[json.DB_SECRET]\npublic = ["database"]\n\n[hash]\npublic = ["KEY_FP"]\n' > .penv/config.toml
+resolved() { # key, expected
+  local got; got=$("$PENV" run -- node -e 'process.stdout.write(process.env[process.argv[1]]||"")' "$1" 2>/dev/null)
+  [ "$got" = "$2" ] && echo "resolved: $got" || echo "failed"
+}
+want_fp=$(printf '%s' "$SECRET" | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])')
+"$VARLOCK" load >/dev/null 2>&1; v=$?
+vfn="$([ $v -ne 0 ] && echo "unsupported (exit $v)" || echo "accepted")"
+"$PENV" check >/dev/null 2>&1; p=$?
+row "url(), json(), hash() in one schema: validate" "$([ $p -eq 0 ] && echo "valid" || echo "invalid (exit $p)")" "$vfn"
+row 'url($DATABASE_URL, host)' "$(resolved DB_HOST db.internal.test)" "$vfn"
+row 'json($DB_SECRET, database)' "$(resolved DB_NAME orders)" "$vfn"
+row 'hash($KEY, algo=sha256, length=8)' "$(resolved KEY_FP "$want_fp")" "$vfn"
 
 printf '{"penv":%s,"varlock":%s,"runs":%s,"machine":%s,"results":[%s]}\n' \
   "$(json "$("$PENV" --version)")" "$(json "$("$VARLOCK" --version)")" "$RUNS" "$(json "$(uname -sm)")" \

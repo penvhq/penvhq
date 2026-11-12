@@ -209,7 +209,7 @@ fn encrypt_leaves_every_computed_value_as_written() {
             (
                 ".env",
                 &format!(
-                    "STRIPE_SECRET_KEY={SECRET}\nREPLICA=penv(production/DATABASE_URL)\nSESSION=random(32)\nMODE=if(eq($PORT, 3000), dev, prod)\nJOINED=concat(a, b)\nREF=${{STRIPE_SECRET_KEY}}\n"
+                    "STRIPE_SECRET_KEY={SECRET}\nREPLICA=penv(production/DATABASE_URL)\nSESSION=random(length=32)\nMODE=if(eq($PORT, 3000), dev, prod)\nJOINED=concat(a, b)\nREF=${{STRIPE_SECRET_KEY}}\n"
                 ),
             ),
         ],
@@ -220,7 +220,7 @@ fn encrypt_leaves_every_computed_value_as_written() {
     assert!(file.starts_with("STRIPE_SECRET_KEY=enc:v1:"), "{file}");
     for line in [
         "REPLICA=penv(production/DATABASE_URL)",
-        "SESSION=random(32)",
+        "SESSION=random(length=32)",
         "MODE=if(eq($PORT, 3000), dev, prod)",
         "JOINED=concat(a, b)",
         "REF=${STRIPE_SECRET_KEY}",

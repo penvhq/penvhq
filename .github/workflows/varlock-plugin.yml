@@ -2,9 +2,10 @@ name: varlock plugin
 
 on:
   pull_request:
+    branches: [main]
     paths: ["packages/varlock-plugin/**", ".github/workflows/varlock-plugin.yml"]
   push:
-    branches: [main]
+    branches: [development, main]
     paths: ["packages/varlock-plugin/**", ".github/workflows/varlock-plugin.yml"]
     tags: ["varlock-plugin-v*"]
 

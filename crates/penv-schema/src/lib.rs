@@ -2,6 +2,7 @@
 //! it, and render it back. No I/O lives here.
 
 pub mod editor;
+pub mod functions;
 mod ir;
 mod parse;
 pub mod placeholder;

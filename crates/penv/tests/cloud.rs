@@ -1438,6 +1438,93 @@ fn project_ls_lists_every_project_with_its_environments() {
     assert_eq!(report["projects"][0]["org"], "acme");
 }
 
+const CONNECTIONS: &str = "/api/v1/app-connections";
+
+#[test]
+fn app_ls_lists_connections() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        CONNECTIONS,
+        200,
+        &json!({ "connections": [{
+            "id": "conn_1",
+            "app": { "clientId": "rekord", "name": "Rekord" },
+            "org": "acme", "project": "billing", "environment": "staging",
+            "keys": ["DB_URL", "API_KEY"],
+            "createdAt": "2026-10-01T09:00:00.000Z",
+            "lastUsedAt": "2026-10-27T08:15:00.000Z"
+        }, {
+            "id": "conn_2",
+            "app": { "clientId": "rekord", "name": "Rekord" },
+            "org": "acme", "project": "billing", "environment": "dev",
+            "keys": ["DB_URL"],
+            "createdAt": "2026-10-02T09:00:00.000Z",
+            "lastUsedAt": null
+        }] })
+        .to_string(),
+    );
+    let workspace = Workspace::new(&[]);
+    let output = workspace.run(&mock, &["--json", "app", "ls"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json_of(&stdout(&output));
+    assert_eq!(report["connections"][0]["id"], "conn_1");
+    assert_eq!(report["connections"][0]["app"]["name"], "Rekord");
+    assert_eq!(report["connections"][0]["keys"][1], "API_KEY");
+    assert_eq!(report["connections"][0]["environment"], "staging");
+    assert_eq!(
+        report["connections"][0]["createdAt"],
+        "2026-10-01T09:00:00.000Z"
+    );
+    assert_eq!(report["connections"][0]["app"]["clientId"], "rekord");
+    assert_eq!(report["connections"][1]["lastUsedAt"], Value::Null);
+
+    let text = workspace.run(&mock, &["--format", "text", "app", "ls"]);
+    assert!(stdout(&text).contains("2026-10-27"), "{}", stdout(&text));
+    assert!(stdout(&text).contains("never"), "{}", stdout(&text));
+}
+
+#[test]
+fn app_ls_with_no_connections_says_so() {
+    let mock = Mock::new();
+    mock.on(
+        "GET",
+        CONNECTIONS,
+        200,
+        &json!({ "connections": [] }).to_string(),
+    );
+    let workspace = Workspace::new(&[]);
+
+    let output = workspace.run(&mock, &["--json", "app", "ls"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(json_of(&stdout(&output))["connections"], json!([]));
+
+    let text = workspace.run(&mock, &["--format", "text", "app", "ls"]);
+    assert!(
+        stdout(&text).contains("No apps are connected"),
+        "{}",
+        stdout(&text)
+    );
+}
+
+#[test]
+fn app_revoke_is_a_person_s_to_run_and_deletes_nothing_without_one() {
+    let mock = Mock::new();
+    mock.on("DELETE", "/api/v1/app-connections/conn_1", 204, "");
+    let workspace = Workspace::new(&[]);
+
+    let output = workspace.run(&mock, &["--json", "app", "revoke", "conn_1"]);
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    let error = json_of(&stderr(&output));
+    assert_eq!(error["error"], "confirmation_required");
+    assert_eq!(error["replay"], "penv app revoke conn_1");
+    assert!(
+        mock.hits("DELETE", "/api/v1/app-connections/conn_1")
+            .is_empty()
+    );
+}
+
 #[test]
 fn renaming_the_project_this_folder_is_linked_to_rewrites_the_header() {
     let mock = Mock::new();

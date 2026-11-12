@@ -25,6 +25,7 @@ _penv() {
         'project:Your projects: ls, new, rename, rm'
         'env:A project'\''s environments: ls, new, rename, copy, rm'
         'machine:Identities for servers and CI'
+        'app:Apps you have connected to your environments'
         'upgrade:Replace penv with the latest release'
         'completions:Print the shell completion script'
         'hook:Run as a harness hook; a payload it cannot read is refused'
@@ -58,7 +59,7 @@ _penv() {
                 encrypt) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 decrypt) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 why) _arguments '--env[The environment to read]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
-                check) _arguments '--env[The environment to check]:value:' '--strict[Fail when code reads a variable .env.schema does not declare]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                check) _arguments '--env[The environment to check]:value:' '--strict[Fail when code reads a variable .env.schema does not declare]' '--pin-hosts[Pin the hosts each computed @hosts reaches in \[hosts\], printing the ones that changed]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 gen) _arguments '--out[Write here instead, relative to the repository root]:value:' '--check[Compare with what is on disk instead of writing]' '--options[Show what this target'\''s options change instead of writing]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 scan) _arguments '--staged[Scan only what is staged for the next commit]' '--install-hook[Write a git pre-commit hook that runs penv scan --staged]' '--env[The environment whose values to look for]:value:' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 guard) _arguments '--all[Write every harness penv knows, installed or not]' '--check[Report coverage instead of writing]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
@@ -66,6 +67,7 @@ _penv() {
                 project) _penv_project ;;
                 env) _penv_env ;;
                 machine) _penv_machine ;;
+                app) _penv_app ;;
                 upgrade) _arguments '--check[Only report what that release is]' '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 completions) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' '1: :(bash zsh fish powershell elvish)' ;;
                 hook) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
@@ -158,6 +160,32 @@ _penv_machine() {
         args)
             case $words[1] in
                 enroll) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                *) ;;
+            esac ;;
+    esac
+}
+
+_penv_app() {
+    local -a commands
+    commands=(
+        'ls:List the apps connected to your environments'
+        'revoke:Cut an app off from the keys it was given'
+    )
+    local curcontext="$curcontext" state line
+    _arguments -C \
+        '--json[Emit JSON on stdout, whatever stdout is attached to]' \
+        '--format[Pick the output format: json or text]:value:(json text)' \
+        '--agent[Treat this session as an agent: JSON out, values masked]' \
+        '--provider[Read values from this provider instead of the one @penv= names]:value:' \
+        '1: :->command' \
+        '*:: :->args' && return 0
+
+    case $state in
+        command) _describe -t commands 'app command' commands ;;
+        args)
+            case $words[1] in
+                ls) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
+                revoke) _arguments '--json[Emit JSON on stdout, whatever stdout is attached to]' '--format[Pick the output format: json or text]:value:(json text)' '--agent[Treat this session as an agent: JSON out, values masked]' '--provider[Read values from this provider instead of the one @penv= names]:value:' ;;
                 *) ;;
             esac ;;
     esac

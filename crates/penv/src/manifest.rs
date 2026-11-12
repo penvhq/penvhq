@@ -140,9 +140,10 @@ const META: &[Meta] = &[
     Meta {
         path: "check",
         implemented: true,
-        // penv() naming a write-only key is refused as redacted.
-        exit_codes: &[0, 1, 3, 6],
+        // penv() naming a write-only key is refused as redacted; --pin-hosts refuses an agent.
+        exit_codes: &[0, 1, 2, 3, 6],
         env_flags: &[("env", "PENV_ENV")],
+        human_flags: &["pin-hosts"],
         ..DEFAULT_META
     },
     Meta {
@@ -252,6 +253,25 @@ const META: &[Meta] = &[
         path: "machine enroll",
         implemented: true,
         exit_codes: &[0, 1, 2],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "app",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "app ls",
+        implemented: true,
+        exit_codes: &[0, 1, 2, 5],
+        ..DEFAULT_META
+    },
+    Meta {
+        path: "app revoke",
+        implemented: true,
+        requires_approval: true,
+        exit_codes: &[0, 1, 2, 4, 5],
         ..DEFAULT_META
     },
     Meta {

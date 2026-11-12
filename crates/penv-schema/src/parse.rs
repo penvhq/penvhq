@@ -598,6 +598,19 @@ impl Parser {
                 "deprecated" => key.deprecated = Some(text_value(d).unwrap_or_default()),
                 "hosts" => {
                     let written = d.value.clone().unwrap_or_default();
+                    // Computed: it counts only where the `[hosts]` pin agrees.
+                    if !d.call && crate::resolve::is_expression(written.trim()) {
+                        match crate::resolve::check_expression(written.trim()) {
+                            Ok(()) => key.hosts_expr = Some(written.trim().to_string()),
+                            Err(problem) => self.error(
+                                d.line,
+                                d.column,
+                                "invalid_decorator_value",
+                                format!("line {}: @hosts {problem}", d.line),
+                            ),
+                        }
+                        continue;
+                    }
                     let hosts: Vec<String> = if d.call {
                         split_args(&written)
                             .iter()

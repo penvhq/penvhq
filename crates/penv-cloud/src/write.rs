@@ -13,6 +13,8 @@ pub const MAX_PATH: usize = 1024;
 pub const MAX_VALUE: usize = 256 * 1024;
 /// Keys in one `PUT`; a larger push goes in several.
 pub const MAX_BATCH: usize = 1000;
+/// Characters in a computed `@hosts` expression (`hostsExpr`).
+pub const MAX_HOSTS_EXPR: usize = 1024;
 
 /// Characters no path segment may hold, besides control, whitespace, bidi and
 /// zero-width characters.
@@ -24,6 +26,7 @@ pub enum Refusal {
     Name { address: String, why: &'static str },
     Path { address: String, why: &'static str },
     TooLarge { address: String, bytes: usize },
+    HostsExpr { address: String, chars: usize },
 }
 
 impl fmt::Display for Refusal {
@@ -34,6 +37,10 @@ impl fmt::Display for Refusal {
             Refusal::TooLarge { address, bytes } => write!(
                 f,
                 "the value of {address} is {bytes} bytes, and penv.cloud stores at most {MAX_VALUE} (256 KiB)"
+            ),
+            Refusal::HostsExpr { address, chars } => write!(
+                f,
+                "the @hosts expression of {address} is {chars} characters, and penv.cloud stores at most {MAX_HOSTS_EXPR}"
             ),
         }
     }
@@ -99,10 +106,22 @@ pub fn check(key: &CloudKey) -> Result<(), Refusal> {
         address: address(),
         why,
     })?;
-    match &key.value {
-        Some(value) if value.len() > MAX_VALUE => Err(Refusal::TooLarge {
+    if let Some(value) = &key.value
+        && value.len() > MAX_VALUE
+    {
+        return Err(Refusal::TooLarge {
             address: address(),
             bytes: value.len(),
+        });
+    }
+    let expr = key
+        .schema
+        .as_ref()
+        .and_then(|s| s.get("hostsExpr")?.as_str());
+    match expr.map(|e| e.chars().count()) {
+        Some(chars) if chars > MAX_HOSTS_EXPR => Err(Refusal::HostsExpr {
+            address: address(),
+            chars,
         }),
         _ => Ok(()),
     }
@@ -212,5 +231,21 @@ mod tests {
         assert!(text[1].starts_with("the path of a b/K"), "{}", text[1]);
         assert!(text[2].starts_with("the name of a/b"), "{}", text[2]);
         assert!(text.iter().all(|t| !t.contains("FAKE")));
+    }
+
+    #[test]
+    fn a_computed_hosts_expression_is_at_most_1024_characters() {
+        let with_expr = |expr: String| CloudKey {
+            schema: Some(serde_json::json!({ "hostsExpr": expr })),
+            ..key("", "DB", None)
+        };
+        assert_eq!(check(&with_expr("u".repeat(MAX_HOSTS_EXPR))), Ok(()));
+        assert_eq!(
+            check(&with_expr("u".repeat(MAX_HOSTS_EXPR + 1))),
+            Err(Refusal::HostsExpr {
+                address: "DB".into(),
+                chars: MAX_HOSTS_EXPR + 1
+            })
+        );
     }
 }

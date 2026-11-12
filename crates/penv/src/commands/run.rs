@@ -242,7 +242,8 @@ pub fn run(
     let mut child_values = values.clone();
     let mut injection = injection;
     if (agent || sealed)
-        && let Some(seal) = crate::sealed::run::prepare(&schema, &values, process_env, agent)?
+        && let Some(seal) =
+            crate::sealed::run::prepare(&schema, &resolved, dir, process_env, agent)?
     {
         child_values = source::sealed_values(&resolved, process_env, &seal.placeholders);
         injection.env.extend(seal.env);

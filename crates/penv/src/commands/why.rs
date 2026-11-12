@@ -112,6 +112,7 @@ pub fn run(
     let tainted = resolved.tainted.contains(name) && key.is_some_and(|k| !k.sensitive);
     let public = schema.is_public(name);
     let hosts = key.map(|k| k.hosts.clone()).unwrap_or_default();
+    let hosts_expr = key.and_then(|k| k.hosts_expr.clone());
 
     let mut handling = Vec::new();
     if sensitive {
@@ -130,6 +131,11 @@ pub fn run(
         handling.push(format!(
             "sealed for an agent or penv run --sealed: the command gets a placeholder; the value goes only to {}",
             hosts.join(", ")
+        ));
+    }
+    if let Some(expr) = &hosts_expr {
+        handling.push(format!(
+            "sealed to {expr}: for an agent or penv run --sealed the command gets a placeholder; the value goes only to the hosts it computes that [hosts] pins"
         ));
     }
     if key.is_none() {
@@ -173,6 +179,7 @@ pub fn run(
             "tainted": tainted,
             "public": public,
             "hosts": hosts,
+            "hostsExpr": hosts_expr,
         }),
         lines.join("\n"),
     )

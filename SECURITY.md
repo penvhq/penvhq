@@ -21,6 +21,7 @@ In scope:
 | Supply chain | an installer, `penv upgrade` or the image accepting a binary whose checksum or signature does not verify |
 | Credentials | a penv.cloud credential written in plain text, sent to a host other than the API root it belongs to, or kept past its lifetime |
 | Schema and files | a schema, value file or `@import` that makes penv read, write or run something outside the project |
+| Declassification | a computed value shown unmasked though no `public` list declassifies it (a url `path`, a `json` field, a `hash()` result not in `[hash] public`); an `hmac-*` `key=` that reaches output |
 
 Out of scope, as documented in [Design, inside the process](./docs/Design.md#inside-the-process) and the claim `penv guard --check` prints:
 
