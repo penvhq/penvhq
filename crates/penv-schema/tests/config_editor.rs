@@ -100,6 +100,12 @@ fn public_lists_follow_check() {
     assert!(codes.contains(&("wrong_type", 1)), "{codes:?}");
     assert!(codes.contains(&("unknown_key", 4)), "{codes:?}");
     assert!(codes.contains(&("unknown_key", 9)), "{codes:?}");
+    assert!(
+        found
+            .iter()
+            .any(|n| n.code == "unknown_key" && n.message.contains("rename [json.MISSING_KEY] to")),
+        "{found:?}"
+    );
     assert!(codes.contains(&("public_list", 12)), "{codes:?}");
     assert!(!codes.iter().any(|(_, line)| *line == 6), "{codes:?}");
     // Without a schema, references go unchecked and a pasted entry is never echoed.

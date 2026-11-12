@@ -35,6 +35,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         vscode: ["1.90.0", stable]
+        # macOS runners are scarce; the minimum VS Code is covered on Linux and Windows.
+        exclude:
+          - os: macos-latest
+            vscode: "1.90.0"
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -108,14 +112,5 @@ jobs:
             exit 0
           fi
           npx vsce publish --packagePath penv.vsix --oidc
-      # Open VSX trusts a publisher only for an extension that already has a version, so the first one goes out with OVSX_PAT.
       - name: Publish to Open VSX
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: |
-          set -euo pipefail
-          if [ -n "${OVSX_PAT:-}" ]; then
-            npx ovsx publish penv.vsix
-          else
-            env -u OVSX_PAT npx ovsx publish penv.vsix --trusted-publishing
-          fi
+        run: npx ovsx publish penv.vsix --trusted-publishing
