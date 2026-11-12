@@ -1,0 +1,65 @@
+{
+  "sections": [
+    { "name": "schema", "doc": "The `.env.schema` language this repository is written in.",
+      "keys": [
+        { "name": "version", "type": "integer", "default": "1", "values_from": "schema-version", "refused": true,
+          "doc": "`version = 1` names the `.env.schema` language version. penv reads every version from 1 up to its own; a newer one is an error that tells you to run `penv upgrade`.",
+          "if_wrong": "[schema] version takes a whole number, such as 1" } ] },
+    { "name": "run", "doc": "How `penv run` starts your app.",
+      "keys": [
+        { "name": "preload", "type": "boolean", "default": "true",
+          "doc": "`preload = false` stops `penv run` loading its masking into the Node, Bun, Deno and Python processes it starts, so only `penv run`'s own output is masked. It applies only when you run penv yourself in a terminal; under an AI agent or a pipe the preload stays on.",
+          "if_wrong": "[run] preload takes true or false; penv ignores this value and preloads" } ] },
+    { "name": "local", "doc": "How sensitive values are written to `.env` files on this machine.",
+      "keys": [
+        { "name": "encrypt", "type": "boolean", "default": "false",
+          "doc": "`encrypt = true` makes `penv set`, `penv pull` and `random()` write sensitive values to `.env` files as `enc:v1:...`, keyed in this machine's keychain, instead of plain text. `penv encrypt` rewrites the files and switches it.",
+          "if_wrong": "[local] encrypt takes true or false; penv ignores this value and writes plain text" } ] },
+    { "name": "public", "doc": "Key prefixes that ship to the browser.",
+      "keys": [
+        { "name": "prefixes", "type": "list", "default": "[]",
+          "doc": "`prefixes = [\"APP_PUBLIC_\"]` treats `APP_PUBLIC_SITE_URL` as not sensitive, as penv already treats `NEXT_PUBLIC_` and `VITE_` keys, so its value is not masked. A key with that prefix marked `@sensitive` is an error.",
+          "if_wrong": "[public] prefixes takes a list of strings, such as [\"APP_PUBLIC_\"]; penv ignores what is not one" } ] },
+    { "name": "url", "refused": true, "doc": "URL parts shown in plain text though the URL is sensitive.",
+      "keys": [
+        { "name": "public", "type": "list", "default": "[\"scheme\", \"host\", \"port\", \"origin\"]", "values_from": "url-parts", "refused": true,
+          "doc": "`public = [\"scheme\", \"host\"]` lets `url($DATABASE_URL, host)` print the host in plain text, while the password and the rest of the URL stay masked. `password` is never public; `check` fails if you list it.",
+          "if_wrong": "[url] public must be a list of URL parts" } ] },
+    { "name": "hash", "refused": true, "doc": "Keys whose `hash()` result is shown in plain text.",
+      "keys": [
+        { "name": "public", "type": "list", "default": "[]", "values_from": "schema-keys", "refused": true,
+          "doc": "`public = [\"API_KEY_FP\"]` shows the fingerprint `API_KEY_FP=hash($API_KEY, algo=sha256, length=8)` computes in plain text, so you can tell which key a machine has; a key marked `@sensitive` stays masked. Each entry must be a key whose value is a `hash()` call, or `check` fails.",
+          "if_wrong": "[hash] public must be a list of keys" } ] },
+    { "name": "json", "form": "[json.KEY]", "per": "schema-key", "refused": true,
+      "doc": "One section per key whose `json()` reads may be shown in plain text: `[json.GCP_SA_JSON]`. The section must name a key `.env.schema` declares, or `check` fails.",
+      "keys": [
+        { "name": "public", "type": "list", "refused": true,
+          "doc": "`public = [\"client_email\"]` under `[json.GCP_SA_JSON]` lets `json($GCP_SA_JSON, client_email)` print the email in plain text, while the private key and the rest of the document stay masked.",
+          "if_wrong": "public must be a list of read paths" } ] },
+    { "name": "hosts", "form": "[hosts] KEY = [\"host\"]",
+      "doc": "The hosts each key with a computed `@hosts` may reach. `penv check --pin-hosts` writes it; `check` fails and a sealed run refuses while the computed hosts differ from the pin.",
+      "entries": { "type": "list", "names_from": "schema-keys",
+        "doc": "`DATABASE_URL = [\"db.internal.example\"]` pins the hosts `DATABASE_URL` may reach. Run `penv check --pin-hosts` to write it after you change where the key points.",
+        "if_wrong": "a [hosts] entry takes a list of hosts; penv reads this one as pinning no hosts" } },
+    { "name": "rotation", "form": "[rotation] KEY = \"date\"",
+      "doc": "The day each key was last written on this repository's machines. `penv set` writes it; `@rotate` reminders count from it.",
+      "entries": { "type": "string", "names_from": "schema-keys",
+        "doc": "`STRIPE_SECRET_KEY = \"2026-09-22\"` is the day `penv set` last wrote `STRIPE_SECRET_KEY`; `@rotate=90d` on that key counts its 90 days from here.",
+        "if_wrong": "a [rotation] entry takes a date in quotes, such as \"2026-09-22\"; penv ignores this one" } },
+    { "name": "providers", "form": "[providers.SLUG]", "per": "name",
+      "doc": "Where a provider's API is, when it is not the default: `[providers.penv]`.",
+      "keys": [
+        { "name": "url", "type": "string",
+          "doc": "`url = \"https://penv.internal.example\"` points penv at that API for this provider instead of its default. `PENV_URL` in the environment wins for the default provider.",
+          "if_wrong": "url takes a string, such as \"https://penv.internal.example\"; penv ignores this value and uses the default" } ] },
+    { "name": "targets", "form": "[targets.NAME]", "per": "name", "open": true,
+      "doc": "Per-language settings for `penv gen`, written when you run it: `[targets.ts]`. A field here wins over the same field of the target's own `target.toml`.",
+      "keys": [
+        { "name": "output", "type": "string",
+          "doc": "`output = \"src/env.ts\"` is the file `penv gen` writes for this target.",
+          "if_wrong": "output takes a path in quotes, such as \"src/env.ts\"" },
+        { "name": "options", "type": "table",
+          "doc": "`[targets.ts.options]` holds the target's options, such as `runtime = \"vite\"`. `penv gen` writes each with a comment that says what it does.",
+          "if_wrong": "options is a section, such as [targets.ts.options]" } ] }
+  ]
+}

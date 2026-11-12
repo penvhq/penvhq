@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-- Completions for the `url`, `json` and `hash` functions need `penv` 1.0.0 or newer, since completions come from `penv lsp`.
+- Starts for `.penv/config.toml` as well as `.env.schema`. Completions, hover and checks come from the installed `penv`, so the new ones (`.penv/config.toml` settings, environment names in `forEnv(`, `penv(` and `match(`, `json()` paths, the options of `string(`, `number(` and `port(`, hover for `${KEY:-default}`, `${KEY-default}` and `|`) arrive with the next penv release.
+- Clearer messages when `penv` is missing or the server stops; each names the fix: `penv.path`, `penv upgrade` or `npm i -g @penvhq/cli`.
 
 ## 0.1.0
 

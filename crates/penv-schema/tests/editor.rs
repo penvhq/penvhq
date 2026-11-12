@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use penv_schema::editor::{
     KeyNote, Position, Severity, complete, definition, diagnostics, hover, symbols, vocabulary,
 };
-use penv_schema::parse;
 use penv_schema::resolve::{FILTERS, FUNCTIONS};
+use penv_schema::{VARLOCK_HEADER, parse};
 
 const SCHEMA: &str = "\
 # @penv=acme/api
@@ -567,7 +567,7 @@ fn diagnostics_suggest_the_nearest_part_and_name_a_missing_option() {
 fn every_values_from_names_an_existing_section() {
     let v = vocabulary();
     for w in &v.functions {
-        let slots = [&w.address, &w.labels]
+        let slots = [&w.address, &w.labels, &w.each, &w.cases]
             .into_iter()
             .flatten()
             .filter_map(|s| s.values_from.as_deref());
@@ -608,4 +608,424 @@ fn bad_call_diagnostics_sit_on_the_offending_token() {
         .find(|n| n.message.contains("no option"))
         .unwrap();
     assert_eq!(n.range.start, at(4, 24));
+}
+
+// ------------------------------------------------------------ drift
+
+/// Every string a `match` arm names in `src` after `marker`, at the arms' own indent.
+fn arm_names(src: &str, marker: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (at, _) in src.match_indices(marker) {
+        let mut lines = src[at..].lines().skip(1).filter(|l| !l.trim().is_empty());
+        let first = lines.next().unwrap();
+        let indent = first.len() - first.trim_start().len();
+        for line in std::iter::once(first).chain(lines) {
+            let here = line.len() - line.trim_start().len();
+            if here < indent {
+                break;
+            }
+            let trimmed = line.trim_start();
+            if here > indent || !trimmed.starts_with('"') {
+                continue;
+            }
+            let (pattern, _) = trimmed.split_once("=>").unwrap();
+            for name in pattern.split('|') {
+                out.insert(name.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    assert!(!out.is_empty(), "no arms after {marker}");
+    out
+}
+
+/// The text of the function `name` in `src`, up to the next `fn`.
+fn fn_body<'a>(src: &'a str, name: &str) -> &'a str {
+    let start = src.find(&format!("fn {name}(")).unwrap();
+    let rest = &src[start + 3..];
+    &rest[..rest.find("\nfn ").unwrap_or(rest.len())]
+}
+
+#[test]
+fn every_decorator_the_parser_reads_is_in_the_vocabulary() {
+    let src = include_str!("../src/parse.rs");
+    let named: BTreeSet<String> = vocabulary()
+        .decorators
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    for name in arm_names(src, "match d.name.as_str() {") {
+        assert!(
+            named.contains(&name),
+            "the parser reads @{name}; add it to vocabulary.json"
+        );
+    }
+    let varlock: BTreeSet<String> = vocabulary()
+        .decorators
+        .iter()
+        .filter(|w| w.origin == "varlock")
+        .map(|w| w.name.clone())
+        .collect();
+    let header: BTreeSet<String> = VARLOCK_HEADER.iter().map(|s| s.to_string()).collect();
+    assert_eq!(varlock, header);
+}
+
+#[test]
+fn url_parts_are_exactly_the_ones_url_reads_and_writes() {
+    let src = include_str!("../src/functions/url.rs");
+    let parts = &vocabulary().url_parts;
+    let all = |marker: &str, body: &str| {
+        let mut names = arm_names(body, marker);
+        if body.contains("strip_prefix(\"query.\")") {
+            names.insert("query.NAME".to_string());
+        }
+        names
+    };
+    let named: BTreeSet<String> = parts.iter().map(|e| e.name.clone()).collect();
+    assert_eq!(all("Ok(match part {", fn_body(src, "read")), named);
+    let writable: BTreeSet<String> = parts
+        .iter()
+        .filter(|e| !e.read_only)
+        .map(|e| e.name.clone())
+        .collect();
+    assert_eq!(all("match *part {", fn_body(src, "write")), writable);
+}
+
+#[test]
+fn random_kinds_are_exactly_the_ones_random_takes() {
+    use penv_schema::functions::random::{RandomKind, spec};
+    let name = |k: RandomKind| match k {
+        RandomKind::Alnum => "alnum",
+        RandomKind::Hex => "hex",
+        RandomKind::Base64Url => "base64url",
+        RandomKind::Uuid => "uuid",
+    };
+    let every = [
+        RandomKind::Alnum,
+        RandomKind::Hex,
+        RandomKind::Base64Url,
+        RandomKind::Uuid,
+    ];
+    let mut read = BTreeSet::new();
+    for e in &vocabulary().random_kinds {
+        let call = if e.name == "uuid" {
+            "random(kind=uuid)".to_string()
+        } else {
+            format!("random(kind={}, length=16)", e.name)
+        };
+        let kind = spec(&call).unwrap().unwrap().kind;
+        assert_eq!(name(kind), e.name);
+        read.insert(e.name.as_str());
+    }
+    assert_eq!(read, every.into_iter().map(name).collect());
+    assert!(spec("random(kind=nope, length=16)").is_err());
+}
+
+#[test]
+fn type_options_are_exactly_each_types_constraints() {
+    use penv_schema::BaseType::{self, *};
+    let every = [String, Number, Boolean, Url, Email, Port, Enum];
+    // A new BaseType fails to compile here until it is listed above.
+    for b in every {
+        match b {
+            String | Number | Boolean | Url | Email | Port | Enum => {}
+        }
+    }
+    for b in every {
+        let word = vocabulary()
+            .types
+            .iter()
+            .find(|w| w.name == b.as_str())
+            .unwrap_or_else(|| panic!("vocabulary.json has no type {}", b.as_str()));
+        let options: Vec<&str> = word.args.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(options, b.constraints(), "{}", b.as_str());
+        assert!(
+            word.args.iter().all(|o| !o.doc.is_empty()),
+            "{}",
+            b.as_str()
+        );
+    }
+    assert_eq!(vocabulary().types.len(), every.len());
+    assert_eq!(BaseType::from_name("port"), Some(Port));
+}
+
+// ------------------------------------------------------------ environments, options, references
+
+#[test]
+fn environment_names_complete_where_an_environment_is_named() {
+    let envs: Vec<String> = vocabulary()
+        .environments
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    for want in ["development", "staging", "production", "test"] {
+        assert!(envs.contains(&want.to_string()), "{want}");
+    }
+    assert_eq!(complete_in("forEnv(", "forEnv("), envs);
+    let got = complete_in("forEnv(production, ", "production, ");
+    assert!(!got.contains(&"production".to_string()) && got.contains(&"staging".to_string()));
+    assert_eq!(complete_in("if(forEnv(st", "forEnv(st"), envs);
+    assert_eq!(complete_in("penv(", "penv("), envs);
+
+    let text = "# @penv=a/b\n# ---\n\n# @required=forEnv(\nKEY=\n";
+    assert_eq!(labels(text, at(3, 20)), envs);
+    let text = "# @penv=a/b\n# ---\n\n# @assert(forEnv(\nKEY=\n";
+    assert_eq!(labels(text, at(3, 19)), envs);
+}
+
+#[test]
+fn hovering_an_environment_name_explains_it() {
+    let doc = |name: &str| {
+        vocabulary()
+            .section("environments")
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap()
+            .doc
+            .clone()
+    };
+    let text = call_schema("if(forEnv(staging), penv(production/K), x)");
+    let tip = hover(&text, after(&text, 4, "forEnv(sta"), &[]).unwrap();
+    assert!(tip.markdown.contains(&doc("staging")));
+    let tip = hover(&text, after(&text, 4, "penv(prod"), &[]).unwrap();
+    assert!(tip.markdown.contains(&doc("production")));
+    assert!(doc("development").contains("PENV_ENV"));
+}
+
+#[test]
+fn type_options_carry_their_docs_in_completion_and_hover() {
+    let text = "# @penv=a/b\n# ---\n\n# @type=number(\nKEY=\n";
+    let items = complete(text, at(3, 15));
+    let min = items.iter().find(|c| c.label == "min").unwrap();
+    assert!(min.doc.contains("or more"), "{}", min.doc);
+    assert_eq!(min.insert, "min=");
+
+    let text = "# @penv=a/b\n# ---\n\n# @type=string(minLength=8)\nKEY=\n";
+    let tip = hover(text, after(text, 3, "minLen"), &[]).unwrap();
+    assert!(tip.markdown.contains("at least"), "{}", tip.markdown);
+    let tip = hover(text, after(text, 3, "@type=str"), &[]).unwrap();
+    assert!(tip.markdown.contains("Any text"), "{}", tip.markdown);
+}
+
+#[test]
+fn hovering_reference_syntax_explains_the_form() {
+    let form = |name: &str| {
+        vocabulary()
+            .section("reference-forms")
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap()
+            .doc
+            .clone()
+    };
+    let text = call_schema("x${A:-y-z} ${B-q} ${K | trim} $K");
+    let on = |needle: &str| {
+        let mut pos = after(&text, 4, needle);
+        pos.character -= 1;
+        hover(&text, pos, &[]).map(|t| t.markdown)
+    };
+    assert!(on("x${A:").unwrap().contains(&form("${KEY:-default}")));
+    assert!(on("x${A:-").unwrap().contains(&form("${KEY:-default}")));
+    assert!(on("${B-").unwrap().contains(&form("${KEY-default}")));
+    assert!(on("${K |").unwrap().contains(&form("${KEY | filter}")));
+    assert!(on("x$").unwrap().contains(&form("${KEY}")));
+    assert!(on("trim} $").unwrap().contains(&form("$KEY")));
+    // A `-` in the default text is text, not an operator.
+    assert_eq!(on("y-"), None);
+    // The key inside the braces still shows its summary.
+    assert!(on("${K").unwrap().starts_with("**K**"));
+}
+
+#[test]
+fn text_penv_takes_as_written_has_no_reference_hover() {
+    let on = |text: &str, line: u32, needle: &str| {
+        let mut pos = after(text, line, needle);
+        pos.character -= 1;
+        hover(text, pos, &[]).map(|t| t.markdown)
+    };
+    for (expr, needle) in [
+        ("sk-test", "sk-"),
+        ("${A}-${B}", "}-"),
+        ("'$K'", "'$"),
+        ("`${K:-x}`", "${K:-"),
+        ("$5", "$"),
+        ("${A:x-y}", "x-"),
+        ("${A # c-d", "c-"),
+        ("abc # ${K:-x}", "${K:-"),
+    ] {
+        let text = call_schema(expr);
+        assert_eq!(on(&text, 4, needle), None, "{expr}");
+    }
+    let text = "# @penv=a/b\n# ---\n\n# @type=number(min=-1) @example=${A:-b}\nKEY=\n";
+    assert_eq!(on(text, 3, "min=-"), None);
+    assert_eq!(on(text, 3, "${A:-"), None);
+    // A double-quoted value is still read.
+    let text = call_schema("\"${K:-x}\" # note");
+    assert!(on(&text, 4, "${K:-").is_some());
+}
+
+#[test]
+fn environment_names_stay_out_of_decorators_that_take_none() {
+    for decorator in [
+        "@deprecated=forEnv(",
+        "@type=enum(forEnv(",
+        "@hosts=forEnv(",
+    ] {
+        let text = format!("# @penv=a/b\n# ---\n\n# {decorator}\nKEY=\n");
+        let got = labels(&text, after(&text, 3, decorator));
+        assert!(
+            !got.contains(&"production".to_string()),
+            "{decorator}: {got:?}"
+        );
+    }
+}
+
+fn json_schema(value: &str, expr: &str) -> String {
+    format!("# @penv=a/b\n# ---\n\nCONFIG={value}\nV={expr}\n")
+}
+
+fn json_paths(value: &str, expr: &str, needle: &str) -> Vec<String> {
+    let text = json_schema(value, expr);
+    labels(&text, after(&text, 4, needle))
+}
+
+const DOC: &str = r#"{"db":{"host":"fake-host","hosts":["a","b"]},"a.b":1,"tls":true}"#;
+
+#[test]
+fn json_paths_complete_from_a_literal_document() {
+    assert_eq!(
+        json_paths(DOC, "json($CONFIG, ", "$CONFIG, "),
+        ["db", r#"["a.b"]"#, "tls"]
+    );
+    assert_eq!(
+        json_paths(DOC, "json($CONFIG, db.", "db."),
+        ["host", "hosts"]
+    );
+    assert_eq!(
+        json_paths(DOC, "json($CONFIG, db.ho)", "db.ho"),
+        ["host", "hosts"]
+    );
+    assert_eq!(
+        json_paths(DOC, "json($CONFIG, db.hosts[", "hosts["),
+        ["0", "1"]
+    );
+    assert_eq!(
+        json_paths(DOC, "${CONFIG | json(db.", "db."),
+        ["host", "hosts"]
+    );
+    assert_eq!(
+        json_paths(DOC, "json(${CONFIG}, ", ", "),
+        ["db", r#"["a.b"]"#, "tls"]
+    );
+    let quoted = format!("'{DOC}'");
+    assert_eq!(
+        json_paths(&quoted, "json($CONFIG, db.", "db."),
+        ["host", "hosts"]
+    );
+    assert_eq!(json_paths("[1,2]", "json($CONFIG, ", ", "), ["[0]", "[1]"]);
+
+    let text = json_schema(DOC, "json($CONFIG, db.hosts[");
+    let items = complete(&text, after(&text, 4, "hosts["));
+    assert_eq!(items[0].insert, "0]");
+    let text = json_schema(DOC, "json($CONFIG, )");
+    for item in complete(&text, after(&text, 4, ", ")) {
+        let shown = format!(
+            "{} {} {} {}",
+            item.label, item.detail, item.doc, item.insert
+        );
+        assert!(!shown.contains("fake-host"), "{shown}");
+    }
+}
+
+#[test]
+fn json_paths_offer_nothing_without_a_literal_document() {
+    for (value, expr, needle) in [
+        ("not-json", "json($CONFIG, ", ", "),
+        ("${OTHER}", "json($CONFIG, ", ", "),
+        (DOC, "json($MISSING, ", ", "),
+        (DOC, "json($CONFIG, tls.", "tls."),
+        (DOC, "json($CONFIG, nope.", "nope."),
+        (DOC, "json($CONFIG, db.hosts.", "hosts."),
+        (DOC, "${CONFIG | b64d | json(", "json("),
+        (DOC, "json($CONFIG, [\"a.", "[\"a."),
+    ] {
+        assert_eq!(
+            json_paths(value, expr, needle),
+            Vec::<String>::new(),
+            "{value} {expr}"
+        );
+    }
+}
+
+#[test]
+fn an_unclosed_json_or_match_call_does_not_panic() {
+    for expr in [
+        "json(",
+        "json($",
+        "json($CONFIG,",
+        "${CONFIG | json(",
+        "match(",
+        "match($APP_ENV,",
+    ] {
+        let text = json_schema(DOC, expr);
+        let line = text.split('\n').nth(4).unwrap();
+        for i in 0..=line.encode_utf16().count() as u32 {
+            complete(&text, at(4, i));
+        }
+    }
+}
+
+fn match_schema(header: &str, expr: &str) -> String {
+    format!("# @penv=a/b\n{header}# ---\n\nAPP_ENV=development\nOTHER=x\nV={expr}\n")
+}
+
+#[test]
+fn match_labels_are_environments_when_the_subject_is_the_current_env_key() {
+    let envs: Vec<String> = vocabulary()
+        .environments
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    let header = "# @currentEnv=$APP_ENV\n";
+    let text = match_schema(header, "match($APP_ENV, ");
+    assert_eq!(labels(&text, after(&text, 6, "ENV, ")), envs);
+    assert_eq!(
+        complete(&text, after(&text, 6, "ENV, "))[0].insert,
+        "development: "
+    );
+
+    let text = match_schema(header, "match(${APP_ENV}, production: a, st");
+    let got = labels(&text, after(&text, 6, ", st"));
+    assert!(!got.contains(&"production".to_string()), "{got:?}");
+    assert!(got.contains(&"staging".to_string()), "{got:?}");
+
+    let text = match_schema(header, "match($APP_ENV, test: x)");
+    let items = complete(&text, after(&text, 6, ", te"));
+    assert_eq!(
+        items.iter().find(|c| c.label == "test").unwrap().insert,
+        "test"
+    );
+}
+
+#[test]
+fn match_labels_are_environments_whatever_the_subject() {
+    let header = "# @currentEnv=$APP_ENV\n";
+    for (header, expr, needle) in [
+        (header, "match($OTHER, ", "OTHER, "),
+        ("", "match($APP_ENV, ", "ENV, "),
+        (header, "match(${OTHER | trim}, ", "trim}, "),
+    ] {
+        let text = match_schema(header, expr);
+        let row = text.lines().position(|l| l.starts_with("V=")).unwrap() as u32;
+        let got = labels(&text, after(&text, row, needle));
+        assert!(got.contains(&"production".to_string()), "{expr}: {got:?}");
+    }
+    for (expr, needle) in [
+        ("match($APP_ENV, production: ", "production: "),
+        ("match(", "match("),
+    ] {
+        let text = match_schema("# @currentEnv=$APP_ENV\n", expr);
+        let row = text.lines().position(|l| l.starts_with("V=")).unwrap() as u32;
+        let got = labels(&text, after(&text, row, needle));
+        assert!(!got.contains(&"production".to_string()), "{expr}: {got:?}");
+    }
 }

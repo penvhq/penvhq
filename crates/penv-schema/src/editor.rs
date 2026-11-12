@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 
-use crate::ir::{BaseType, Diagnostic, Schema};
+use crate::ir::{Diagnostic, Schema};
 use crate::parse::{is_divider, parse};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +159,11 @@ pub struct Word {
     pub address: Option<Slot>,
     /// Open `name=value` labels, as the parts or paths a call writes.
     pub labels: Option<Slot>,
-    /// The fixed options a call takes.
+    /// Where every bare argument takes its names from, as `forEnv` takes environments.
+    pub each: Option<Slot>,
+    /// Case labels `match()` offers, whatever its subject.
+    pub cases: Option<Slot>,
+    /// The fixed options a call takes; for a type, its constraints.
     pub args: Vec<Opt>,
 }
 
@@ -167,6 +171,7 @@ pub struct Word {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slot {
     pub values_from: Option<String>,
+    pub doc: String,
 }
 
 /// One `name=value` option of a function.
@@ -231,6 +236,8 @@ pub struct Vocabulary {
     pub encodings: Vec<Entry>,
     pub url_parts: Vec<Entry>,
     pub random_kinds: Vec<Entry>,
+    pub environments: Vec<Entry>,
+    pub reference_forms: Vec<Entry>,
 }
 
 impl Vocabulary {
@@ -241,6 +248,8 @@ impl Vocabulary {
             "encodings" => &self.encodings,
             "url-parts" => &self.url_parts,
             "random-kinds" => &self.random_kinds,
+            "environments" => &self.environments,
+            "reference-forms" => &self.reference_forms,
             _ => &[],
         }
     }
@@ -275,6 +284,8 @@ pub fn vocabulary() -> &'static Vocabulary {
             encodings: entries(&root["encodings"]),
             url_parts: entries(&root["url-parts"]),
             random_kinds: entries(&root["random-kinds"]),
+            environments: entries(&root["environments"]),
+            reference_forms: entries(&root["reference-forms"]),
         }
     })
 }
@@ -308,6 +319,7 @@ fn entries(list: &Value) -> Vec<Entry> {
 fn slot(v: &Value) -> Option<Slot> {
     v.is_object().then(|| Slot {
         values_from: v["values_from"].as_str().map(str::to_string),
+        doc: v["doc"].as_str().unwrap_or_default().to_string(),
     })
 }
 
@@ -336,6 +348,8 @@ fn word(v: &Value) -> Word {
         subject: text("subject"),
         address: slot(&v["address"]),
         labels: slot(&v["labels"]),
+        each: slot(&v["each"]),
+        cases: slot(&v["cases"]),
         args: v["args"]
             .as_array()
             .map(|l| l.iter().map(opt).collect())
@@ -902,6 +916,11 @@ fn complete_decorator_value(
             .map(|v| plain(v, KIND_VALUE, name, "", whole))
             .collect()
     };
+    if matches!(name, "required" | "optional" | "assert")
+        && let Some(items) = complete_each(lines, row, c)
+    {
+        return items;
+    }
     match name {
         "type" => match typed.find('(') {
             None => vocabulary()
@@ -910,7 +929,7 @@ fn complete_decorator_value(
                 .map(|w| plain(&w.name, KIND_KEYWORD, "type", &w.doc, whole))
                 .collect(),
             Some(open) => {
-                let base = BaseType::from_name(typed[..open].trim());
+                let ty = find(&vocabulary().types, typed[..open].trim());
                 let arg_start = typed.rfind([',', '(']).map_or(0, |i| i + 1);
                 let arg = &typed[arg_start..];
                 if arg.contains('=') {
@@ -918,12 +937,12 @@ fn complete_decorator_value(
                 }
                 let (ws, we) = word_at(chars, c);
                 let replace = span(lines, row, ws, we);
-                base.map(|b| b.constraints())
+                ty.map(|w| w.args.as_slice())
                     .unwrap_or_default()
                     .iter()
-                    .map(|k| Completion {
-                        insert: format!("{k}="),
-                        ..plain(k, KIND_PROPERTY, "constraint", "", replace)
+                    .map(|o| Completion {
+                        insert: format!("{}=", o.name),
+                        ..plain(&o.name, KIND_PROPERTY, "constraint", &o.doc, replace)
                     })
                     .collect()
             }
@@ -968,6 +987,11 @@ fn complete_value(
     let (ws, we) = word_at(chars, c);
     let here = span(lines, row, ws, we);
 
+    if let Some(items) =
+        complete_json_path(lines, row, c).or_else(|| complete_match_case(lines, row, c))
+    {
+        return items;
+    }
     if let Some(open) = before.rfind("${")
         && !before[open..].contains('}')
     {
@@ -991,11 +1015,11 @@ fn complete_value(
             return if inner.contains('/') {
                 key_items(keys, "", here)
             } else {
-                Vec::new()
+                entry_items("environments", &[], here)
             };
         }
     }
-    if let Some(items) = complete_call(lines, row, c) {
+    if let Some(items) = complete_each(lines, row, c).or_else(|| complete_call(lines, row, c)) {
         return items;
     }
     let lead = before[..before.len() - (c - ws).min(before.len())].trim_end();
@@ -1013,6 +1037,12 @@ fn is_token(c: char) -> bool {
 
 /// The argument-form function whose parentheses hold `at`, and where its arguments start.
 fn enclosing_call(chars: &[char], at: usize) -> Option<(&'static Word, usize)> {
+    let (name, open) = open_call(chars, at)?;
+    crate::functions::args::word(&name).map(|w| (w, open))
+}
+
+/// The name before the parenthesis that holds `at`, and where its arguments start.
+fn open_call(chars: &[char], at: usize) -> Option<(String, usize)> {
     let mut depth = 0usize;
     for i in (0..at.min(chars.len())).rev() {
         match chars[i] {
@@ -1023,8 +1053,7 @@ fn enclosing_call(chars: &[char], at: usize) -> Option<(&'static Word, usize)> {
                 while s > 0 && is_word(chars[s - 1]) {
                     s -= 1;
                 }
-                let name: String = chars[s..i].iter().collect();
-                return crate::functions::args::word(&name).map(|w| (w, i + 1));
+                return Some((chars[s..i].iter().collect(), i + 1));
             }
             _ => {}
         }
@@ -1071,18 +1100,219 @@ fn entry_items(section: &str, taken: &[String], replace: Range) -> Vec<Completio
         .collect()
 }
 
+/// The token around `at`, starting no earlier than `from`.
+fn token_at(chars: &[char], from: usize, at: usize) -> (usize, usize) {
+    let mut ts = at;
+    while ts > from && is_token(chars[ts - 1]) {
+        ts -= 1;
+    }
+    let mut te = at;
+    while te < chars.len() && is_token(chars[te]) {
+        te += 1;
+    }
+    (ts, te)
+}
+
+/// `KEY` from `$KEY` or `${KEY}`.
+fn reference_key(text: &str) -> Option<&str> {
+    let text = text.trim().strip_prefix('$')?;
+    let key = text
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .unwrap_or(text);
+    crate::ir::is_valid_key_name(key).then_some(key)
+}
+
+/// The subject of the `json(` whose arguments start at `open`: the first argument,
+/// or the key of a `${KEY | json(` pipe. `Some(None)` when the path has no
+/// subject this file names.
+fn json_subject(chars: &[char], open: usize, starts: &[usize]) -> Option<Option<String>> {
+    match starts.len() {
+        2 => {
+            let first: String = chars[starts[0]..starts[1] - 1].iter().collect();
+            Some(reference_key(&first).map(str::to_string))
+        }
+        1 => {
+            let before: String = chars[..open - "json(".len()].iter().collect();
+            let piped = before.trim_end().strip_suffix('|')?;
+            let step = &piped[piped.rfind("${")? + 2..];
+            if step.contains('}') {
+                return None;
+            }
+            let key = step.trim();
+            Some(crate::ir::is_valid_key_name(key).then(|| key.to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// The value a key is given on its own line in this file.
+fn written_value(lines: &[Line], key: &str) -> Option<String> {
+    let line = &lines[key_line(lines, key)?];
+    let Kind::Key { eq, .. } = line.kind else {
+        return None;
+    };
+    let text: String = line.chars[eq + 1..].iter().collect();
+    Some(crate::parse::read_default(text.trim()).0)
+}
+
+fn is_path_char(c: char) -> bool {
+    is_word(c) || c == '-'
+}
+
+/// Keys and indices for the path a `json(` read is given, from the subject's value
+/// when it is written as JSON in this file. Names only, never a value.
+fn complete_json_path(lines: &[Line], row: usize, c: usize) -> Option<Vec<Completion>> {
+    use crate::functions::json::{Members, members};
+    let chars = &lines[row].chars;
+    let (name, open) = open_call(chars, c)?;
+    if name != "json" {
+        return None;
+    }
+    let starts = arg_starts(chars, open, c);
+    let subject = json_subject(chars, open, &starts)?;
+    let cur = *starts.last()?;
+    let ps = (cur..c).find(|&i| !chars[i].is_whitespace()).unwrap_or(c);
+    if chars[ps..c].iter().any(|ch| matches!(ch, '=' | '$' | '(')) {
+        return None;
+    }
+    let mut seg = c;
+    while seg > ps && is_path_char(chars[seg - 1]) {
+        seg -= 1;
+    }
+    let mut end = c;
+    while end < chars.len() && is_path_char(chars[end]) {
+        end += 1;
+    }
+    let sep = (seg > ps).then(|| chars[seg - 1]);
+    if !matches!(sep, None | Some('.' | '[')) {
+        return Some(Vec::new());
+    }
+    let parent: String = chars[ps..seg.saturating_sub(1).max(ps)].iter().collect();
+    let found = subject
+        .and_then(|key| written_value(lines, &key))
+        .and_then(|doc| members(&doc, &parent));
+    let Some(found) = found else {
+        return Some(Vec::new());
+    };
+    let replace = span(lines, row, seg, end);
+    let doc = vocabulary()
+        .functions
+        .iter()
+        .find(|w| w.name == "json")
+        .and_then(|w| w.address.as_ref())
+        .map(|s| s.doc.clone())
+        .unwrap_or_default();
+    let closed = chars.get(end) == Some(&']');
+    let item = |label: String, insert: String, detail: &str| Completion {
+        insert,
+        ..plain(&label, KIND_PROPERTY, detail, &doc, replace)
+    };
+    let plain_key = |k: &str| !k.is_empty() && k.chars().all(is_path_char);
+    let bracket = |inner: String| {
+        if closed { inner } else { format!("{inner}]") }
+    };
+    Some(match (found, sep) {
+        (Members::Keys(keys), None) => keys
+            .into_iter()
+            .map(|k| {
+                if plain_key(&k) {
+                    item(k.clone(), k, "key")
+                } else {
+                    let quoted = format!("[\"{k}\"]");
+                    item(quoted.clone(), quoted, "key")
+                }
+            })
+            .collect(),
+        (Members::Keys(keys), Some('.')) => keys
+            .into_iter()
+            .filter(|k| plain_key(k))
+            .map(|k| item(k.clone(), k, "key"))
+            .collect(),
+        (Members::Keys(keys), _) => keys
+            .into_iter()
+            .map(|k| {
+                let quoted = format!("\"{k}\"");
+                item(quoted.clone(), bracket(quoted), "key")
+            })
+            .collect(),
+        (Members::Items(n), None) => (0..n)
+            .map(|i| item(format!("[{i}]"), format!("[{i}]"), "index"))
+            .collect(),
+        (Members::Items(n), Some('[')) => (0..n)
+            .map(|i| item(i.to_string(), bracket(i.to_string()), "index"))
+            .collect(),
+        (Members::Items(_), _) => Vec::new(),
+    })
+}
+
+/// Environment names as case labels of a `match(`, whatever its subject, as the
+/// vocabulary's `cases` says.
+fn complete_match_case(lines: &[Line], row: usize, c: usize) -> Option<Vec<Completion>> {
+    let chars = &lines[row].chars;
+    let (name, open) = open_call(chars, c)?;
+    let section = find(&vocabulary().functions, &name)?
+        .cases
+        .as_ref()?
+        .values_from
+        .as_deref()?;
+    let starts = arg_starts(chars, open, c);
+    let cur = *starts.last()?;
+    if starts.len() < 2 {
+        return None;
+    }
+    let (ts, te) = token_at(chars, open, c);
+    if chars[cur..ts].iter().any(|ch| !ch.is_whitespace()) {
+        return None;
+    }
+    let given: Vec<String> = starts[1..]
+        .windows(2)
+        .filter_map(|w| {
+            let arm: String = chars[w[0]..w[1] - 1].iter().collect();
+            arm.split_once(':')
+                .map(|(label, _)| label.trim().to_string())
+        })
+        .collect();
+    let followed = chars[te..].iter().find(|ch| !ch.is_whitespace()) == Some(&':');
+    let mut items = entry_items(section, &given, span(lines, row, ts, te));
+    if !followed {
+        for item in &mut items {
+            item.insert.push_str(": ");
+        }
+    }
+    Some(items)
+}
+
+/// Names for a bare argument of a call whose vocabulary entry has `each`, as `forEnv(`.
+fn complete_each(lines: &[Line], row: usize, c: usize) -> Option<Vec<Completion>> {
+    let chars = &lines[row].chars;
+    let (name, open) = open_call(chars, c)?;
+    let word = find(&vocabulary().functions, &name)?;
+    let section = word.each.as_ref()?.values_from.as_deref()?;
+    let (ts, te) = token_at(chars, open, c);
+    let starts = arg_starts(chars, open, c);
+    let cur = *starts.last()?;
+    if chars[cur..ts].iter().any(|ch| !ch.is_whitespace()) {
+        return None;
+    }
+    let given: Vec<String> = starts
+        .windows(2)
+        .map(|w| {
+            chars[w[0]..w[1] - 1]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .collect();
+    Some(entry_items(section, &given, span(lines, row, ts, te)))
+}
+
 /// Option names, parts and option values inside `hash(`, `url(`, `random(`, `json(`.
 fn complete_call(lines: &[Line], row: usize, c: usize) -> Option<Vec<Completion>> {
     let chars = &lines[row].chars;
     let (word, open) = enclosing_call(chars, c)?;
-    let mut ts = c;
-    while ts > open && is_token(chars[ts - 1]) {
-        ts -= 1;
-    }
-    let mut te = c;
-    while te < chars.len() && is_token(chars[te]) {
-        te += 1;
-    }
+    let (ts, te) = token_at(chars, open, c);
     let replace = span(lines, row, ts, te);
     let starts = arg_starts(chars, open, c);
     let index = starts.len() - 1;
@@ -1201,7 +1431,15 @@ pub fn hover(text: &str, at: Position, notes: &[KeyNote]) -> Option<Tip> {
                 && c >= start
                 && c <= end
             {
-                return hover_expression(&lines, row, c, text, notes, d.name(chars) == "type");
+                // Other decorator values are taken as written, never resolved.
+                let name = d.name(chars);
+                if !matches!(
+                    name.as_str(),
+                    "type" | "required" | "optional" | "assert" | "hosts" | "currentEnv"
+                ) {
+                    return None;
+                }
+                return hover_expression(&lines, row, c, text, notes, name == "type");
             }
         }
         return None;
@@ -1216,10 +1454,36 @@ pub fn hover(text: &str, at: Position, notes: &[KeyNote]) -> Option<Tip> {
             markdown: summary(text, &name, notes),
         });
     }
-    if c > eq {
+    if c > eq && c <= value_end(chars, eq)? {
         return hover_expression(&lines, row, c, text, notes, false);
     }
     None
+}
+
+/// Where a key's value ends, before any `# comment`; `None` for a single-quoted or
+/// backtick value, which penv takes as written. Mirrors `parse::read_default`.
+fn value_end(chars: &[char], eq: usize) -> Option<usize> {
+    let start = (eq + 1..chars.len()).find(|&i| !chars[i].is_whitespace())?;
+    let q = chars[start];
+    if matches!(q, '"' | '\'' | '`') {
+        let mut escaped = false;
+        let close = (start + 1..chars.len()).find(|&i| {
+            let hit = !escaped && chars[i] == q;
+            escaped = !escaped && q == '"' && chars[i] == '\\';
+            hit
+        });
+        if let Some(close) = close {
+            let rest = chars[close + 1..].iter().find(|ch| !ch.is_whitespace());
+            if matches!(rest, None | Some('#')) {
+                return (q == '"').then_some(close + 1);
+            }
+        }
+    }
+    Some(
+        (eq + 2..chars.len())
+            .find(|&i| chars[i] == '#' && matches!(chars[i - 1], ' ' | '\t'))
+            .unwrap_or(chars.len()),
+    )
 }
 
 fn hover_expression(
@@ -1231,17 +1495,36 @@ fn hover_expression(
     type_value: bool,
 ) -> Option<Tip> {
     let chars = &lines[row].chars;
+    let words = vocabulary();
+    let entry_tip = |list: &[Entry], name: &str, range: Range| {
+        list.iter().find(|e| e.name == name).map(|e| Tip {
+            range,
+            markdown: format!("`{}`\n\n{}", e.name, e.doc),
+        })
+    };
+    if let Some((start, end, form)) = reference_form_at(chars, c) {
+        return entry_tip(&words.reference_forms, form, span(lines, row, start, end));
+    }
     let (ws, we) = word_at(chars, c);
     if ws == we {
         return None;
     }
     let name: String = chars[ws..we].iter().collect();
     let range = span(lines, row, ws, we);
-    let words = vocabulary();
     if type_value && let Some(w) = find(&words.types, &name) {
         return Some(Tip {
             range,
             markdown: format!("`{}`\n\n{}", w.name, w.doc),
+        });
+    }
+    if type_value
+        && let Some((ty, _)) = open_call(chars, ws)
+        && let Some(o) =
+            find(&words.types, &ty).and_then(|w| w.args.iter().find(|o| o.name == name))
+    {
+        return Some(Tip {
+            range,
+            markdown: format!("`{}`\n\n{}", o.name, o.doc),
         });
     }
     if reference_at(chars, ws, we) && key_line(lines, &name).is_some() {
@@ -1258,6 +1541,21 @@ fn hover_expression(
             markdown: w.markdown(),
         });
     }
+    if let Some((call, _)) = open_call(chars, ws) {
+        let each = find(&words.functions, &call)
+            .and_then(|w| w.each.as_ref())
+            .and_then(|s| s.values_from.as_deref());
+        let section = match each {
+            Some(section) => Some(section),
+            None if call == "penv" && chars.get(we) == Some(&'/') && chars[ws - 1] == '(' => {
+                Some("environments")
+            }
+            None => None,
+        };
+        if let Some(tip) = section.and_then(|s| entry_tip(words.section(s), &name, range)) {
+            return Some(tip);
+        }
+    }
     if let Some(tip) = hover_call(chars, row, lines, c) {
         return Some(tip);
     }
@@ -1269,6 +1567,85 @@ fn hover_expression(
             range,
             markdown: format!("`{}` · penv extension\n\n{}", w.form, w.doc),
         });
+    }
+    None
+}
+
+/// The reference syntax at `at`, as its span and its `reference-forms` name: the `$` or
+/// `${` that opens a reference, the `:-` or `-` before a default, or a step's `|`.
+fn reference_form_at(chars: &[char], at: usize) -> Option<(usize, usize, &'static str)> {
+    let ch = *chars.get(at)?;
+    if ch == '$' || (ch == '{' && at > 0 && chars[at - 1] == '$') {
+        let dollar = if ch == '$' { at } else { at - 1 };
+        if dollar > 0 && chars[dollar - 1] == '\\' {
+            return None;
+        }
+        return match chars.get(dollar + 1) {
+            Some('{') => Some((dollar, dollar + 2, "${KEY}")),
+            Some(next) if next.is_ascii_alphabetic() || *next == '_' => {
+                Some((dollar, dollar + 1, "$KEY"))
+            }
+            _ => None,
+        };
+    }
+    if !matches!(ch, ':' | '-' | '|') {
+        return None;
+    }
+    // The innermost `${` whose braces hold `at`; an unclosed one runs to the line's end.
+    let (open, close) = (1..at).rev().find_map(|i| {
+        if chars[i] != '{' || chars[i - 1] != '$' {
+            return None;
+        }
+        let close = closing(chars, i).unwrap_or(chars.len());
+        (close > at).then_some((i, close))
+    })?;
+    let mut depth = 0i32;
+    let mut pipe = close;
+    for (i, c) in chars.iter().enumerate().take(close).skip(open + 1) {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '|' if depth == 0 => {
+                if i == at {
+                    return Some((at, at + 1, "${KEY | filter}"));
+                }
+                pipe = pipe.min(i);
+            }
+            _ => {}
+        }
+    }
+    // A key name holds no `-`, so the first one before any step is the operator.
+    let dash = (open + 1..pipe).find(|i| chars[*i] == '-')?;
+    let colon = chars[dash - 1] == ':';
+    let start = if colon { dash - 1 } else { dash };
+    let key: String = chars[open + 1..start].iter().collect();
+    if !crate::ir::is_valid_key_name(key.trim()) {
+        return None;
+    }
+    if at < start || at > dash {
+        return None;
+    }
+    Some(if colon {
+        (start, dash + 1, "${KEY:-default}")
+    } else {
+        (dash, dash + 1, "${KEY-default}")
+    })
+}
+
+/// Index of the `}` that closes the `{` at `open`.
+fn closing(chars: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in chars.iter().enumerate().skip(open) {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
     }
     None
 }

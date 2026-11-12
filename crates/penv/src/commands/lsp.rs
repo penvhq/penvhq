@@ -1,13 +1,15 @@
 //! `penv lsp`: a Language Server Protocol server on stdin and stdout for
-//! `.env.schema`. What it says comes from `penv_schema::editor`; this file only
-//! speaks the protocol and reads `.penv/config.toml` for `@rotate` clocks. It
-//! reads no value file and sends no request.
+//! `.env.schema` and `.penv/config.toml`. What it says comes from
+//! `penv_schema::editor` and `penv_schema::config_editor`; this file only speaks
+//! the protocol, reads `.penv/config.toml` for `@rotate` clocks and the schema
+//! beside a config for its key names. It reads no value file and sends no request.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use penv_schema::Diagnostic;
+use penv_schema::config_editor::{config_complete, config_hover, config_problems};
 use penv_schema::editor::{self, KeyNote, Position, Severity};
 use penv_schema::rotate::{Rotation, Span, parse_instant, rotation};
 use serde_json::{Value, json};
@@ -149,8 +151,8 @@ fn notify(method: &str, params: Value) -> Value {
 }
 
 struct Server {
-    /// Open `.env.schema` documents by URI.
-    documents: BTreeMap<String, String>,
+    /// Open `.env.schema` and `.penv/config.toml` documents by URI.
+    documents: BTreeMap<String, (Kind, String)>,
     initialized: bool,
     shutdown: bool,
     clock: fn() -> u64,
@@ -173,22 +175,40 @@ impl Server {
         }
         let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
         let at = position(&params["position"]);
-        let text = self.documents.get(uri);
+        let kind = self.documents.get(uri).map(|(k, _)| *k);
+        let text = self
+            .documents
+            .get(uri)
+            .filter(|(k, _)| *k == Kind::Schema)
+            .map(|(_, t)| t);
+        let config = self
+            .documents
+            .get(uri)
+            .filter(|(k, _)| *k == Kind::Config)
+            .map(|(_, t)| t.as_str());
         let result = match method {
             "shutdown" => {
                 self.shutdown = true;
                 Value::Null
             }
             "textDocument/completion" => {
-                let items = text.map_or_else(Vec::new, |t| editor::complete(t, at));
+                let items = match (text, config) {
+                    (Some(t), _) => editor::complete(t, at),
+                    (_, Some(t)) => {
+                        config_complete(t, at, &self.schema_keys(uri).unwrap_or_default().0)
+                    }
+                    _ => Vec::new(),
+                };
                 json!({
                     "isIncomplete": false,
                     "items": items.iter().map(|c| c.to_json()).collect::<Vec<_>>(),
                 })
             }
-            "textDocument/hover" => text
-                .and_then(|t| editor::hover(t, at, &self.notes(uri, t)))
-                .map_or(Value::Null, |tip| tip.to_json()),
+            "textDocument/hover" => match kind {
+                Some(Kind::Config) => config.and_then(|t| config_hover(t, at)),
+                _ => text.and_then(|t| editor::hover(t, at, &self.notes(uri, t))),
+            }
+            .map_or(Value::Null, |tip| tip.to_json()),
             "textDocument/definition" => text.and_then(|t| editor::definition(t, at)).map_or(
                 Value::Null,
                 |range| json!({ "uri": uri, "range": range.to_json() }),
@@ -221,11 +241,11 @@ impl Server {
             .to_string();
         match method {
             "textDocument/didOpen" => {
-                if !is_schema(&uri) {
+                let Some(kind) = kind(&uri) else {
                     return Vec::new();
-                }
+                };
                 let text = params["textDocument"]["text"].as_str().unwrap_or_default();
-                self.documents.insert(uri.clone(), text.to_string());
+                self.documents.insert(uri.clone(), (kind, text.to_string()));
                 vec![self.publish(&uri)]
             }
             "textDocument/didChange" => {
@@ -239,16 +259,35 @@ impl Server {
                 let Some(text) = change.and_then(|c| c["text"].as_str()) else {
                     return Vec::new();
                 };
-                self.documents.insert(uri.clone(), text.to_string());
-                vec![self.publish(&uri)]
+                let mut is_schema = false;
+                if let Some((kind, held)) = self.documents.get_mut(&uri) {
+                    *held = text.to_string();
+                    is_schema = *kind == Kind::Schema;
+                }
+                let mut sent = vec![self.publish(&uri)];
+                // An open config's references are checked against this buffer.
+                let project = project_dir(&uri).filter(|_| is_schema);
+                for (other, (kind, _)) in &self.documents {
+                    if *kind == Kind::Config && project.is_some() && project_dir(other) == project {
+                        sent.push(self.publish(other));
+                    }
+                }
+                sent
             }
             "textDocument/didSave" => {
-                // `.penv/config.toml` may have moved a rotation clock since.
-                if self.documents.contains_key(&uri) {
-                    vec![self.publish(&uri)]
-                } else {
-                    Vec::new()
+                // `.penv/config.toml` may have moved a rotation clock, and a saved
+                // schema may declare the keys an open config names.
+                if !self.documents.contains_key(&uri) {
+                    return Vec::new();
                 }
+                let project = project_dir(&uri);
+                let mut sent = vec![self.publish(&uri)];
+                for other in self.documents.keys() {
+                    if *other != uri && project.is_some() && project_dir(other) == project {
+                        sent.push(self.publish(other));
+                    }
+                }
+                sent
             }
             "textDocument/didClose" => {
                 if self.documents.remove(&uri).is_none() {
@@ -264,11 +303,20 @@ impl Server {
     }
 
     fn publish(&self, uri: &str) -> Value {
-        let text = self
+        let (kind, text) = self
             .documents
             .get(uri)
-            .map(String::as_str)
-            .unwrap_or_default();
+            .map_or((Kind::Schema, ""), |(k, t)| (*k, t.as_str()));
+        if kind == Kind::Config {
+            let found = config_problems(text, self.checked_keys(uri).as_deref());
+            return notify(
+                "textDocument/publishDiagnostics",
+                json!({
+                    "uri": uri,
+                    "diagnostics": found.iter().map(|d| d.to_json()).collect::<Vec<_>>(),
+                }),
+            );
+        }
         let overdue: Vec<KeyNote> = self
             .notes(uri, text)
             .into_iter()
@@ -282,6 +330,30 @@ impl Server {
                 "diagnostics": found.iter().map(|d| d.to_json()).collect::<Vec<_>>(),
             }),
         )
+    }
+
+    /// The keys the `.env.schema` beside a config declares: the open buffer when
+    /// there is one, else the file, and whether it imports none. `None` when
+    /// there is no schema to read.
+    fn schema_keys(&self, config_uri: &str) -> Option<(Vec<String>, bool)> {
+        let schema = project_dir(config_uri)?.join(".env.schema");
+        let open = self.documents.iter().find_map(|(uri, (kind, text))| {
+            (*kind == Kind::Schema && uri_path(uri).as_ref() == Some(&schema)).then_some(text)
+        });
+        let text = match open {
+            Some(text) => text.clone(),
+            None => std::fs::read_to_string(&schema).ok()?,
+        };
+        let parsed = penv_schema::parse(&text).ok()?;
+        let whole = parsed.imports.is_empty();
+        Some((parsed.keys.into_iter().map(|k| k.name).collect(), whole))
+    }
+
+    /// The keys a config's references are checked against; `None` leaves them
+    /// unchecked, as when the schema imports keys the editor does not resolve.
+    fn checked_keys(&self, config_uri: &str) -> Option<Vec<String>> {
+        self.schema_keys(config_uri)
+            .and_then(|(keys, whole)| whole.then_some(keys))
     }
 
     /// `@rotate` reminders in `check`'s words. Local mode reads the clock from
@@ -372,7 +444,7 @@ fn capabilities() -> Value {
             "positionEncoding": "utf-16",
             "textDocumentSync": { "openClose": true, "change": 1, "save": true },
             "completionProvider": {
-                "triggerCharacters": ["@", "=", "$", "{", "(", "|", "/", ","],
+                "triggerCharacters": ["@", "=", "$", "{", "(", "|", "/", ",", "[", ".", "\""],
             },
             "hoverProvider": true,
             "definitionProvider": true,
@@ -394,11 +466,31 @@ fn position(v: &Value) -> Position {
     }
 }
 
-/// Only `.env.schema` is served. Value files hold secrets and are never read.
-fn is_schema(uri: &str) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Schema,
+    Config,
+}
+
+/// Only `.env.schema` and `.penv/config.toml` are served. Value files hold
+/// secrets and are never read.
+fn kind(uri: &str) -> Option<Kind> {
     let path = uri.split(['?', '#']).next().unwrap_or_default();
-    let name = path.rsplit('/').next().unwrap_or_default();
-    percent_decode(name).as_deref() == Some(".env.schema")
+    let mut names = path.rsplit('/').map(percent_decode);
+    match names.next()??.as_str() {
+        ".env.schema" => Some(Kind::Schema),
+        "config.toml" if names.next()?.as_deref() == Some(".penv") => Some(Kind::Config),
+        _ => None,
+    }
+}
+
+/// The directory holding `.env.schema` for a schema or config URI.
+fn project_dir(uri: &str) -> Option<PathBuf> {
+    let path = uri_path(uri)?;
+    match kind(uri)? {
+        Kind::Schema => path.parent().map(Path::to_path_buf),
+        Kind::Config => path.parent()?.parent().map(Path::to_path_buf),
+    }
 }
 
 /// A `file:` URI as a path; `file:///c%3A/x` and `file:///C:/x` on Windows alike.
@@ -440,7 +532,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_schema_is_served() {
+    fn only_a_schema_and_its_config_are_served() {
+        let is_schema = |uri| kind(uri) == Some(Kind::Schema);
         assert!(is_schema("file:///home/a/app/.env.schema"));
         assert!(is_schema("file:///c%3A/app/.env.schema"));
         assert!(is_schema("untitled:/x/.env.schema"));
@@ -448,6 +541,16 @@ mod tests {
         assert!(!is_schema("file:///home/a/app/.env.production"));
         assert!(!is_schema("file:///home/a/app/.env.schema.bak"));
         assert!(!is_schema("file:///home/a/app/x.env.schema"));
+        assert_eq!(
+            kind("file:///home/a/app/.penv/config.toml"),
+            Some(Kind::Config)
+        );
+        assert_eq!(kind("file:///home/a/app/config.toml"), None);
+        assert_eq!(kind("file:///home/a/app/.penv/other.toml"), None);
+        assert_eq!(
+            project_dir("file:///home/a/app/.penv/config.toml"),
+            Some(PathBuf::from("/home/a/app"))
+        );
     }
 
     #[test]

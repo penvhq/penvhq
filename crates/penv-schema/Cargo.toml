@@ -11,3 +11,4 @@ description = "The .env.schema parser, IR, JSON projection and validation."
 serde_json.workspace = true
 hmac.workspace = true
 sha2.workspace = true
+toml_edit.workspace = true

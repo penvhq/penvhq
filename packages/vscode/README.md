@@ -1,6 +1,8 @@
 # penv for VS Code
 
-Diagnostics, completion, hover, go-to-definition and an outline for `.env.schema`, served by [`penv lsp`](https://penv.cloud/docs/cli/lsp). Tested on VS Code 1.90 and current stable.
+Completions, hover docs and problems in `.env.schema` files for every decorator, function and filter penv knows: `@sensitive`, `@rotate=90d`, `hash($API_KEY, algo=sha256, length=8)`. Go-to-definition and an outline are included.
+
+All of it comes from the installed `penv`, served by [`penv lsp`](https://penv.cloud/docs/cli/lsp); the extension only starts it. Update penv (`npm i -g @penvhq/cli`) to get new decorators, functions and filters. Tested on VS Code 1.90 and current stable.
 
 ## Requires
 
@@ -21,8 +23,9 @@ Diagnostics, completion, hover, go-to-definition and an outline for `.env.schema
 | Completion | Decorators, `@type` values and constraints, `@rotate` periods, `$KEY`, `${KEY \| filter}`, `penv(env/KEY)`, functions |
 | Hover | Each decorator and function, marked penv extension, `@env-spec` or varlock; each key's type, required, sensitive, `@hosts` and rotation |
 | Definition | `$KEY`, `${KEY}`, `ref(KEY)`, `@currentEnv=$KEY` |
+| `.penv/config.toml` | Completion of sections, settings, URL parts and declared keys; hover for each setting; problems for TOML errors, unknown settings, wrong types and `public` entries naming an undeclared key (unchecked when the schema has `@import`) or a URL part `penv check` refuses; `penv check` alone checks that a `[hash]` entry is a `hash()` call |
 
-`penv lsp` serves only files named `.env.schema`, never reads `.env` or `.env.*`, and sends no network request.
+`penv lsp` serves only `.env.schema` and `.penv/config.toml`, never reads `.env` or `.env.*`, and sends no network request.
 
 ## Syntax highlighting
 
