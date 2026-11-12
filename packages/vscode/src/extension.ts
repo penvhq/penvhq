@@ -64,7 +64,7 @@ async function start(): Promise<void> {
   }
   if (!hasLsp(manifest)) {
     void vscode.window.showWarningMessage(
-      `${binary} has no 'lsp' command, so this penv is too old for the extension. Update it with npm i -g @penvhq/cli or the package manager you installed it with, then run "penv: Restart language server".`,
+      `${binary} has no 'lsp' command, so this penv is too old for the extension. Update it with penv upgrade, npm i -g @penvhq/cli or the package manager you installed it with, then run "penv: Restart language server".`,
     );
     return;
   }

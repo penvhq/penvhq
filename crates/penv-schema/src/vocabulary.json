@@ -87,7 +87,7 @@
       "scope": "item",
       "form": "@sensitive | @sensitive=true|false",
       "insert": "sensitive",
-      "doc": "Masks the value in the output of every `penv run`, as you want for `OPENAI_API_KEY`. `@sensitive=false` marks a value that may be shown. A bundler-prefixed key (`NEXT_PUBLIC_`, ...) cannot be sensitive, because its value ships to the browser."
+      "doc": "Masks the value in `penv run` output, as you want for `OPENAI_API_KEY`, unless you pass `--no-mask` in your own terminal; a value under 4 characters cannot be masked. `@sensitive=false` marks a value that may be shown. A bundler-prefixed key (`NEXT_PUBLIC_`, ...) cannot be sensitive, because its value ships to the browser."
     },
     {
       "name": "example",
@@ -135,7 +135,7 @@
       "scope": "item",
       "form": "@hosts(api.example.com, \"*.example.com\") | @hosts=api.example.com | @hosts=url($KEY, host)",
       "insert": "hosts(${1:api.example.com})",
-      "doc": "Seals the value: an agent's process holds a placeholder shaped by `@type`, and `penv run` puts the real value in only on the way to these hosts: `@hosts(api.openai.com)`. At most 32, with no scheme, port or path. A computed `@hosts=url($DATABASE_URL, host)` counts only where `[hosts]` in `.penv/config.toml` pins the same hosts; `penv check --pin-hosts` writes the pin."
+      "doc": "Seals the value: an agent's process, or yours under `penv run --sealed`, holds a placeholder shaped by `@type`, and `penv run` puts the real value in only on the way to these hosts: `@hosts(api.openai.com)`. At most 32, with no scheme, port or path. A computed `@hosts=url($DATABASE_URL, host)` counts only where `[hosts]` in `.penv/config.toml` pins the same hosts; `penv check --pin-hosts` writes the pin."
     },
     {
       "name": "rotate",
@@ -145,21 +145,21 @@
       "insert": "rotate=${1:90d}",
       "doc": "`penv check` reminds you to rotate the value once it is older than this: `@rotate=90d`. Units, largest first and each once: `y`, `m` (months), `w`, `d`, `h`, `min`, `s`, as in `1y6m`, `12h` or `30min`."
     },
-    { "name": "generateTypes", "origin": "varlock", "scope": "header", "form": "@generateTypes(...)", "insert": "", "complete": false, "doc": "varlock's. penv reads past it; `penv gen` writes typed files." },
-    { "name": "plugin", "origin": "varlock", "scope": "header", "form": "@plugin(...)", "insert": "", "complete": false, "doc": "varlock's. penv loads no plugins and warns; providers are compiled in." },
-    { "name": "redactLogs", "origin": "varlock", "scope": "header", "form": "@redactLogs", "insert": "", "complete": false, "doc": "varlock's. penv reads past it; every `penv run` already masks sensitive values." },
-    { "name": "preventLeaks", "origin": "varlock", "scope": "header", "form": "@preventLeaks", "insert": "", "complete": false, "doc": "varlock's. penv reads past it." },
-    { "name": "envFlag", "origin": "varlock", "scope": "header", "form": "@envFlag=KEY", "insert": "", "complete": false, "doc": "varlock's older name for `@currentEnv`. penv reads past it; write `@currentEnv=$APP_ENV`." },
-    { "name": "setValuesBulk", "origin": "varlock", "scope": "header", "form": "@setValuesBulk(...)", "insert": "", "complete": false, "doc": "varlock's. penv reads past it." },
-    { "name": "disable", "origin": "varlock", "scope": "header", "form": "@disable", "insert": "", "complete": false, "doc": "varlock's. penv reads past it." }
+    { "name": "generateTypes", "origin": "varlock", "scope": "header", "form": "@generateTypes(...)", "insert": "", "complete": false, "doc": "varlock's. penv ignores it, with a warning; `penv gen` writes typed files." },
+    { "name": "plugin", "origin": "varlock", "scope": "header", "form": "@plugin(...)", "insert": "", "complete": false, "doc": "varlock's. penv ignores it, with a warning, and loads no plugins; providers are compiled in." },
+    { "name": "redactLogs", "origin": "varlock", "scope": "header", "form": "@redactLogs", "insert": "", "complete": false, "doc": "varlock's. penv ignores it, with a warning; `penv run` masks sensitive values." },
+    { "name": "preventLeaks", "origin": "varlock", "scope": "header", "form": "@preventLeaks", "insert": "", "complete": false, "doc": "varlock's. penv ignores it, with a warning." },
+    { "name": "envFlag", "origin": "varlock", "scope": "header", "form": "@envFlag=KEY", "insert": "", "complete": false, "doc": "varlock's older name for `@currentEnv`. penv ignores it, with a warning; write `@currentEnv=$APP_ENV`." },
+    { "name": "setValuesBulk", "origin": "varlock", "scope": "header", "form": "@setValuesBulk(...)", "insert": "", "complete": false, "doc": "varlock's. penv ignores it, with a warning." },
+    { "name": "disable", "origin": "varlock", "scope": "header", "form": "@disable", "insert": "", "complete": false, "doc": "varlock's. penv ignores it, with a warning." }
   ],
   "functions": [
     { "name": "ref", "origin": "env-spec", "form": "ref(KEY) | ${KEY} | ${KEY:-default}", "insert": "ref(${1:KEY})", "doc": "Another key's value, so a secret is written once: `ref(DATABASE_URL)`, or `${DATABASE_URL}` inside text. `${API_KEY:-dev-fake}` uses `dev-fake` when API_KEY is empty or unset; `${API_KEY-dev-fake}` only when it is unset." },
     { "name": "concat", "origin": "env-spec", "form": "concat(a, b, ...)", "insert": "concat(${1})", "doc": "Joins its arguments into one string: `concat(\"Bearer \", $API_KEY)`." },
     { "name": "fallback", "origin": "env-spec", "form": "fallback(a, b, ...)", "insert": "fallback(${1})", "doc": "The first argument that is not empty, for a key with a backup: `fallback($OPENAI_API_KEY, $API_KEY)`." },
-    { "name": "if", "origin": "env-spec", "form": "if(condition, then, else?)", "insert": "if(${1:condition}, ${2:then}, ${3:else})", "doc": "`then` when the condition is true, otherwise `else` or empty: `if(forEnv(production), $STRIPE_SECRET_KEY, sk_test_fake)`. `false`, `0` and empty are false." },
+    { "name": "if", "origin": "env-spec", "form": "if(condition, then, else?)", "insert": "if(${1:condition}, ${2:then}, ${3:else})", "doc": "`then` when the condition is true, otherwise `else` or empty: `if(forEnv(production), $STRIPE_SECRET_KEY, sk_test_fake)`. `false`, `0` and empty are false; `FALSE`, `no` and `off` count as true." },
     { "name": "eq", "origin": "env-spec", "form": "eq(a, b)", "insert": "eq(${1:a}, ${2:b})", "doc": "`true` when both arguments are the same text: `eq($APP_ENV, production)`." },
-    { "name": "not", "origin": "env-spec", "form": "not(a)", "insert": "not(${1})", "doc": "`true` when the argument is false, `0` or empty: `not(forEnv(production))`." },
+    { "name": "not", "origin": "env-spec", "form": "not(a)", "insert": "not(${1})", "doc": "`true` when the argument is `false`, `0` or empty: `not(forEnv(production))`. `FALSE`, `no` and `off` count as true." },
     { "name": "isEmpty", "origin": "env-spec", "form": "isEmpty(a)", "insert": "isEmpty(${1})", "doc": "`true` when the argument is empty: `isEmpty($OPENAI_API_KEY)`." },
     { "name": "forEnv", "origin": "env-spec", "form": "forEnv(env, ...)", "insert": "forEnv(${1:production})", "doc": "`true` when the current environment is one of those named: `forEnv(staging, production)`.",
       "each": { "values_from": "environments" } },
@@ -205,8 +205,8 @@
   "url-parts": [
     { "name": "scheme", "doc": "The scheme, such as `postgres`.", "public": true },
     { "name": "host", "doc": "The host, such as `db.example.com`. A URL that names several hosts fails.", "public": true },
-    { "name": "port", "doc": "The port, such as `5432`; empty when the URL has none.", "public": true },
-    { "name": "origin", "doc": "Scheme, host and port, such as `https://api.example.com`. Read only.", "public": true, "read_only": true },
+    { "name": "port", "doc": "The port, such as `5432`; empty when the URL has none. A URL that names several hosts fails.", "public": true },
+    { "name": "origin", "doc": "Scheme, host and port, such as `https://api.example.com`. Read only. A URL that names several hosts fails.", "public": true, "read_only": true },
     { "name": "path", "doc": "The path, such as `/orders`.", "public": false },
     { "name": "user", "doc": "The user name, such as `app`." },
     { "name": "password", "doc": "The password. Always sensitive; to write one, give a `$KEY` reference, never a literal.", "sensitive": true },

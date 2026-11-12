@@ -911,7 +911,9 @@ fn complete_decorator_value(
             .map(|v| plain(v, KIND_VALUE, name, "", whole))
             .collect()
     };
-    if let Some(items) = complete_each(lines, row, c) {
+    if matches!(name, "required" | "optional" | "assert")
+        && let Some(items) = complete_each(lines, row, c)
+    {
         return items;
     }
     match name {
@@ -1249,7 +1251,15 @@ pub fn hover(text: &str, at: Position, notes: &[KeyNote]) -> Option<Tip> {
                 && c >= start
                 && c <= end
             {
-                return hover_expression(&lines, row, c, text, notes, d.name(chars) == "type");
+                // Other decorator values are taken as written, never resolved.
+                let name = d.name(chars);
+                if !matches!(
+                    name.as_str(),
+                    "type" | "required" | "optional" | "assert" | "hosts" | "currentEnv"
+                ) {
+                    return None;
+                }
+                return hover_expression(&lines, row, c, text, notes, name == "type");
             }
         }
         return None;
@@ -1264,10 +1274,36 @@ pub fn hover(text: &str, at: Position, notes: &[KeyNote]) -> Option<Tip> {
             markdown: summary(text, &name, notes),
         });
     }
-    if c > eq {
+    if c > eq && c <= value_end(chars, eq)? {
         return hover_expression(&lines, row, c, text, notes, false);
     }
     None
+}
+
+/// Where a key's value ends, before any `# comment`; `None` for a single-quoted or
+/// backtick value, which penv takes as written. Mirrors `parse::read_default`.
+fn value_end(chars: &[char], eq: usize) -> Option<usize> {
+    let start = (eq + 1..chars.len()).find(|&i| !chars[i].is_whitespace())?;
+    let q = chars[start];
+    if matches!(q, '"' | '\'' | '`') {
+        let mut escaped = false;
+        let close = (start + 1..chars.len()).find(|&i| {
+            let hit = !escaped && chars[i] == q;
+            escaped = !escaped && q == '"' && chars[i] == '\\';
+            hit
+        });
+        if let Some(close) = close {
+            let rest = chars[close + 1..].iter().find(|ch| !ch.is_whitespace());
+            if matches!(rest, None | Some('#')) {
+                return (q == '"').then_some(close + 1);
+            }
+        }
+    }
+    Some(
+        (eq + 2..chars.len())
+            .find(|&i| chars[i] == '#' && matches!(chars[i - 1], ' ' | '\t'))
+            .unwrap_or(chars.len()),
+    )
 }
 
 fn hover_expression(
@@ -1366,7 +1402,9 @@ fn reference_form_at(chars: &[char], at: usize) -> Option<(usize, usize, &'stati
         }
         return match chars.get(dollar + 1) {
             Some('{') => Some((dollar, dollar + 2, "${KEY}")),
-            Some(next) if is_word(*next) => Some((dollar, dollar + 1, "$KEY")),
+            Some(next) if next.is_ascii_alphabetic() || *next == '_' => {
+                Some((dollar, dollar + 1, "$KEY"))
+            }
             _ => None,
         };
     }
@@ -1400,6 +1438,10 @@ fn reference_form_at(chars: &[char], at: usize) -> Option<(usize, usize, &'stati
     let dash = (open + 1..pipe).find(|i| chars[*i] == '-')?;
     let colon = chars[dash - 1] == ':';
     let start = if colon { dash - 1 } else { dash };
+    let key: String = chars[open + 1..start].iter().collect();
+    if !crate::ir::is_valid_key_name(key.trim()) {
+        return None;
+    }
     if at < start || at > dash {
         return None;
     }

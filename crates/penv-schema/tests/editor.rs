@@ -834,3 +834,47 @@ fn hovering_reference_syntax_explains_the_form() {
     // The key inside the braces still shows its summary.
     assert!(on("${K").unwrap().starts_with("**K**"));
 }
+
+#[test]
+fn text_penv_takes_as_written_has_no_reference_hover() {
+    let on = |text: &str, line: u32, needle: &str| {
+        let mut pos = after(text, line, needle);
+        pos.character -= 1;
+        hover(text, pos, &[]).map(|t| t.markdown)
+    };
+    for (expr, needle) in [
+        ("sk-test", "sk-"),
+        ("${A}-${B}", "}-"),
+        ("'$K'", "'$"),
+        ("`${K:-x}`", "${K:-"),
+        ("$5", "$"),
+        ("${A:x-y}", "x-"),
+        ("${A # c-d", "c-"),
+        ("abc # ${K:-x}", "${K:-"),
+    ] {
+        let text = call_schema(expr);
+        assert_eq!(on(&text, 4, needle), None, "{expr}");
+    }
+    let text = "# @penv=a/b\n# ---\n\n# @type=number(min=-1) @example=${A:-b}\nKEY=\n";
+    assert_eq!(on(text, 3, "min=-"), None);
+    assert_eq!(on(text, 3, "${A:-"), None);
+    // A double-quoted value is still read.
+    let text = call_schema("\"${K:-x}\" # note");
+    assert!(on(&text, 4, "${K:-").is_some());
+}
+
+#[test]
+fn environment_names_stay_out_of_decorators_that_take_none() {
+    for decorator in [
+        "@deprecated=forEnv(",
+        "@type=enum(forEnv(",
+        "@hosts=forEnv(",
+    ] {
+        let text = format!("# @penv=a/b\n# ---\n\n# {decorator}\nKEY=\n");
+        let got = labels(&text, after(&text, 3, decorator));
+        assert!(
+            !got.contains(&"production".to_string()),
+            "{decorator}: {got:?}"
+        );
+    }
+}

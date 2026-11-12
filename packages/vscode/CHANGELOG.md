@@ -2,8 +2,8 @@
 
 ## 0.2.0
 
-- Completions, hover and checks now cover everything in penv 1.1.x: new decorators, functions, filters and value lists come from the `penv` binary, so update penv to get them.
-- Clearer messages when `penv` is missing or the server stops; each names `penv.path` or `npm i -g @penvhq/cli` as the fix.
+- Messages only. Completions, hover and checks come from the installed `penv`, so the new ones (environment names in `forEnv(` and `penv(`, the options of `string(`, `number(` and `port(`, hover for `${KEY:-default}`, `${KEY-default}` and `|`) arrive with the next penv release, not with this extension.
+- Clearer messages when `penv` is missing or the server stops; each names the fix: `penv.path`, `penv upgrade` or `npm i -g @penvhq/cli`.
 
 ## 0.1.0
 
