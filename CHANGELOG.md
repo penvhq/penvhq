@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 ### Added
 - **Editor completions and hover cover every 1.1 decorator, function, filter and type, with rewritten docs.** `penv lsp` now also offers environment names inside `forEnv(`, `@required=forEnv(` and `penv(`, the options of `string(`, `number(` and `port(` with what each checks, and explains the `${KEY:-default}`, `${KEY-default}` and `|` forms when you hover them.
