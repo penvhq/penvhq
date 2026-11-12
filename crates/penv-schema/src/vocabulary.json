@@ -161,7 +161,8 @@
     { "name": "eq", "origin": "env-spec", "form": "eq(a, b)", "insert": "eq(${1:a}, ${2:b})", "doc": "`true` when both arguments are the same text: `eq($APP_ENV, production)`." },
     { "name": "not", "origin": "env-spec", "form": "not(a)", "insert": "not(${1})", "doc": "`true` when the argument is false, `0` or empty: `not(forEnv(production))`." },
     { "name": "isEmpty", "origin": "env-spec", "form": "isEmpty(a)", "insert": "isEmpty(${1})", "doc": "`true` when the argument is empty: `isEmpty($OPENAI_API_KEY)`." },
-    { "name": "forEnv", "origin": "env-spec", "form": "forEnv(env, ...)", "insert": "forEnv(${1:production})", "doc": "`true` when the current environment is one of those named: `forEnv(staging, production)`." },
+    { "name": "forEnv", "origin": "env-spec", "form": "forEnv(env, ...)", "insert": "forEnv(${1:production})", "doc": "`true` when the current environment is one of those named: `forEnv(staging, production)`.",
+      "each": { "values_from": "environments" } },
     { "name": "penv", "origin": "penv", "form": "penv(env/KEY) | penv(org/project/env/KEY) | penv()", "insert": "penv(${1:production}/${2:KEY})", "doc": "A value read from the provider, so one key can borrow another environment's: `penv(production/DATABASE_URL)`. `env/KEY` uses the `@penv=` project; `penv()` reads this key from the current environment. The address is written, never computed; `exec()` is refused, since a schema never runs a shell command." },
     { "name": "match", "origin": "penv", "form": "match(subject, label: value, _: value)", "insert": "match(${1:subject}, ${2:label}: ${3:value}, _: ${4:value})", "doc": "The value of the case whose label equals the subject, `_` when none does: `match($APP_ENV, production: api.example.com, _: localhost)`. With no match and no `_`, it fails." },
     { "name": "and", "origin": "penv", "form": "and(a, b, ...)", "insert": "and(${1})", "doc": "`true` when every argument is true: `and(forEnv(production), not(isEmpty($STRIPE_SECRET_KEY)))`." },
@@ -218,13 +219,37 @@
     { "name": "uuid", "doc": "A version-4 UUID; takes no length." }
   ],
   "types": [
-    { "name": "string", "doc": "Any text. Constraints: `startsWith`, `endsWith`, `minLength`, `maxLength`, `matches`, as in `string(startsWith=sk_, minLength=20)`." },
-    { "name": "number", "doc": "A number. Constraints: `min`, `max`, `isInt`, `precision`; a whole number is `number(isInt=true)`." },
+    { "name": "string", "doc": "Any text. Constraints: `startsWith`, `endsWith`, `minLength`, `maxLength`, `matches`, as in `string(startsWith=sk_, minLength=20)`.",
+      "args": [ { "name": "startsWith", "doc": "The value must start with this text: `string(startsWith=sk_live_)`." },
+                { "name": "endsWith", "doc": "The value must end with this text: `string(endsWith=.example.com)`." },
+                { "name": "minLength", "type": "integer", "doc": "The value must have at least this many characters: `string(minLength=32)`." },
+                { "name": "maxLength", "type": "integer", "doc": "The value must have at most this many characters: `string(maxLength=64)`." },
+                { "name": "matches", "doc": "A regular expression kept for the generated code and the cloud; penv warns that it does not check values against it: `string(matches=^sk_[a-z]+$)`." } ] },
+    { "name": "number", "doc": "A number. Constraints: `min`, `max`, `isInt`, `precision`; a whole number is `number(isInt=true)`.",
+      "args": [ { "name": "min", "doc": "The value must be this number or more: `number(min=1)`." },
+                { "name": "max", "doc": "The value must be this number or less: `number(max=100)`." },
+                { "name": "isInt", "doc": "`isInt=true` takes whole numbers only: `number(isInt=true)`." },
+                { "name": "precision", "doc": "Decimal places kept for the generated code and the cloud; penv warns that it does not check values against it: `number(precision=2)`." } ] },
     { "name": "boolean", "doc": "`true` or `false`; `yes`, `no`, `on`, `off`, `1` and `0` also pass, in any case." },
     { "name": "url", "doc": "An absolute URL: a scheme, `://` and a host, such as `postgres://db.example.com/app`." },
     { "name": "email", "doc": "An email address, such as `ops@example.com`." },
-    { "name": "port", "doc": "A TCP port, 1 to 65535. Constraints: `min`, `max`, as in `port(min=1024)`." },
+    { "name": "port", "doc": "A TCP port, 1 to 65535. Constraints: `min`, `max`, as in `port(min=1024)`.",
+      "args": [ { "name": "min", "doc": "The lowest port allowed: `port(min=1024)` refuses the privileged ports." },
+                { "name": "max", "doc": "The highest port allowed: `port(max=49151)`." } ] },
     { "name": "enum", "doc": "One of the members listed: `enum(development, staging, production)`. A quoted member may hold `=`." }
+  ],
+  "environments": [
+    { "name": "development", "doc": "What penv runs when no `--env`, `PENV_ENV` or `@currentEnv` key names an environment. It reads `.env`, `.env.local`, `.env.development` and `.env.development.local`. With `@penv=` set and the cloud out of reach, development runs on this machine's files when they hold values; every other environment fails." },
+    { "name": "staging", "doc": "`penv run --env staging` reads `.env.staging` and `.env.staging.local` over `.env` and `.env.local`, and `forEnv(staging)` is true." },
+    { "name": "production", "doc": "`penv run --env production` reads `.env.production` and `.env.production.local` over `.env` and `.env.local`, and `forEnv(production)` is true: `@required=forEnv(production)` needs the key there only." },
+    { "name": "test", "doc": "`penv run --env test` reads `.env`, `.env.test` and `.env.test.local`, and skips `.env.local`. A `random()` value generated for a test run is kept in `.env.test.local`." }
+  ],
+  "reference-forms": [
+    { "name": "$KEY", "doc": "Another key's value, in a function argument or inside text: `postgres://db.example.com/$DB_NAME`. Write `\\$` for a literal dollar sign." },
+    { "name": "${KEY}", "doc": "Another key's value, with braces so text can follow the name: `https://${API_HOST}:8443`." },
+    { "name": "${KEY:-default}", "doc": "The key's value, or the default when the key is empty or unset: `${AWS_REGION:-us-east-1}`." },
+    { "name": "${KEY-default}", "doc": "The key's value, or the default only when the key is unset; an empty value stays empty: `${LOG_LEVEL-info}`." },
+    { "name": "${KEY | filter}", "doc": "The value run through each step, left to right: `${DB_PASSWORD | urlencode}`, `${DATABASE_URL | url(host)}`." }
   ],
   "rotate": ["30d", "90d", "180d", "1y", "6m", "1w", "12h", "30min"]
 }
