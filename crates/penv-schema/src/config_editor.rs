@@ -216,8 +216,8 @@ impl Found<'_> {
                     Severity::Error,
                     "unknown_key",
                     format!(
-                        "This names no key in .env.schema; rename {} to a declared key or remove it",
-                        section.form
+                        "This names no key in .env.schema; rename [{}.{}] to a declared key or remove it",
+                        section.name, name
                     ),
                 );
             }
