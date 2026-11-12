@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-- Completions for the `url`, `json` and `hash` functions need `penv` 1.0.0 or newer, since completions come from `penv lsp`.
+- Messages only. Completions, hover and checks come from the installed `penv`, so the new ones (environment names in `forEnv(` and `penv(`, the options of `string(`, `number(` and `port(`, hover for `${KEY:-default}`, `${KEY-default}` and `|`) arrive with the next penv release, not with this extension.
+- Clearer messages when `penv` is missing or the server stops; each names the fix: `penv.path`, `penv upgrade` or `npm i -g @penvhq/cli`.
 
 ## 0.1.0
 

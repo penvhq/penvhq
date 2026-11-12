@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use penv_schema::editor::{
     KeyNote, Position, Severity, complete, definition, diagnostics, hover, symbols, vocabulary,
 };
-use penv_schema::parse;
 use penv_schema::resolve::{FILTERS, FUNCTIONS};
+use penv_schema::{VARLOCK_HEADER, parse};
 
 const SCHEMA: &str = "\
 # @penv=acme/api
@@ -608,4 +608,273 @@ fn bad_call_diagnostics_sit_on_the_offending_token() {
         .find(|n| n.message.contains("no option"))
         .unwrap();
     assert_eq!(n.range.start, at(4, 24));
+}
+
+// ------------------------------------------------------------ drift
+
+/// Every string a `match` arm names in `src` after `marker`, at the arms' own indent.
+fn arm_names(src: &str, marker: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (at, _) in src.match_indices(marker) {
+        let mut lines = src[at..].lines().skip(1).filter(|l| !l.trim().is_empty());
+        let first = lines.next().unwrap();
+        let indent = first.len() - first.trim_start().len();
+        for line in std::iter::once(first).chain(lines) {
+            let here = line.len() - line.trim_start().len();
+            if here < indent {
+                break;
+            }
+            let trimmed = line.trim_start();
+            if here > indent || !trimmed.starts_with('"') {
+                continue;
+            }
+            let (pattern, _) = trimmed.split_once("=>").unwrap();
+            for name in pattern.split('|') {
+                out.insert(name.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    assert!(!out.is_empty(), "no arms after {marker}");
+    out
+}
+
+/// The text of the function `name` in `src`, up to the next `fn`.
+fn fn_body<'a>(src: &'a str, name: &str) -> &'a str {
+    let start = src.find(&format!("fn {name}(")).unwrap();
+    let rest = &src[start + 3..];
+    &rest[..rest.find("\nfn ").unwrap_or(rest.len())]
+}
+
+#[test]
+fn every_decorator_the_parser_reads_is_in_the_vocabulary() {
+    let src = include_str!("../src/parse.rs");
+    let named: BTreeSet<String> = vocabulary()
+        .decorators
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    for name in arm_names(src, "match d.name.as_str() {") {
+        assert!(
+            named.contains(&name),
+            "the parser reads @{name}; add it to vocabulary.json"
+        );
+    }
+    let varlock: BTreeSet<String> = vocabulary()
+        .decorators
+        .iter()
+        .filter(|w| w.origin == "varlock")
+        .map(|w| w.name.clone())
+        .collect();
+    let header: BTreeSet<String> = VARLOCK_HEADER.iter().map(|s| s.to_string()).collect();
+    assert_eq!(varlock, header);
+}
+
+#[test]
+fn url_parts_are_exactly_the_ones_url_reads_and_writes() {
+    let src = include_str!("../src/functions/url.rs");
+    let parts = &vocabulary().url_parts;
+    let all = |marker: &str, body: &str| {
+        let mut names = arm_names(body, marker);
+        if body.contains("strip_prefix(\"query.\")") {
+            names.insert("query.NAME".to_string());
+        }
+        names
+    };
+    let named: BTreeSet<String> = parts.iter().map(|e| e.name.clone()).collect();
+    assert_eq!(all("Ok(match part {", fn_body(src, "read")), named);
+    let writable: BTreeSet<String> = parts
+        .iter()
+        .filter(|e| !e.read_only)
+        .map(|e| e.name.clone())
+        .collect();
+    assert_eq!(all("match *part {", fn_body(src, "write")), writable);
+}
+
+#[test]
+fn random_kinds_are_exactly_the_ones_random_takes() {
+    use penv_schema::functions::random::{RandomKind, spec};
+    let name = |k: RandomKind| match k {
+        RandomKind::Alnum => "alnum",
+        RandomKind::Hex => "hex",
+        RandomKind::Base64Url => "base64url",
+        RandomKind::Uuid => "uuid",
+    };
+    let every = [
+        RandomKind::Alnum,
+        RandomKind::Hex,
+        RandomKind::Base64Url,
+        RandomKind::Uuid,
+    ];
+    let mut read = BTreeSet::new();
+    for e in &vocabulary().random_kinds {
+        let call = if e.name == "uuid" {
+            "random(kind=uuid)".to_string()
+        } else {
+            format!("random(kind={}, length=16)", e.name)
+        };
+        let kind = spec(&call).unwrap().unwrap().kind;
+        assert_eq!(name(kind), e.name);
+        read.insert(e.name.as_str());
+    }
+    assert_eq!(read, every.into_iter().map(name).collect());
+    assert!(spec("random(kind=nope, length=16)").is_err());
+}
+
+#[test]
+fn type_options_are_exactly_each_types_constraints() {
+    use penv_schema::BaseType::{self, *};
+    let every = [String, Number, Boolean, Url, Email, Port, Enum];
+    // A new BaseType fails to compile here until it is listed above.
+    for b in every {
+        match b {
+            String | Number | Boolean | Url | Email | Port | Enum => {}
+        }
+    }
+    for b in every {
+        let word = vocabulary()
+            .types
+            .iter()
+            .find(|w| w.name == b.as_str())
+            .unwrap_or_else(|| panic!("vocabulary.json has no type {}", b.as_str()));
+        let options: Vec<&str> = word.args.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(options, b.constraints(), "{}", b.as_str());
+        assert!(
+            word.args.iter().all(|o| !o.doc.is_empty()),
+            "{}",
+            b.as_str()
+        );
+    }
+    assert_eq!(vocabulary().types.len(), every.len());
+    assert_eq!(BaseType::from_name("port"), Some(Port));
+}
+
+// ------------------------------------------------------------ environments, options, references
+
+#[test]
+fn environment_names_complete_where_an_environment_is_named() {
+    let envs: Vec<String> = vocabulary()
+        .environments
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    for want in ["development", "staging", "production", "test"] {
+        assert!(envs.contains(&want.to_string()), "{want}");
+    }
+    assert_eq!(complete_in("forEnv(", "forEnv("), envs);
+    let got = complete_in("forEnv(production, ", "production, ");
+    assert!(!got.contains(&"production".to_string()) && got.contains(&"staging".to_string()));
+    assert_eq!(complete_in("if(forEnv(st", "forEnv(st"), envs);
+    assert_eq!(complete_in("penv(", "penv("), envs);
+
+    let text = "# @penv=a/b\n# ---\n\n# @required=forEnv(\nKEY=\n";
+    assert_eq!(labels(text, at(3, 20)), envs);
+    let text = "# @penv=a/b\n# ---\n\n# @assert(forEnv(\nKEY=\n";
+    assert_eq!(labels(text, at(3, 19)), envs);
+}
+
+#[test]
+fn hovering_an_environment_name_explains_it() {
+    let doc = |name: &str| {
+        vocabulary()
+            .section("environments")
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap()
+            .doc
+            .clone()
+    };
+    let text = call_schema("if(forEnv(staging), penv(production/K), x)");
+    let tip = hover(&text, after(&text, 4, "forEnv(sta"), &[]).unwrap();
+    assert!(tip.markdown.contains(&doc("staging")));
+    let tip = hover(&text, after(&text, 4, "penv(prod"), &[]).unwrap();
+    assert!(tip.markdown.contains(&doc("production")));
+    assert!(doc("development").contains("PENV_ENV"));
+}
+
+#[test]
+fn type_options_carry_their_docs_in_completion_and_hover() {
+    let text = "# @penv=a/b\n# ---\n\n# @type=number(\nKEY=\n";
+    let items = complete(text, at(3, 15));
+    let min = items.iter().find(|c| c.label == "min").unwrap();
+    assert!(min.doc.contains("or more"), "{}", min.doc);
+    assert_eq!(min.insert, "min=");
+
+    let text = "# @penv=a/b\n# ---\n\n# @type=string(minLength=8)\nKEY=\n";
+    let tip = hover(text, after(text, 3, "minLen"), &[]).unwrap();
+    assert!(tip.markdown.contains("at least"), "{}", tip.markdown);
+    let tip = hover(text, after(text, 3, "@type=str"), &[]).unwrap();
+    assert!(tip.markdown.contains("Any text"), "{}", tip.markdown);
+}
+
+#[test]
+fn hovering_reference_syntax_explains_the_form() {
+    let form = |name: &str| {
+        vocabulary()
+            .section("reference-forms")
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap()
+            .doc
+            .clone()
+    };
+    let text = call_schema("x${A:-y-z} ${B-q} ${K | trim} $K");
+    let on = |needle: &str| {
+        let mut pos = after(&text, 4, needle);
+        pos.character -= 1;
+        hover(&text, pos, &[]).map(|t| t.markdown)
+    };
+    assert!(on("x${A:").unwrap().contains(&form("${KEY:-default}")));
+    assert!(on("x${A:-").unwrap().contains(&form("${KEY:-default}")));
+    assert!(on("${B-").unwrap().contains(&form("${KEY-default}")));
+    assert!(on("${K |").unwrap().contains(&form("${KEY | filter}")));
+    assert!(on("x$").unwrap().contains(&form("${KEY}")));
+    assert!(on("trim} $").unwrap().contains(&form("$KEY")));
+    // A `-` in the default text is text, not an operator.
+    assert_eq!(on("y-"), None);
+    // The key inside the braces still shows its summary.
+    assert!(on("${K").unwrap().starts_with("**K**"));
+}
+
+#[test]
+fn text_penv_takes_as_written_has_no_reference_hover() {
+    let on = |text: &str, line: u32, needle: &str| {
+        let mut pos = after(text, line, needle);
+        pos.character -= 1;
+        hover(text, pos, &[]).map(|t| t.markdown)
+    };
+    for (expr, needle) in [
+        ("sk-test", "sk-"),
+        ("${A}-${B}", "}-"),
+        ("'$K'", "'$"),
+        ("`${K:-x}`", "${K:-"),
+        ("$5", "$"),
+        ("${A:x-y}", "x-"),
+        ("${A # c-d", "c-"),
+        ("abc # ${K:-x}", "${K:-"),
+    ] {
+        let text = call_schema(expr);
+        assert_eq!(on(&text, 4, needle), None, "{expr}");
+    }
+    let text = "# @penv=a/b\n# ---\n\n# @type=number(min=-1) @example=${A:-b}\nKEY=\n";
+    assert_eq!(on(text, 3, "min=-"), None);
+    assert_eq!(on(text, 3, "${A:-"), None);
+    // A double-quoted value is still read.
+    let text = call_schema("\"${K:-x}\" # note");
+    assert!(on(&text, 4, "${K:-").is_some());
+}
+
+#[test]
+fn environment_names_stay_out_of_decorators_that_take_none() {
+    for decorator in [
+        "@deprecated=forEnv(",
+        "@type=enum(forEnv(",
+        "@hosts=forEnv(",
+    ] {
+        let text = format!("# @penv=a/b\n# ---\n\n# {decorator}\nKEY=\n");
+        let got = labels(&text, after(&text, 3, decorator));
+        assert!(
+            !got.contains(&"production".to_string()),
+            "{decorator}: {got:?}"
+        );
+    }
 }

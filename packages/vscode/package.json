@@ -1,8 +1,8 @@
 {
   "name": "penv",
   "displayName": "penv",
-  "description": "Diagnostics, completion and hover for .env.schema from the penv binary: @rotate, @hosts, @assert, penv() and every @env-spec decorator penv reads.",
-  "version": "0.1.0",
+  "description": "Completions, hover docs and problems for .env.schema files, served by the installed penv binary: every decorator, function and filter it knows, such as @sensitive and @rotate.",
+  "version": "0.2.0",
   "publisher": "penvhq",
   "license": "MIT",
   "homepage": "https://github.com/penvhq/penvhq/tree/main/packages/vscode#readme",
@@ -49,7 +49,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "The `penv` binary to run. Empty finds it on `PATH`, including behind an `npm i -g @penvhq/cli` install."
+          "markdownDescription": "Full path to the `penv` binary to run. Leave empty to use the first `penv` on `PATH`, including one installed with `npm i -g @penvhq/cli`. User settings only."
         }
       }
     },

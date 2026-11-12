@@ -9,7 +9,7 @@ use crate::rotate::Span;
 
 /// Header decorators varlock reads and penv does not act on. They are named so a
 /// header block is still recognised as one, and each is reported once.
-const VARLOCK_HEADER: [&str; 7] = [
+pub const VARLOCK_HEADER: [&str; 7] = [
     "generateTypes",
     "plugin",
     "redactLogs",

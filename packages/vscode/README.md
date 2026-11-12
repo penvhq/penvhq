@@ -1,6 +1,8 @@
 # penv for VS Code
 
-Diagnostics, completion, hover, go-to-definition and an outline for `.env.schema`, served by [`penv lsp`](https://penv.cloud/docs/cli/lsp). Tested on VS Code 1.90 and current stable.
+Completions, hover docs and problems in `.env.schema` files for every decorator, function and filter penv knows: `@sensitive`, `@rotate=90d`, `hash($API_KEY, algo=sha256, length=8)`. Go-to-definition and an outline are included.
+
+All of it comes from the installed `penv`, served by [`penv lsp`](https://penv.cloud/docs/cli/lsp); the extension only starts it. Update penv (`npm i -g @penvhq/cli`) to get new decorators, functions and filters. Tested on VS Code 1.90 and current stable.
 
 ## Requires
 
