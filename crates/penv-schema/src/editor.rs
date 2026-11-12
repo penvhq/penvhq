@@ -161,7 +161,7 @@ pub struct Word {
     pub labels: Option<Slot>,
     /// Where every bare argument takes its names from, as `forEnv` takes environments.
     pub each: Option<Slot>,
-    /// Case labels `match()` offers when its subject is the `@currentEnv` key.
+    /// Case labels `match()` offers, whatever its subject.
     pub cases: Option<Slot>,
     /// The fixed options a call takes; for a type, its constraints.
     pub args: Vec<Opt>,
@@ -1246,24 +1246,8 @@ fn complete_json_path(lines: &[Line], row: usize, c: usize) -> Option<Vec<Comple
     })
 }
 
-/// The `@currentEnv` key the header names.
-fn current_env_key(lines: &[Line]) -> Option<String> {
-    (0..lines.len())
-        .take_while(|&i| in_first_block(lines, i))
-        .find_map(|i| {
-            let chars = &lines[i].chars;
-            decorators(chars).into_iter().find_map(|d| {
-                let (start, end) = d.value?;
-                (d.name(chars) == "currentEnv").then(|| {
-                    let text: String = chars[start..end].iter().collect();
-                    text.trim().trim_start_matches('$').to_string()
-                })
-            })
-        })
-}
-
-/// Environment names as case labels of a `match(` whose subject is the `@currentEnv`
-/// key, as the vocabulary's `cases` says.
+/// Environment names as case labels of a `match(`, whatever its subject, as the
+/// vocabulary's `cases` says.
 fn complete_match_case(lines: &[Line], row: usize, c: usize) -> Option<Vec<Completion>> {
     let chars = &lines[row].chars;
     let (name, open) = open_call(chars, c)?;
@@ -1279,11 +1263,6 @@ fn complete_match_case(lines: &[Line], row: usize, c: usize) -> Option<Vec<Compl
     }
     let (ts, te) = token_at(chars, open, c);
     if chars[cur..ts].iter().any(|ch| !ch.is_whitespace()) {
-        return None;
-    }
-    let first: String = chars[starts[0]..starts[1] - 1].iter().collect();
-    let env = current_env_key(lines)?;
-    if reference_key(&first) != Some(env.as_str()) {
         return None;
     }
     let given: Vec<String> = starts[1..]

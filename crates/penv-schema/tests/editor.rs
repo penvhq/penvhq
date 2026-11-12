@@ -1007,15 +1007,23 @@ fn match_labels_are_environments_when_the_subject_is_the_current_env_key() {
 }
 
 #[test]
-fn match_labels_are_not_environments_for_any_other_subject() {
+fn match_labels_are_environments_whatever_the_subject() {
     let header = "# @currentEnv=$APP_ENV\n";
     for (header, expr, needle) in [
         (header, "match($OTHER, ", "OTHER, "),
         ("", "match($APP_ENV, ", "ENV, "),
-        (header, "match($APP_ENV, production: ", "production: "),
-        (header, "match(", "match("),
+        (header, "match(${OTHER | trim}, ", "trim}, "),
     ] {
         let text = match_schema(header, expr);
+        let row = text.lines().position(|l| l.starts_with("V=")).unwrap() as u32;
+        let got = labels(&text, after(&text, row, needle));
+        assert!(got.contains(&"production".to_string()), "{expr}: {got:?}");
+    }
+    for (expr, needle) in [
+        ("match($APP_ENV, production: ", "production: "),
+        ("match(", "match("),
+    ] {
+        let text = match_schema("# @currentEnv=$APP_ENV\n", expr);
         let row = text.lines().position(|l| l.starts_with("V=")).unwrap() as u32;
         let got = labels(&text, after(&text, row, needle));
         assert!(!got.contains(&"production".to_string()), "{expr}: {got:?}");
