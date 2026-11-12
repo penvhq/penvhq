@@ -161,6 +161,8 @@ pub struct Word {
     pub labels: Option<Slot>,
     /// Where every bare argument takes its names from, as `forEnv` takes environments.
     pub each: Option<Slot>,
+    /// Case labels `match()` offers when its subject is the `@currentEnv` key.
+    pub cases: Option<Slot>,
     /// The fixed options a call takes; for a type, its constraints.
     pub args: Vec<Opt>,
 }
@@ -169,6 +171,7 @@ pub struct Word {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slot {
     pub values_from: Option<String>,
+    pub doc: String,
 }
 
 /// One `name=value` option of a function.
@@ -316,6 +319,7 @@ fn entries(list: &Value) -> Vec<Entry> {
 fn slot(v: &Value) -> Option<Slot> {
     v.is_object().then(|| Slot {
         values_from: v["values_from"].as_str().map(str::to_string),
+        doc: v["doc"].as_str().unwrap_or_default().to_string(),
     })
 }
 
@@ -345,6 +349,7 @@ fn word(v: &Value) -> Word {
         address: slot(&v["address"]),
         labels: slot(&v["labels"]),
         each: slot(&v["each"]),
+        cases: slot(&v["cases"]),
         args: v["args"]
             .as_array()
             .map(|l| l.iter().map(opt).collect())
@@ -982,6 +987,11 @@ fn complete_value(
     let (ws, we) = word_at(chars, c);
     let here = span(lines, row, ws, we);
 
+    if let Some(items) =
+        complete_json_path(lines, row, c).or_else(|| complete_match_case(lines, row, c))
+    {
+        return items;
+    }
     if let Some(open) = before.rfind("${")
         && !before[open..].contains('}')
     {
@@ -1101,6 +1111,197 @@ fn token_at(chars: &[char], from: usize, at: usize) -> (usize, usize) {
         te += 1;
     }
     (ts, te)
+}
+
+/// `KEY` from `$KEY` or `${KEY}`.
+fn reference_key(text: &str) -> Option<&str> {
+    let text = text.trim().strip_prefix('$')?;
+    let key = text
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .unwrap_or(text);
+    crate::ir::is_valid_key_name(key).then_some(key)
+}
+
+/// The subject of the `json(` whose arguments start at `open`: the first argument,
+/// or the key of a `${KEY | json(` pipe. `Some(None)` when the path has no
+/// subject this file names.
+fn json_subject(chars: &[char], open: usize, starts: &[usize]) -> Option<Option<String>> {
+    match starts.len() {
+        2 => {
+            let first: String = chars[starts[0]..starts[1] - 1].iter().collect();
+            Some(reference_key(&first).map(str::to_string))
+        }
+        1 => {
+            let before: String = chars[..open - "json(".len()].iter().collect();
+            let piped = before.trim_end().strip_suffix('|')?;
+            let step = &piped[piped.rfind("${")? + 2..];
+            if step.contains('}') {
+                return None;
+            }
+            let key = step.trim();
+            Some(crate::ir::is_valid_key_name(key).then(|| key.to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// The value a key is given on its own line in this file.
+fn written_value(lines: &[Line], key: &str) -> Option<String> {
+    let line = &lines[key_line(lines, key)?];
+    let Kind::Key { eq, .. } = line.kind else {
+        return None;
+    };
+    let text: String = line.chars[eq + 1..].iter().collect();
+    Some(crate::parse::read_default(text.trim()).0)
+}
+
+fn is_path_char(c: char) -> bool {
+    is_word(c) || c == '-'
+}
+
+/// Keys and indices for the path a `json(` read is given, from the subject's value
+/// when it is written as JSON in this file. Names only, never a value.
+fn complete_json_path(lines: &[Line], row: usize, c: usize) -> Option<Vec<Completion>> {
+    use crate::functions::json::{Members, members};
+    let chars = &lines[row].chars;
+    let (name, open) = open_call(chars, c)?;
+    if name != "json" {
+        return None;
+    }
+    let starts = arg_starts(chars, open, c);
+    let subject = json_subject(chars, open, &starts)?;
+    let cur = *starts.last()?;
+    let ps = (cur..c).find(|&i| !chars[i].is_whitespace()).unwrap_or(c);
+    if chars[ps..c].iter().any(|ch| matches!(ch, '=' | '$' | '(')) {
+        return None;
+    }
+    let mut seg = c;
+    while seg > ps && is_path_char(chars[seg - 1]) {
+        seg -= 1;
+    }
+    let mut end = c;
+    while end < chars.len() && is_path_char(chars[end]) {
+        end += 1;
+    }
+    let sep = (seg > ps).then(|| chars[seg - 1]);
+    if !matches!(sep, None | Some('.' | '[')) {
+        return Some(Vec::new());
+    }
+    let parent: String = chars[ps..seg.saturating_sub(1).max(ps)].iter().collect();
+    let found = subject
+        .and_then(|key| written_value(lines, &key))
+        .and_then(|doc| members(&doc, &parent));
+    let Some(found) = found else {
+        return Some(Vec::new());
+    };
+    let replace = span(lines, row, seg, end);
+    let doc = vocabulary()
+        .functions
+        .iter()
+        .find(|w| w.name == "json")
+        .and_then(|w| w.address.as_ref())
+        .map(|s| s.doc.clone())
+        .unwrap_or_default();
+    let closed = chars.get(end) == Some(&']');
+    let item = |label: String, insert: String, detail: &str| Completion {
+        insert,
+        ..plain(&label, KIND_PROPERTY, detail, &doc, replace)
+    };
+    let plain_key = |k: &str| !k.is_empty() && k.chars().all(is_path_char);
+    let bracket = |inner: String| {
+        if closed { inner } else { format!("{inner}]") }
+    };
+    Some(match (found, sep) {
+        (Members::Keys(keys), None) => keys
+            .into_iter()
+            .map(|k| {
+                if plain_key(&k) {
+                    item(k.clone(), k, "key")
+                } else {
+                    let quoted = format!("[\"{k}\"]");
+                    item(quoted.clone(), quoted, "key")
+                }
+            })
+            .collect(),
+        (Members::Keys(keys), Some('.')) => keys
+            .into_iter()
+            .filter(|k| plain_key(k))
+            .map(|k| item(k.clone(), k, "key"))
+            .collect(),
+        (Members::Keys(keys), _) => keys
+            .into_iter()
+            .map(|k| {
+                let quoted = format!("\"{k}\"");
+                item(quoted.clone(), bracket(quoted), "key")
+            })
+            .collect(),
+        (Members::Items(n), None) => (0..n)
+            .map(|i| item(format!("[{i}]"), format!("[{i}]"), "index"))
+            .collect(),
+        (Members::Items(n), Some('[')) => (0..n)
+            .map(|i| item(i.to_string(), bracket(i.to_string()), "index"))
+            .collect(),
+        (Members::Items(_), _) => Vec::new(),
+    })
+}
+
+/// The `@currentEnv` key the header names.
+fn current_env_key(lines: &[Line]) -> Option<String> {
+    (0..lines.len())
+        .take_while(|&i| in_first_block(lines, i))
+        .find_map(|i| {
+            let chars = &lines[i].chars;
+            decorators(chars).into_iter().find_map(|d| {
+                let (start, end) = d.value?;
+                (d.name(chars) == "currentEnv").then(|| {
+                    let text: String = chars[start..end].iter().collect();
+                    text.trim().trim_start_matches('$').to_string()
+                })
+            })
+        })
+}
+
+/// Environment names as case labels of a `match(` whose subject is the `@currentEnv`
+/// key, as the vocabulary's `cases` says.
+fn complete_match_case(lines: &[Line], row: usize, c: usize) -> Option<Vec<Completion>> {
+    let chars = &lines[row].chars;
+    let (name, open) = open_call(chars, c)?;
+    let section = find(&vocabulary().functions, &name)?
+        .cases
+        .as_ref()?
+        .values_from
+        .as_deref()?;
+    let starts = arg_starts(chars, open, c);
+    let cur = *starts.last()?;
+    if starts.len() < 2 {
+        return None;
+    }
+    let (ts, te) = token_at(chars, open, c);
+    if chars[cur..ts].iter().any(|ch| !ch.is_whitespace()) {
+        return None;
+    }
+    let first: String = chars[starts[0]..starts[1] - 1].iter().collect();
+    let env = current_env_key(lines)?;
+    if reference_key(&first) != Some(env.as_str()) {
+        return None;
+    }
+    let given: Vec<String> = starts[1..]
+        .windows(2)
+        .filter_map(|w| {
+            let arm: String = chars[w[0]..w[1] - 1].iter().collect();
+            arm.split_once(':')
+                .map(|(label, _)| label.trim().to_string())
+        })
+        .collect();
+    let followed = chars[te..].iter().find(|ch| !ch.is_whitespace()) == Some(&':');
+    let mut items = entry_items(section, &given, span(lines, row, ts, te));
+    if !followed {
+        for item in &mut items {
+            item.insert.push_str(": ");
+        }
+    }
+    Some(items)
 }
 
 /// Names for a bare argument of a call whose vocabulary entry has `each`, as `forEnv(`.

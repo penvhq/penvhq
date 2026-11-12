@@ -413,6 +413,30 @@ fn parse_path(path: &str) -> Result<Vec<Seg>, String> {
     Ok(segs)
 }
 
+/// What a path can name next inside a container: an object's keys or an array's length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Members {
+    Keys(Vec<String>),
+    Items(usize),
+}
+
+/// The members of the object or array at `path` in `text` (`""` is the root), for
+/// the editor. `None` when the text is not JSON, the path does not reach, or a
+/// scalar sits there. Never a value.
+pub fn members(text: &str, path: &str) -> Option<Members> {
+    let (doc, _) = parse_doc(text).ok()?;
+    let segs = if path.is_empty() {
+        Vec::new()
+    } else {
+        parse_path(path).ok()?
+    };
+    match get(&doc, &segs)? {
+        J::Obj(o) => Some(Members::Keys(o.iter().map(|(k, _)| k.clone()).collect())),
+        J::Arr(a) => Some(Members::Items(a.len())),
+        _ => None,
+    }
+}
+
 fn get<'a>(mut v: &'a J, segs: &[Seg]) -> Option<&'a J> {
     for s in segs {
         v = match (v, s) {

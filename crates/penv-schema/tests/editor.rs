@@ -567,7 +567,7 @@ fn diagnostics_suggest_the_nearest_part_and_name_a_missing_option() {
 fn every_values_from_names_an_existing_section() {
     let v = vocabulary();
     for w in &v.functions {
-        let slots = [&w.address, &w.labels]
+        let slots = [&w.address, &w.labels, &w.each, &w.cases]
             .into_iter()
             .flatten()
             .filter_map(|s| s.values_from.as_deref());
@@ -876,5 +876,148 @@ fn environment_names_stay_out_of_decorators_that_take_none() {
             !got.contains(&"production".to_string()),
             "{decorator}: {got:?}"
         );
+    }
+}
+
+fn json_schema(value: &str, expr: &str) -> String {
+    format!("# @penv=a/b\n# ---\n\nCONFIG={value}\nV={expr}\n")
+}
+
+fn json_paths(value: &str, expr: &str, needle: &str) -> Vec<String> {
+    let text = json_schema(value, expr);
+    labels(&text, after(&text, 4, needle))
+}
+
+const DOC: &str = r#"{"db":{"host":"fake-host","hosts":["a","b"]},"a.b":1,"tls":true}"#;
+
+#[test]
+fn json_paths_complete_from_a_literal_document() {
+    assert_eq!(
+        json_paths(DOC, "json($CONFIG, ", "$CONFIG, "),
+        ["db", r#"["a.b"]"#, "tls"]
+    );
+    assert_eq!(
+        json_paths(DOC, "json($CONFIG, db.", "db."),
+        ["host", "hosts"]
+    );
+    assert_eq!(
+        json_paths(DOC, "json($CONFIG, db.ho)", "db.ho"),
+        ["host", "hosts"]
+    );
+    assert_eq!(
+        json_paths(DOC, "json($CONFIG, db.hosts[", "hosts["),
+        ["0", "1"]
+    );
+    assert_eq!(
+        json_paths(DOC, "${CONFIG | json(db.", "db."),
+        ["host", "hosts"]
+    );
+    assert_eq!(
+        json_paths(DOC, "json(${CONFIG}, ", ", "),
+        ["db", r#"["a.b"]"#, "tls"]
+    );
+    let quoted = format!("'{DOC}'");
+    assert_eq!(
+        json_paths(&quoted, "json($CONFIG, db.", "db."),
+        ["host", "hosts"]
+    );
+    assert_eq!(json_paths("[1,2]", "json($CONFIG, ", ", "), ["[0]", "[1]"]);
+
+    let text = json_schema(DOC, "json($CONFIG, db.hosts[");
+    let items = complete(&text, after(&text, 4, "hosts["));
+    assert_eq!(items[0].insert, "0]");
+    let text = json_schema(DOC, "json($CONFIG, )");
+    for item in complete(&text, after(&text, 4, ", ")) {
+        let shown = format!(
+            "{} {} {} {}",
+            item.label, item.detail, item.doc, item.insert
+        );
+        assert!(!shown.contains("fake-host"), "{shown}");
+    }
+}
+
+#[test]
+fn json_paths_offer_nothing_without_a_literal_document() {
+    for (value, expr, needle) in [
+        ("not-json", "json($CONFIG, ", ", "),
+        ("${OTHER}", "json($CONFIG, ", ", "),
+        (DOC, "json($MISSING, ", ", "),
+        (DOC, "json($CONFIG, tls.", "tls."),
+        (DOC, "json($CONFIG, nope.", "nope."),
+        (DOC, "json($CONFIG, db.hosts.", "hosts."),
+        (DOC, "${CONFIG | b64d | json(", "json("),
+        (DOC, "json($CONFIG, [\"a.", "[\"a."),
+    ] {
+        assert_eq!(
+            json_paths(value, expr, needle),
+            Vec::<String>::new(),
+            "{value} {expr}"
+        );
+    }
+}
+
+#[test]
+fn an_unclosed_json_or_match_call_does_not_panic() {
+    for expr in [
+        "json(",
+        "json($",
+        "json($CONFIG,",
+        "${CONFIG | json(",
+        "match(",
+        "match($APP_ENV,",
+    ] {
+        let text = json_schema(DOC, expr);
+        let line = text.split('\n').nth(4).unwrap();
+        for i in 0..=line.encode_utf16().count() as u32 {
+            complete(&text, at(4, i));
+        }
+    }
+}
+
+fn match_schema(header: &str, expr: &str) -> String {
+    format!("# @penv=a/b\n{header}# ---\n\nAPP_ENV=development\nOTHER=x\nV={expr}\n")
+}
+
+#[test]
+fn match_labels_are_environments_when_the_subject_is_the_current_env_key() {
+    let envs: Vec<String> = vocabulary()
+        .environments
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    let header = "# @currentEnv=$APP_ENV\n";
+    let text = match_schema(header, "match($APP_ENV, ");
+    assert_eq!(labels(&text, after(&text, 6, "ENV, ")), envs);
+    assert_eq!(
+        complete(&text, after(&text, 6, "ENV, "))[0].insert,
+        "development: "
+    );
+
+    let text = match_schema(header, "match(${APP_ENV}, production: a, st");
+    let got = labels(&text, after(&text, 6, ", st"));
+    assert!(!got.contains(&"production".to_string()), "{got:?}");
+    assert!(got.contains(&"staging".to_string()), "{got:?}");
+
+    let text = match_schema(header, "match($APP_ENV, test: x)");
+    let items = complete(&text, after(&text, 6, ", te"));
+    assert_eq!(
+        items.iter().find(|c| c.label == "test").unwrap().insert,
+        "test"
+    );
+}
+
+#[test]
+fn match_labels_are_not_environments_for_any_other_subject() {
+    let header = "# @currentEnv=$APP_ENV\n";
+    for (header, expr, needle) in [
+        (header, "match($OTHER, ", "OTHER, "),
+        ("", "match($APP_ENV, ", "ENV, "),
+        (header, "match($APP_ENV, production: ", "production: "),
+        (header, "match(", "match("),
+    ] {
+        let text = match_schema(header, expr);
+        let row = text.lines().position(|l| l.starts_with("V=")).unwrap() as u32;
+        let got = labels(&text, after(&text, row, needle));
+        assert!(!got.contains(&"production".to_string()), "{expr}: {got:?}");
     }
 }

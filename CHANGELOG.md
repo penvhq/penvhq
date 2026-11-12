@@ -4,6 +4,8 @@
 
 ### Added
 - **Editor completions and hover cover every 1.1 decorator, function, filter and type, with rewritten docs.** `penv lsp` now also offers environment names inside `forEnv(`, `@required=forEnv(` and `penv(`, the options of `string(`, `number(` and `port(` with what each checks, and explains the `${KEY:-default}`, `${KEY-default}` and `|` forms when you hover them.
+- **`penv lsp` completes `json()` paths from a document written in the schema.** With `CONFIG={"db":{"host":...}}`, `json($CONFIG, db.` and `${CONFIG | json(db.` offer `host`, and `hosts[` offers the indices. It offers key names only, never a value, and nothing when the value is not JSON.
+- **`match($APP_ENV, ` offers environment names as case labels** when `APP_ENV` is the `@currentEnv` key; any other subject gets none.
 
 ## 1.1.1
 
