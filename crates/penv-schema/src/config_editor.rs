@@ -40,6 +40,7 @@ pub struct Section {
     pub per: Option<String>,
     /// Any setting is accepted, as in `[targets.<name>]`.
     pub open: bool,
+    /// `check` fails when this is not a table.
     pub refused: bool,
     pub keys: Vec<Setting>,
     /// Sections such as `[hosts]` whose keys are schema keys.
@@ -183,9 +184,14 @@ impl Found<'_> {
             .is_none_or(|keys| keys.iter().any(|k| k == name))
     }
 
+    fn known(&self, name: &str) -> bool {
+        self.schema_keys
+            .is_some_and(|keys| keys.iter().any(|k| k == name))
+    }
+
     fn section(&mut self, section: &Section, key: Option<&Key>, item: &Item) {
         let Some(table) = item.as_table_like() else {
-            let (severity, tail) = if section.refused || section.keys.iter().any(|k| k.refused) {
+            let (severity, tail) = if section.refused {
                 (Severity::Error, "")
             } else {
                 (Severity::Warning, ", so penv ignores it")
@@ -201,9 +207,10 @@ impl Found<'_> {
             self.settings(section, table, &format!("[{}]", section.name));
             return;
         }
-        for (name, sub) in table.iter() {
+        for (index, (name, sub)) in table.iter().enumerate() {
             let sub_key = table.key(name);
-            if section.per.as_deref() == Some("schema-key") && !self.declared(name) {
+            let per_key = section.per.as_deref() == Some("schema-key");
+            if per_key && sub.is_table_like() && !self.declared(name) {
                 self.push(
                     spot(sub_key, sub),
                     Severity::Error,
@@ -236,6 +243,13 @@ impl Found<'_> {
             if section.open {
                 continue;
             }
+            // Names a key only when the schema declares it, so a pasted value is never echoed.
+            let shown = if !per_key || self.known(name) {
+                name.to_string()
+            } else {
+                format!("entry {}", index + 1)
+            };
+            let label = format!("[{}.{shown}]", section.name);
             for setting in section.keys.iter().filter(|s| s.refused) {
                 if inner.get(&setting.name).is_none() {
                     self.push(
@@ -243,13 +257,13 @@ impl Found<'_> {
                         Severity::Error,
                         "public_list",
                         format!(
-                            "{} {} is missing; write a list of read paths, such as [\"client_email\"]",
-                            section.form, setting.name
+                            "{label} {} is missing; write a list of read paths, such as [\"client_email\"]",
+                            setting.name
                         ),
                     );
                 }
             }
-            self.settings(section, inner, &section.form);
+            self.settings(section, inner, &label);
         }
     }
 

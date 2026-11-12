@@ -168,3 +168,51 @@ fn every_entry_has_a_doc_and_every_check_a_message() {
         }
     }
 }
+
+#[test]
+fn a_schema_that_is_not_a_table_is_ignored_as_penv_ignores_it() {
+    let found = problems("schema = 1\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].severity, Severity::Warning);
+    assert!(found[0].message.contains("penv ignores it"), "{found:?}");
+    for refused in ["url = 1\n", "hash = 1\n", "json = 1\n"] {
+        assert_eq!(problems(refused)[0].severity, Severity::Error, "{refused}");
+    }
+}
+
+#[test]
+fn a_list_directly_under_json_is_one_error() {
+    let found = problems("[json]\npublic = [\"a\"]\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].code, "wrong_type");
+}
+
+#[test]
+fn json_messages_name_the_section_or_its_position() {
+    let found = problems("[json.GCP_SA_JSON]\npaths = 1\n");
+    let messages: Vec<&str> = found.iter().map(|n| n.message.as_str()).collect();
+    assert!(
+        messages.contains(
+            &"[json.GCP_SA_JSON] public is missing; write a list of read paths, such as [\"client_email\"]"
+        ),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("in [json.GCP_SA_JSON] and ignores it")),
+        "{messages:?}"
+    );
+    // An undeclared name may be a pasted value, so it is shown by position.
+    let found = config_problems("[json.sk_fake_123]\npaths = 1\n", None);
+    assert!(
+        found.iter().all(|n| !n.message.contains("sk_fake_123")),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|n| n.message.starts_with("[json.entry 1] public is missing")),
+        "{found:?}"
+    );
+}

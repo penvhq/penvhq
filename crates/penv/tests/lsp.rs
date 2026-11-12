@@ -370,3 +370,37 @@ fn the_editor_reports_what_check_reports_beyond_the_parser() {
     client.request("shutdown", Value::Null);
     assert_eq!(client.exit_code(), 0);
 }
+
+#[test]
+fn a_config_follows_the_open_schema_and_leaves_imported_keys_unchecked() {
+    let dir = workspace("config");
+    let schema = dir.join(".env.schema");
+    let config = dir.join(".penv/config.toml");
+    let text = "# ---\n\nLOCAL_KEY=\n";
+    std::fs::write(&schema, text).unwrap();
+    let toml = "[schema]\nversion = 1\n\n[json.SHARED_KEY]\npublic = [\"a\"]\n";
+    std::fs::write(&config, toml).unwrap();
+    let (doc, conf) = (uri(&schema), uri(&config));
+    let mut client = Client::start(&dir);
+    client.initialize();
+
+    client.open(&doc, text);
+    client.recv();
+    client.open(&conf, toml);
+    let found = client.recv()["params"]["diagnostics"].clone();
+    assert_eq!(found[0]["code"], "unknown_key", "{found}");
+
+    // Editing the schema republishes the open config against the buffer.
+    let imported = "# @import(../shared/.env.schema)\n# ---\n\nLOCAL_KEY=\n";
+    client.notify(
+        "textDocument/didChange",
+        json!({ "textDocument": { "uri": doc, "version": 2 }, "contentChanges": [{ "text": imported }] }),
+    );
+    client.recv();
+    let again = client.recv();
+    assert_eq!(again["params"]["uri"], conf.as_str());
+    assert_eq!(again["params"]["diagnostics"], json!([]), "{again}");
+
+    client.request("shutdown", Value::Null);
+    assert_eq!(client.exit_code(), 0);
+}

@@ -20,12 +20,12 @@
         { "name": "prefixes", "type": "list", "default": "[]",
           "doc": "`prefixes = [\"APP_PUBLIC_\"]` treats `APP_PUBLIC_SITE_URL` as not sensitive, as penv already treats `NEXT_PUBLIC_` and `VITE_` keys, so its value is not masked. A key with that prefix marked `@sensitive` is an error.",
           "if_wrong": "[public] prefixes takes a list of strings, such as [\"APP_PUBLIC_\"]; penv ignores what is not one" } ] },
-    { "name": "url", "doc": "URL parts shown in plain text though the URL is sensitive.",
+    { "name": "url", "refused": true, "doc": "URL parts shown in plain text though the URL is sensitive.",
       "keys": [
         { "name": "public", "type": "list", "default": "[\"scheme\", \"host\", \"port\", \"origin\"]", "values_from": "url-parts", "refused": true,
           "doc": "`public = [\"scheme\", \"host\"]` lets `url($DATABASE_URL, host)` print the host in plain text, while the password and the rest of the URL stay masked. `password` is never public; `check` fails if you list it.",
           "if_wrong": "[url] public must be a list of URL parts" } ] },
-    { "name": "hash", "doc": "Keys whose `hash()` result is shown in plain text.",
+    { "name": "hash", "refused": true, "doc": "Keys whose `hash()` result is shown in plain text.",
       "keys": [
         { "name": "public", "type": "list", "default": "[]", "values_from": "schema-keys", "refused": true,
           "doc": "`public = [\"API_KEY_FP\"]` shows the fingerprint `API_KEY_FP=hash($API_KEY, algo=sha256, length=8)` computes in plain text, so you can tell which key a machine has; a key marked `@sensitive` stays masked. Each entry must be a key whose value is a `hash()` call, or `check` fails.",

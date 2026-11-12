@@ -195,7 +195,7 @@ impl Server {
                 let items = match (text, config) {
                     (Some(t), _) => editor::complete(t, at),
                     (_, Some(t)) => {
-                        config_complete(t, at, &self.schema_keys(uri).unwrap_or_default())
+                        config_complete(t, at, &self.schema_keys(uri).unwrap_or_default().0)
                     }
                     _ => Vec::new(),
                 };
@@ -259,10 +259,20 @@ impl Server {
                 let Some(text) = change.and_then(|c| c["text"].as_str()) else {
                     return Vec::new();
                 };
-                if let Some((_, held)) = self.documents.get_mut(&uri) {
+                let mut is_schema = false;
+                if let Some((kind, held)) = self.documents.get_mut(&uri) {
                     *held = text.to_string();
+                    is_schema = *kind == Kind::Schema;
                 }
-                vec![self.publish(&uri)]
+                let mut sent = vec![self.publish(&uri)];
+                // An open config's references are checked against this buffer.
+                let project = project_dir(&uri).filter(|_| is_schema);
+                for (other, (kind, _)) in &self.documents {
+                    if *kind == Kind::Config && project.is_some() && project_dir(other) == project {
+                        sent.push(self.publish(other));
+                    }
+                }
+                sent
             }
             "textDocument/didSave" => {
                 // `.penv/config.toml` may have moved a rotation clock, and a saved
@@ -298,7 +308,7 @@ impl Server {
             .get(uri)
             .map_or((Kind::Schema, ""), |(k, t)| (*k, t.as_str()));
         if kind == Kind::Config {
-            let found = config_problems(text, self.schema_keys(uri).as_deref());
+            let found = config_problems(text, self.checked_keys(uri).as_deref());
             return notify(
                 "textDocument/publishDiagnostics",
                 json!({
@@ -323,8 +333,9 @@ impl Server {
     }
 
     /// The keys the `.env.schema` beside a config declares: the open buffer when
-    /// there is one, else the file. `None` when there is no schema to read.
-    fn schema_keys(&self, config_uri: &str) -> Option<Vec<String>> {
+    /// there is one, else the file, and whether it imports none. `None` when
+    /// there is no schema to read.
+    fn schema_keys(&self, config_uri: &str) -> Option<(Vec<String>, bool)> {
         let schema = project_dir(config_uri)?.join(".env.schema");
         let open = self.documents.iter().find_map(|(uri, (kind, text))| {
             (*kind == Kind::Schema && uri_path(uri).as_ref() == Some(&schema)).then_some(text)
@@ -334,7 +345,15 @@ impl Server {
             None => std::fs::read_to_string(&schema).ok()?,
         };
         let parsed = penv_schema::parse(&text).ok()?;
-        Some(parsed.keys.into_iter().map(|k| k.name).collect())
+        let whole = parsed.imports.is_empty();
+        Some((parsed.keys.into_iter().map(|k| k.name).collect(), whole))
+    }
+
+    /// The keys a config's references are checked against; `None` leaves them
+    /// unchecked, as when the schema imports keys the editor does not resolve.
+    fn checked_keys(&self, config_uri: &str) -> Option<Vec<String>> {
+        self.schema_keys(config_uri)
+            .and_then(|(keys, whole)| whole.then_some(keys))
     }
 
     /// `@rotate` reminders in `check`'s words. Local mode reads the clock from
