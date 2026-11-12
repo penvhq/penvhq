@@ -31,6 +31,7 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "workspaceContains:**/.env.schema",
+    "workspaceContains:**/.penv/config.toml",
     "onLanguage:env-spec",
     "onLanguage:dotenv"
   ],

@@ -71,7 +71,10 @@ async function start(): Promise<void> {
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const server: ServerOptions = { command: binary, args: ["lsp"], options: cwd ? { cwd } : {} };
   const options: LanguageClientOptions = {
-    documentSelector: [{ scheme: "file", pattern: "**/.env.schema" }],
+    documentSelector: [
+      { scheme: "file", pattern: "**/.env.schema" },
+      { scheme: "file", pattern: "**/.penv/config.toml" },
+    ],
     outputChannel: output,
   };
   client = new LanguageClient("penv", "penv", server, options);

@@ -6,6 +6,7 @@
 - **Editor completions and hover cover every 1.1 decorator, function, filter and type, with rewritten docs.** `penv lsp` now also offers environment names inside `forEnv(`, `@required=forEnv(` and `penv(`, the options of `string(`, `number(` and `port(` with what each checks, and explains the `${KEY:-default}`, `${KEY-default}` and `|` forms when you hover them.
 - **`penv lsp` completes `json()` paths from a document written in the schema.** With `CONFIG={"db":{"host":...}}`, `json($CONFIG, db.` and `${CONFIG | json(db.` offer `host`, and `hosts[` offers the indices. It offers key names only, never a value, and nothing when the value is not JSON.
 - **`match(` offers environment names as case labels**, whatever the subject: `match($APP_ENV, production: api.example.com, _: localhost)`.
+- **`penv lsp` serves `.penv/config.toml`.** It it completes sections, settings, URL parts and declared keys, gives hover docs for each setting, and reports TOML errors where they are, unknown settings (with the nearest name), wrong types, and the `public` entries `penv check` refuses.
 
 ## 1.1.1
 
