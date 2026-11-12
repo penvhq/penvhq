@@ -15,7 +15,7 @@
 
     # The release keys, base64 Ed25519 public keys separated by spaces, that a checksum file
     # may be signed with: the same list install.sh carries in public_keys.
-    $publicKeys = 'VRJ90W7uzjrwQKeD6KCGQj1dih6z6/4QVeat0M5qL/0='
+    $publicKeys = 'VRJ90W7uzjrwQKeD6KCGQj1dih6z6/4QVeat0M5qL/0= DRvkwcausj52ZwhAuBc6bm3Xi5bt/5dt2yA9EfLtXlQ='
 
     $version = $env:PENV_VERSION
     $installDir = $env:PENV_INSTALL_DIR
