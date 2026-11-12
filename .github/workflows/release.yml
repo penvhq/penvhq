@@ -119,7 +119,9 @@ jobs:
   sign:
     needs: build
     runs-on: ubuntu-latest
-    environment: release
+    # Key handover: outside the release environment this job reads the repository's
+    # (old) PENV_SIGNING_KEY, so installed penv verifies the release that adds the new key.
+    # Put `environment: release` back once that release is published.
     permissions:
       contents: write
     steps:
