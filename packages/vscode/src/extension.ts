@@ -54,17 +54,17 @@ async function start(): Promise<void> {
     },
   });
   if (!binary) {
-    offerInstall("penv is not on PATH. Install it, or set penv.path in your user settings.");
+    offerInstall("The penv binary was not found on PATH. Install it with npm i -g @penvhq/cli, or set penv.path in your user settings to its full path.");
     return;
   }
   const manifest = await run(binary, ["help", "--json"]);
   if (manifest === undefined) {
-    offerInstall(`${binary} did not run. Set penv.path in your user settings to the penv binary.`);
+    offerInstall(`${binary} did not run 'help --json'. Set penv.path in your user settings to a working penv binary, or reinstall with npm i -g @penvhq/cli.`);
     return;
   }
   if (!hasLsp(manifest)) {
     void vscode.window.showWarningMessage(
-      `${binary} has no language server. Update penv: penv upgrade, or the package manager you installed it with.`,
+      `${binary} has no 'lsp' command, so this penv is too old for the extension. Update it with npm i -g @penvhq/cli or the package manager you installed it with, then run "penv: Restart language server".`,
     );
     return;
   }
@@ -75,12 +75,12 @@ async function start(): Promise<void> {
     outputChannel: output,
   };
   client = new LanguageClient("penv", "penv", server, options);
-  output?.appendLine(`penv: ${binary} lsp`);
+  output?.appendLine(`Starting: ${binary} lsp`);
   try {
     await client.start();
   } catch (error) {
     client = undefined;
-    const message = `${binary} lsp stopped: ${error instanceof Error ? error.message : String(error)}`;
+    const message = `'${binary} lsp' stopped: ${error instanceof Error ? error.message : String(error)}. Check that penv.path points at a working penv, then run "penv: Restart language server".`;
     output?.appendLine(message);
     void vscode.window.showErrorMessage(message);
   }
@@ -104,7 +104,7 @@ function run(binary: string, args: string[]): Promise<string | undefined> {
 
 function offerInstall(message: string): void {
   output?.appendLine(message);
-  void vscode.window.showWarningMessage(message, "Install penv").then((choice) => {
+  void vscode.window.showWarningMessage(message, "Show install steps").then((choice) => {
     if (choice) {
       void vscode.env.openExternal(vscode.Uri.parse(INSTALL));
     }

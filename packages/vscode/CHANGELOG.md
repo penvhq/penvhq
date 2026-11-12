@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-- Completions for the `url`, `json` and `hash` functions need `penv` 1.0.0 or newer, since completions come from `penv lsp`.
+- Completions, hover and checks now cover everything in penv 1.1.x: new decorators, functions, filters and value lists come from the `penv` binary, so update penv to get them.
+- Clearer messages when `penv` is missing or the server stops; each names `penv.path` or `npm i -g @penvhq/cli` as the fix.
 
 ## 0.1.0
 
