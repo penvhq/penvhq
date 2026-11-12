@@ -98,8 +98,24 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx vsce package --no-dependencies --out penv.vsix
-      - name: Publish
+      - name: Publish to the Visual Studio Marketplace
+        env:
+          MARKETPLACE: ${{ vars.VSCODE_MARKETPLACE }}
         run: |
           set -euo pipefail
+          if [ "${MARKETPLACE:-}" != true ]; then
+            echo "::warning::the Marketplace was skipped: set the release environment variable VSCODE_MARKETPLACE to true once publisher penvhq trusts vscode.yml"
+            exit 0
+          fi
           npx vsce publish --packagePath penv.vsix --oidc
-          npx ovsx publish penv.vsix --trusted-publishing
+      # Open VSX trusts a publisher only for an extension that already has a version, so the first one goes out with OVSX_PAT.
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OVSX_PAT:-}" ]; then
+            npx ovsx publish penv.vsix
+          else
+            env -u OVSX_PAT npx ovsx publish penv.vsix --trusted-publishing
+          fi
