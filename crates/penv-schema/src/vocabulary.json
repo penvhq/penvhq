@@ -6,7 +6,7 @@
       "scope": "header",
       "form": "@penv=org/project",
       "insert": "penv=${1:org}/${2:project}",
-      "doc": "Links this schema to a cloud project. `@penv=<provider>:org/project` reads it from another provider ([docs/PROVIDERS.md](https://github.com/penvhq/penvhq/blob/main/docs/PROVIDERS.md)). Without it, penv runs in local mode from the `.env` files beside the schema."
+      "doc": "Links this schema to a cloud project, so `penv run` reads its values from there: `@penv=acme/api`. `@penv=<provider>:org/project` reads from another provider ([docs/PROVIDERS.md](https://github.com/penvhq/penvhq/blob/main/docs/PROVIDERS.md)). Without it, penv runs locally from the `.env` files beside the schema."
     },
     {
       "name": "schema",
@@ -15,7 +15,7 @@
       "form": "@schema=1",
       "insert": "schema=${1:1}",
       "complete": false,
-      "doc": "The grammar version this schema is written for. `.penv/config.toml` holds it now; a value here is still read."
+      "doc": "The grammar version this schema is written for, a whole number such as `@schema=1`. `.penv/config.toml` holds it now; a value here is still read."
     },
     {
       "name": "defaultSensitive",
@@ -23,7 +23,7 @@
       "scope": "header",
       "form": "@defaultSensitive=true|false",
       "insert": "defaultSensitive=${1|true,false|}",
-      "doc": "Whether a key is sensitive when it says nothing itself. A bundler-prefixed key (`NEXT_PUBLIC_`, `VITE_`, ...) is never sensitive by default."
+      "doc": "Whether a key that says nothing itself is masked: `@defaultSensitive=true` masks every key not marked `@sensitive=false`. A bundler-prefixed key (`NEXT_PUBLIC_`, `VITE_`, ...) is never sensitive by default."
     },
     {
       "name": "defaultRequired",
@@ -31,7 +31,7 @@
       "scope": "header",
       "form": "@defaultRequired=true|false|infer",
       "insert": "defaultRequired=${1|true,false,infer|}",
-      "doc": "`true`: a key with no default needs a value. `false`: no key does unless marked. `infer`: a key with a value in the schema is required."
+      "doc": "Which keys need a value when they say nothing themselves. `@defaultRequired=true`: a key with no default needs one. `false`: no key does unless marked `@required`. `infer`: a key with a value in the schema is required."
     },
     {
       "name": "currentEnv",
@@ -39,15 +39,15 @@
       "scope": "header",
       "form": "@currentEnv=$APP_ENV",
       "insert": "currentEnv=\\$${1:APP_ENV}",
-      "doc": "The key that names the environment when neither `--env` nor `PENV_ENV` is set."
+      "doc": "Names the key that holds the environment, used when neither `--env` nor `PENV_ENV` is set: `@currentEnv=$APP_ENV`. The `$` is optional."
     },
     {
       "name": "import",
       "origin": "env-spec",
       "scope": "header",
-      "form": "@import(path, KEY, ...)",
+      "form": "@import(path, KEY, ...) | @import(path, pick=[KEY, ...])",
       "insert": "import(${1:../.env.schema})",
-      "doc": "Reads the keys of another schema. Name keys after the path to take only those."
+      "doc": "Reads the keys of another schema, so services share one definition: `@import(../.env.schema)`. Name keys after the path, `@import(../.env.schema, OPENAI_API_KEY)`, or with varlock's `pick=[OPENAI_API_KEY, DATABASE_URL]`, to take only those."
     },
     {
       "name": "assert",
@@ -55,7 +55,7 @@
       "scope": "both",
       "form": "@assert(expression, \"message\")",
       "insert": "assert(${1:expression}, \"${2:message}\")",
-      "doc": "`penv check` and `penv run` fail with the message when the expression is false."
+      "doc": "Evaluates an expression that must always be true, else `penv check` and `penv run` fail with the message: `@assert(startsWith($STRIPE_SECRET_KEY, \"sk_\"), \"STRIPE_SECRET_KEY must start with sk_\")`. Goes in the header or on a key; the last top-level comma starts the message."
     },
     {
       "name": "type",
@@ -63,31 +63,31 @@
       "scope": "item",
       "form": "@type=string|number|boolean|url|email|port|enum(...)",
       "insert": "type=${1|string,number,boolean,url,email,port,enum|}",
-      "doc": "Validated before the command starts. Constraints go in brackets: `string(startsWith=sk_)`, `number(min=1, max=10)`, `enum(a, b)`."
+      "doc": "Checks the value before the command starts, so a malformed key fails at `penv check` rather than in the app. Constraints go in parentheses: `@type=string(startsWith=sk_)`, `number(min=1, max=10)`, `enum(development, production)`. An unknown type is checked as a string, with a warning."
     },
     {
       "name": "required",
       "origin": "env-spec",
       "scope": "item",
-      "form": "@required | @required=forEnv(env, ...)",
+      "form": "@required | @required=true|false | @required=forEnv(env, ...)",
       "insert": "required",
-      "doc": "The key needs a value. `@required=forEnv(production)` needs one only in the environments named."
+      "doc": "The key must have a value. `@required=forEnv(production)` needs one only in the environments named; `@required=false` is the same as `@optional`."
     },
     {
       "name": "optional",
       "origin": "env-spec",
       "scope": "item",
-      "form": "@optional | @optional=forEnv(env, ...)",
+      "form": "@optional | @optional=true|false | @optional=forEnv(env, ...)",
       "insert": "optional",
-      "doc": "The key may be empty. `@optional=forEnv(development)` allows that only in the environments named."
+      "doc": "The key may be empty. `@optional=forEnv(development)` allows that only in the environments named; `@optional=false` is the same as `@required`."
     },
     {
       "name": "sensitive",
       "origin": "env-spec",
       "scope": "item",
-      "form": "@sensitive | @sensitive=false",
+      "form": "@sensitive | @sensitive=true|false",
       "insert": "sensitive",
-      "doc": "Masked in the output of every `penv run`. `@sensitive=false` marks a value that may be shown. A bundler-prefixed key cannot be sensitive."
+      "doc": "Masks the value in the output of every `penv run`, as you want for `OPENAI_API_KEY`. `@sensitive=false` marks a value that may be shown. A bundler-prefixed key (`NEXT_PUBLIC_`, ...) cannot be sensitive, because its value ships to the browser."
     },
     {
       "name": "example",
@@ -95,7 +95,7 @@
       "scope": "item",
       "form": "@example=value",
       "insert": "example=${1:value}",
-      "doc": "A sample value for people reading the schema. Never used as the value."
+      "doc": "A sample value for people reading the schema: `@example=sk_test_fake`. penv never uses it as the value."
     },
     {
       "name": "docs",
@@ -103,7 +103,7 @@
       "scope": "item",
       "form": "@docs=url",
       "insert": "docs=${1:https://}",
-      "doc": "Where this key is documented."
+      "doc": "Where this key is documented, so the next person knows where to get one: `@docs=https://platform.openai.com/api-keys`."
     },
     {
       "name": "deprecated",
@@ -111,7 +111,7 @@
       "scope": "item",
       "form": "@deprecated | @deprecated=reason",
       "insert": "deprecated",
-      "doc": "Marks the key as on its way out."
+      "doc": "Marks the key as on its way out, with an optional reason: `@deprecated=\"use DATABASE_URL\"`. The key's hover says so."
     },
     {
       "name": "dynamic",
@@ -119,7 +119,7 @@
       "scope": "item",
       "form": "@dynamic",
       "insert": "dynamic",
-      "doc": "The spec's marker for a value read at runtime. penv keeps it and does not act on it."
+      "doc": "The spec's marker for a value read at runtime. penv keeps it and does not act on it. It takes no value."
     },
     {
       "name": "static",
@@ -127,15 +127,15 @@
       "scope": "item",
       "form": "@static",
       "insert": "static",
-      "doc": "The spec's marker for a value fixed at build time. penv keeps it and does not act on it."
+      "doc": "The spec's marker for a value fixed at build time. penv keeps it and does not act on it. It takes no value."
     },
     {
       "name": "hosts",
       "origin": "penv",
       "scope": "item",
-      "form": "@hosts(api.example.com, \"*.example.com\")",
+      "form": "@hosts(api.example.com, \"*.example.com\") | @hosts=api.example.com | @hosts=url($KEY, host)",
       "insert": "hosts(${1:api.example.com})",
-      "doc": "Seals the value. An agent's process holds a placeholder shaped by `@type`, and `penv run` puts the real value in only on the way to these hosts. At most 32."
+      "doc": "Seals the value: an agent's process holds a placeholder shaped by `@type`, and `penv run` puts the real value in only on the way to these hosts: `@hosts(api.openai.com)`. At most 32, with no scheme, port or path. A computed `@hosts=url($DATABASE_URL, host)` counts only where `[hosts]` in `.penv/config.toml` pins the same hosts; `penv check --pin-hosts` writes the pin."
     },
     {
       "name": "rotate",
@@ -143,88 +143,88 @@
       "scope": "item",
       "form": "@rotate=90d",
       "insert": "rotate=${1:90d}",
-      "doc": "`penv check` reminds you to rotate the value once it is older than this. Units, largest first: `y`, `m` (months), `w`, `d`, `h`, `min`, `s`, as in `1y6m`, `90d`, `12h`, `30min`."
+      "doc": "`penv check` reminds you to rotate the value once it is older than this: `@rotate=90d`. Units, largest first and each once: `y`, `m` (months), `w`, `d`, `h`, `min`, `s`, as in `1y6m`, `12h` or `30min`."
     },
     { "name": "generateTypes", "origin": "varlock", "scope": "header", "form": "@generateTypes(...)", "insert": "", "complete": false, "doc": "varlock's. penv reads past it; `penv gen` writes typed files." },
-    { "name": "plugin", "origin": "varlock", "scope": "header", "form": "@plugin(...)", "insert": "", "complete": false, "doc": "varlock's. penv loads no plugins; providers are compiled in." },
-    { "name": "redactLogs", "origin": "varlock", "scope": "header", "form": "@redactLogs", "insert": "", "complete": false, "doc": "varlock's. penv reads past it; every `penv run` masks sensitive values." },
+    { "name": "plugin", "origin": "varlock", "scope": "header", "form": "@plugin(...)", "insert": "", "complete": false, "doc": "varlock's. penv loads no plugins and warns; providers are compiled in." },
+    { "name": "redactLogs", "origin": "varlock", "scope": "header", "form": "@redactLogs", "insert": "", "complete": false, "doc": "varlock's. penv reads past it; every `penv run` already masks sensitive values." },
     { "name": "preventLeaks", "origin": "varlock", "scope": "header", "form": "@preventLeaks", "insert": "", "complete": false, "doc": "varlock's. penv reads past it." },
-    { "name": "envFlag", "origin": "varlock", "scope": "header", "form": "@envFlag=KEY", "insert": "", "complete": false, "doc": "varlock's older name for `@currentEnv`. penv reads past it." },
+    { "name": "envFlag", "origin": "varlock", "scope": "header", "form": "@envFlag=KEY", "insert": "", "complete": false, "doc": "varlock's older name for `@currentEnv`. penv reads past it; write `@currentEnv=$APP_ENV`." },
     { "name": "setValuesBulk", "origin": "varlock", "scope": "header", "form": "@setValuesBulk(...)", "insert": "", "complete": false, "doc": "varlock's. penv reads past it." },
     { "name": "disable", "origin": "varlock", "scope": "header", "form": "@disable", "insert": "", "complete": false, "doc": "varlock's. penv reads past it." }
   ],
   "functions": [
-    { "name": "ref", "origin": "env-spec", "form": "ref(KEY)", "insert": "ref(${1:KEY})", "doc": "Another key's value. `${KEY}` inside text does the same." },
-    { "name": "concat", "origin": "env-spec", "form": "concat(a, b, ...)", "insert": "concat(${1})", "doc": "Joins its arguments into one string." },
-    { "name": "fallback", "origin": "env-spec", "form": "fallback(a, b, ...)", "insert": "fallback(${1})", "doc": "The first argument that is not empty." },
-    { "name": "if", "origin": "env-spec", "form": "if(condition, then, else?)", "insert": "if(${1:condition}, ${2:then}, ${3:else})", "doc": "`then` when the condition is true, otherwise `else` or empty. `false`, `0` and empty are false." },
-    { "name": "eq", "origin": "env-spec", "form": "eq(a, b)", "insert": "eq(${1:a}, ${2:b})", "doc": "`true` when both are the same text." },
-    { "name": "not", "origin": "env-spec", "form": "not(a)", "insert": "not(${1})", "doc": "`true` when the argument is false, `0` or empty." },
-    { "name": "isEmpty", "origin": "env-spec", "form": "isEmpty(a)", "insert": "isEmpty(${1})", "doc": "`true` when the argument is empty." },
-    { "name": "forEnv", "origin": "env-spec", "form": "forEnv(env, ...)", "insert": "forEnv(${1:production})", "doc": "`true` when the current environment is one of those named." },
-    { "name": "penv", "origin": "penv", "form": "penv(env/KEY) | penv(org/project/env/KEY) | penv()", "insert": "penv(${1:production}/${2:KEY})", "doc": "A value read from the provider. `env/KEY` uses the project `@penv=` names; `penv()` reads this key from the current environment." },
-    { "name": "match", "origin": "penv", "form": "match(subject, label: value, _: value)", "insert": "match(${1:subject}, ${2:label}: ${3:value}, _: ${4:value})", "doc": "The value of the case whose label equals the subject; `_` is the case taken when none does." },
-    { "name": "and", "origin": "penv", "form": "and(a, b, ...)", "insert": "and(${1})", "doc": "`true` when every argument is true." },
-    { "name": "or", "origin": "penv", "form": "or(a, b, ...)", "insert": "or(${1})", "doc": "`true` when any argument is true." },
-    { "name": "startsWith", "origin": "penv", "form": "startsWith(value, prefix)", "insert": "startsWith(${1:value}, ${2:prefix})", "doc": "`true` when the value starts with the prefix." },
-    { "name": "endsWith", "origin": "penv", "form": "endsWith(value, suffix)", "insert": "endsWith(${1:value}, ${2:suffix})", "doc": "`true` when the value ends with the suffix." },
-    { "name": "random", "origin": "penv", "form": "random(kind=alnum, length=N)", "insert": "random(length=${1:32})", "doc": "Random characters, generated once by `penv run` and kept in `.env.local`. `uuid` takes no length.", "subject": "none",
-      "args": [ { "name": "kind", "values_from": "random-kinds", "default": "alnum", "doc": "The characters to draw from." },
-                { "name": "length", "type": "integer", "doc": "How many characters, 8 to 512." } ] },
-    { "name": "url", "origin": "penv", "form": "url(subject, part) | url(subject, part=value, ...)", "insert": "url(\\$${1:KEY}, ${2:host})", "doc": "Reads one part of a URL, or writes parts and returns the whole URL. A call reads or writes, never both.", "subject": "required",
+    { "name": "ref", "origin": "env-spec", "form": "ref(KEY) | ${KEY} | ${KEY:-default}", "insert": "ref(${1:KEY})", "doc": "Another key's value, so a secret is written once: `ref(DATABASE_URL)`, or `${DATABASE_URL}` inside text. `${API_KEY:-dev-fake}` uses `dev-fake` when API_KEY is empty or unset; `${API_KEY-dev-fake}` only when it is unset." },
+    { "name": "concat", "origin": "env-spec", "form": "concat(a, b, ...)", "insert": "concat(${1})", "doc": "Joins its arguments into one string: `concat(\"Bearer \", $API_KEY)`." },
+    { "name": "fallback", "origin": "env-spec", "form": "fallback(a, b, ...)", "insert": "fallback(${1})", "doc": "The first argument that is not empty, for a key with a backup: `fallback($OPENAI_API_KEY, $API_KEY)`." },
+    { "name": "if", "origin": "env-spec", "form": "if(condition, then, else?)", "insert": "if(${1:condition}, ${2:then}, ${3:else})", "doc": "`then` when the condition is true, otherwise `else` or empty: `if(forEnv(production), $STRIPE_SECRET_KEY, sk_test_fake)`. `false`, `0` and empty are false." },
+    { "name": "eq", "origin": "env-spec", "form": "eq(a, b)", "insert": "eq(${1:a}, ${2:b})", "doc": "`true` when both arguments are the same text: `eq($APP_ENV, production)`." },
+    { "name": "not", "origin": "env-spec", "form": "not(a)", "insert": "not(${1})", "doc": "`true` when the argument is false, `0` or empty: `not(forEnv(production))`." },
+    { "name": "isEmpty", "origin": "env-spec", "form": "isEmpty(a)", "insert": "isEmpty(${1})", "doc": "`true` when the argument is empty: `isEmpty($OPENAI_API_KEY)`." },
+    { "name": "forEnv", "origin": "env-spec", "form": "forEnv(env, ...)", "insert": "forEnv(${1:production})", "doc": "`true` when the current environment is one of those named: `forEnv(staging, production)`." },
+    { "name": "penv", "origin": "penv", "form": "penv(env/KEY) | penv(org/project/env/KEY) | penv()", "insert": "penv(${1:production}/${2:KEY})", "doc": "A value read from the provider, so one key can borrow another environment's: `penv(production/DATABASE_URL)`. `env/KEY` uses the `@penv=` project; `penv()` reads this key from the current environment. The address is written, never computed; `exec()` is refused, since a schema never runs a shell command." },
+    { "name": "match", "origin": "penv", "form": "match(subject, label: value, _: value)", "insert": "match(${1:subject}, ${2:label}: ${3:value}, _: ${4:value})", "doc": "The value of the case whose label equals the subject, `_` when none does: `match($APP_ENV, production: api.example.com, _: localhost)`. With no match and no `_`, it fails." },
+    { "name": "and", "origin": "penv", "form": "and(a, b, ...)", "insert": "and(${1})", "doc": "`true` when every argument is true: `and(forEnv(production), not(isEmpty($STRIPE_SECRET_KEY)))`." },
+    { "name": "or", "origin": "penv", "form": "or(a, b, ...)", "insert": "or(${1})", "doc": "`true` when any argument is true: `or(forEnv(staging), forEnv(production))`." },
+    { "name": "startsWith", "origin": "penv", "form": "startsWith(value, prefix)", "insert": "startsWith(${1:value}, ${2:prefix})", "doc": "`true` when the value starts with the prefix: `startsWith($STRIPE_SECRET_KEY, \"sk_live_\")`." },
+    { "name": "endsWith", "origin": "penv", "form": "endsWith(value, suffix)", "insert": "endsWith(${1:value}, ${2:suffix})", "doc": "`true` when the value ends with the suffix: `endsWith($DATABASE_URL, \"sslmode=require\")`." },
+    { "name": "random", "origin": "penv", "form": "random(kind=alnum, length=N)", "insert": "random(length=${1:32})", "doc": "Random characters for a local secret nobody types: `random(length=32)`. `penv run` generates it once and keeps it in this machine's `.env.local`. `length` is 8 to 512 and required, except for `kind=uuid`, which takes none.", "subject": "none",
+      "args": [ { "name": "kind", "values_from": "random-kinds", "default": "alnum", "doc": "The characters to draw from: `kind=hex`." },
+                { "name": "length", "type": "integer", "doc": "How many characters, 8 to 512: `length=32`." } ] },
+    { "name": "url", "origin": "penv", "form": "url(subject, part) | url(subject, part=value, ...)", "insert": "url(\\$${1:KEY}, ${2:host})", "doc": "Reads one part of a URL, or writes parts and returns the whole URL, so a host is never copied by hand: `url($DATABASE_URL, host)`, `url($DATABASE_URL, port=6543)`. A call reads or writes, never both; a written `password=` is a `$KEY`. As a pipe step: `${DATABASE_URL | url(host)}`.", "subject": "required",
       "address": { "values_from": "url-parts" }, "labels": { "values_from": "url-parts" } },
-    { "name": "json", "origin": "penv", "form": "json(subject, path) | json(subject?, path=value, ...)", "insert": "json(\\$${1:KEY}, ${2:path})", "doc": "Reads a field of a JSON document, or writes fields and returns compact JSON. With no subject it builds from `{}`.", "subject": "optional",
+    { "name": "json", "origin": "penv", "form": "json(subject, path) | json(subject?, path=value, ...)", "insert": "json(\\$${1:KEY}, ${2:path})", "doc": "Reads a field of a JSON document, or writes fields and returns compact JSON: `json($APP_CONFIG, db.host)`. A path is `a.b[0]`, `[\"a.b\"]` or `a[\"x.y\"].c`; with no subject, writing starts from `{}`. As a pipe step: `${APP_CONFIG | json(db.host)}`.", "subject": "optional",
       "address": {}, "labels": {} },
-    { "name": "hash", "origin": "penv", "form": "hash(subject, algo=sha256, encoding=hex, length=N, key=$K)", "insert": "hash(\\$${1:KEY}, algo=${2|sha256,sha512,hmac-sha256,hmac-sha512|})", "doc": "A digest or HMAC of the subject. The same inputs give the same result.", "subject": "required",
-      "args": [ { "name": "algo", "required": true, "values_from": "algorithms", "doc": "The digest or HMAC to compute." },
-                { "name": "encoding", "values_from": "encodings", "default": "hex", "doc": "How the result is written." },
-                { "name": "length", "type": "integer", "doc": "Keeps the first N characters of the encoded result." },
-                { "name": "key", "type": "value", "doc": "The secret an `hmac-*` algorithm signs with." } ] },
-    { "name": "raw", "origin": "penv", "form": "raw(subject)", "insert": "raw(\\$${1:KEY})", "doc": "Embeds JSON that already exists, as a `json()` option value: `json(db=raw($INNER))`." }
+    { "name": "hash", "origin": "penv", "form": "hash(subject, algo=sha256, encoding=hex, length=N, key=$K)", "insert": "hash(\\$${1:KEY}, algo=${2|sha256,sha512,hmac-sha256,hmac-sha512|})", "doc": "`hash($API_KEY, algo=sha256, length=8)` gives a short fingerprint of a key, so you can tell which key a machine has without showing it. The same inputs always give the same result; `hmac-*` needs `key=$KEY`. As a pipe step: `${API_KEY | hash(algo=sha256)}`.", "subject": "required",
+      "args": [ { "name": "algo", "required": true, "values_from": "algorithms", "doc": "The digest or HMAC to compute: `algo=sha256`." },
+                { "name": "encoding", "values_from": "encodings", "default": "hex", "doc": "How the result is written; `hex` when left out." },
+                { "name": "length", "type": "integer", "doc": "Keeps the first N characters of the encoded result, at least 1: `length=8`." },
+                { "name": "key", "type": "value", "doc": "The secret an `hmac-*` algorithm signs with: `key=$WEBHOOK_SECRET`. Refused for a plain digest." } ] },
+    { "name": "raw", "origin": "penv", "form": "raw(subject)", "insert": "raw(\\$${1:KEY})", "doc": "Embeds JSON that already exists as a `json()` option value, parsed rather than quoted as text: `json(db=raw($DB_CONFIG))`. Fails when the value is not valid JSON." }
   ],
   "filters": [
-    { "name": "urlencode", "origin": "penv", "form": "${KEY | urlencode}", "doc": "Percent-encodes the value for a URL." },
-    { "name": "base64", "origin": "penv", "form": "${KEY | base64}", "doc": "The value in standard base64." },
-    { "name": "lower", "origin": "penv", "form": "${KEY | lower}", "doc": "The value in lowercase." },
-    { "name": "upper", "origin": "penv", "form": "${KEY | upper}", "doc": "The value in uppercase." },
-    { "name": "trim", "origin": "penv", "form": "${KEY | trim}", "doc": "The value without surrounding whitespace." },
-    { "name": "b64d", "origin": "penv", "form": "${KEY | b64d}", "doc": "Decodes standard base64. A value that is not base64 fails." }
+    { "name": "urlencode", "origin": "penv", "form": "${KEY | urlencode}", "doc": "Percent-encodes the value so it is safe inside a URL, such as a password holding `@`: `postgres://app:${DB_PASSWORD | urlencode}@db.example.com/app`. Steps chain left to right." },
+    { "name": "base64", "origin": "penv", "form": "${KEY | base64}", "doc": "The value in standard base64, for a header that expects it: `${API_KEY | base64}`." },
+    { "name": "lower", "origin": "penv", "form": "${KEY | lower}", "doc": "The value in lowercase: `${APP_ENV | lower}`." },
+    { "name": "upper", "origin": "penv", "form": "${KEY | upper}", "doc": "The value in uppercase: `${APP_ENV | upper}`." },
+    { "name": "trim", "origin": "penv", "form": "${KEY | trim}", "doc": "The value without surrounding whitespace, for a key pasted with a stray newline: `${OPENAI_API_KEY | trim}`." },
+    { "name": "b64d", "origin": "penv", "form": "${KEY | b64d}", "doc": "Decodes standard base64: `${GOOGLE_CREDENTIALS_B64 | b64d}`. A value that is not base64 fails." }
   ],
   "algorithms": [
-    { "name": "sha256", "doc": "SHA-256." },
-    { "name": "sha512", "doc": "SHA-512." },
-    { "name": "hmac-sha256", "doc": "HMAC with SHA-256, signed with `key=`.", "needs": ["key"] },
-    { "name": "hmac-sha512", "doc": "HMAC with SHA-512, signed with `key=`.", "needs": ["key"] }
+    { "name": "sha256", "doc": "SHA-256 digest: `hash($API_KEY, algo=sha256)`." },
+    { "name": "sha512", "doc": "SHA-512 digest: `hash($API_KEY, algo=sha512)`." },
+    { "name": "hmac-sha256", "doc": "HMAC with SHA-256, signed with `key=`: `hash($PAYLOAD, algo=hmac-sha256, key=$WEBHOOK_SECRET)`.", "needs": ["key"] },
+    { "name": "hmac-sha512", "doc": "HMAC with SHA-512, signed with `key=`: `hash($PAYLOAD, algo=hmac-sha512, key=$WEBHOOK_SECRET)`.", "needs": ["key"] }
   ],
   "encodings": [
-    { "name": "hex", "doc": "Lowercase hexadecimal." },
-    { "name": "base64", "doc": "Standard base64 with padding." },
-    { "name": "base64url", "doc": "URL-safe base64 without padding." }
+    { "name": "hex", "doc": "Lowercase hexadecimal, the default." },
+    { "name": "base64", "doc": "Standard base64 (`+`, `/`) with `=` padding." },
+    { "name": "base64url", "doc": "URL-safe base64 (`-`, `_`) without padding." }
   ],
   "url-parts": [
     { "name": "scheme", "doc": "The scheme, such as `postgres`.", "public": true },
-    { "name": "host", "doc": "The host. A URL that names several hosts fails.", "public": true },
-    { "name": "port", "doc": "The port, empty when the URL has none.", "public": true },
-    { "name": "origin", "doc": "Scheme, host and port. Read only.", "public": true, "read_only": true },
+    { "name": "host", "doc": "The host, such as `db.example.com`. A URL that names several hosts fails.", "public": true },
+    { "name": "port", "doc": "The port, such as `5432`; empty when the URL has none.", "public": true },
+    { "name": "origin", "doc": "Scheme, host and port, such as `https://api.example.com`. Read only.", "public": true, "read_only": true },
     { "name": "path", "doc": "The path, such as `/orders`.", "public": false },
-    { "name": "user", "doc": "The user name." },
-    { "name": "password", "doc": "The password. Always sensitive; a written one is a reference to another key.", "sensitive": true },
+    { "name": "user", "doc": "The user name, such as `app`." },
+    { "name": "password", "doc": "The password. Always sensitive; to write one, give a `$KEY` reference, never a literal.", "sensitive": true },
     { "name": "query.NAME", "doc": "One query parameter, such as `query.sslmode`." }
   ],
   "random-kinds": [
-    { "name": "alnum", "doc": "Letters and digits." },
+    { "name": "alnum", "doc": "Letters and digits, the default." },
     { "name": "hex", "doc": "Lowercase hexadecimal." },
-    { "name": "base64url", "doc": "URL-safe base64 characters." },
+    { "name": "base64url", "doc": "URL-safe base64 characters (`A-Z a-z 0-9 - _`)." },
     { "name": "uuid", "doc": "A version-4 UUID; takes no length." }
   ],
   "types": [
-    { "name": "string", "doc": "Any text. Constraints: `startsWith`, `endsWith`, `minLength`, `maxLength`, `matches`." },
-    { "name": "number", "doc": "A number. Constraints: `min`, `max`, `isInt`, `precision`." },
-    { "name": "boolean", "doc": "`true` or `false`." },
-    { "name": "url", "doc": "An absolute URL." },
-    { "name": "email", "doc": "An email address." },
-    { "name": "port", "doc": "A TCP port, 1 to 65535. Constraints: `min`, `max`." },
-    { "name": "enum", "doc": "One of the members listed: `enum(development, staging, production)`." }
+    { "name": "string", "doc": "Any text. Constraints: `startsWith`, `endsWith`, `minLength`, `maxLength`, `matches`, as in `string(startsWith=sk_, minLength=20)`." },
+    { "name": "number", "doc": "A number. Constraints: `min`, `max`, `isInt`, `precision`; a whole number is `number(isInt=true)`." },
+    { "name": "boolean", "doc": "`true` or `false`; `yes`, `no`, `on`, `off`, `1` and `0` also pass, in any case." },
+    { "name": "url", "doc": "An absolute URL: a scheme, `://` and a host, such as `postgres://db.example.com/app`." },
+    { "name": "email", "doc": "An email address, such as `ops@example.com`." },
+    { "name": "port", "doc": "A TCP port, 1 to 65535. Constraints: `min`, `max`, as in `port(min=1024)`." },
+    { "name": "enum", "doc": "One of the members listed: `enum(development, staging, production)`. A quoted member may hold `=`." }
   ],
   "rotate": ["30d", "90d", "180d", "1y", "6m", "1w", "12h", "30min"]
 }
